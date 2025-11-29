@@ -18,6 +18,31 @@ class Database:
         self.db_path = db_path
         self._init_db()
 
+    def _migrate_schema(self, conn):
+        """Add new columns to existing database if they don't exist."""
+        try:
+            # Check if new columns exist
+            cursor = conn.execute("PRAGMA table_info(messages)")
+            columns = {row[1] for row in cursor.fetchall()}
+
+            # Add sender_name if missing
+            if "sender_name" not in columns:
+                conn.execute("ALTER TABLE messages ADD COLUMN sender_name TEXT")
+                logger.info("Added sender_name column to messages table")
+
+            # Add sender_username if missing
+            if "sender_username" not in columns:
+                conn.execute("ALTER TABLE messages ADD COLUMN sender_username TEXT")
+                logger.info("Added sender_username column to messages table")
+
+            # Add is_group_chat if missing
+            if "is_group_chat" not in columns:
+                conn.execute("ALTER TABLE messages ADD COLUMN is_group_chat INTEGER DEFAULT 0")
+                logger.info("Added is_group_chat column to messages table")
+
+        except Exception as e:
+            logger.warning(f"Schema migration warning: {e}")
+
     def _init_db(self):
         """Create tables and indexes if they don't exist."""
         try:
@@ -32,7 +57,10 @@ class Database:
                         timestamp TEXT NOT NULL,
                         user_id INTEGER,
                         message_id INTEGER,
-                        token_count INTEGER DEFAULT 0
+                        token_count INTEGER DEFAULT 0,
+                        sender_name TEXT,
+                        sender_username TEXT,
+                        is_group_chat INTEGER DEFAULT 0
                     )
                 """)
 
@@ -41,6 +69,9 @@ class Database:
                     CREATE INDEX IF NOT EXISTS idx_chat_timestamp
                     ON messages(chat_id, timestamp DESC)
                 """)
+
+                # Migrate existing database if needed
+                self._migrate_schema(conn)
 
                 logger.info(f"Database initialized at {self.db_path}")
 
@@ -88,6 +119,9 @@ class Database:
         user_id: int = None,
         message_id: int = None,
         token_count: int = 0,
+        sender_name: str = None,
+        sender_username: str = None,
+        is_group_chat: bool = False,
     ) -> int:
         """Add a message to the database with atomic transaction."""
         try:
@@ -99,10 +133,12 @@ class Database:
                 cursor = conn.execute(
                     """
                     INSERT INTO messages
-                    (chat_id, role, content, timestamp, user_id, message_id, token_count)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (chat_id, role, content, timestamp, user_id, message_id, token_count,
+                     sender_name, sender_username, is_group_chat)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (chat_id, role, content, timestamp, user_id, message_id, token_count),
+                    (chat_id, role, content, timestamp, user_id, message_id, token_count,
+                     sender_name, sender_username, 1 if is_group_chat else 0),
                 )
                 msg_id = cursor.lastrowid
 
@@ -121,6 +157,7 @@ class Database:
         Retrieve recent messages within token budget.
 
         Returns messages in chronological order (oldest first).
+        For group chats, includes sender information in the format [Name]: message
         """
         try:
             chat_id = str(chat_id)
@@ -128,10 +165,10 @@ class Database:
             total_tokens = 0
 
             with self._get_connection() as conn:
-                # Get messages newest first
+                # Get messages newest first with sender info
                 cursor = conn.execute(
                     """
-                    SELECT role, content, token_count
+                    SELECT role, content, token_count, sender_name, sender_username, is_group_chat
                     FROM messages
                     WHERE chat_id = ?
                     ORDER BY timestamp DESC
@@ -149,6 +186,9 @@ class Database:
                         temp_messages.append({
                             "role": row["role"],
                             "content": row["content"],
+                            "sender_name": row["sender_name"],
+                            "sender_username": row["sender_username"],
+                            "is_group_chat": row["is_group_chat"],
                         })
                         total_tokens += msg_tokens
                     else:
@@ -250,6 +290,47 @@ class Database:
                 "first_message": "N/A",
                 "last_message": "N/A",
             }
+
+    def cleanup_old_group_messages(self, chat_id: str, keep_recent: int = 100):
+        """
+        Remove old messages from group chats to prevent unlimited growth.
+        Keeps only the most recent N messages.
+
+        Args:
+            chat_id: Chat ID to clean up
+            keep_recent: Number of recent messages to keep (default 100)
+        """
+        try:
+            chat_id = str(chat_id)
+
+            with self._get_connection() as conn:
+                # Count total messages for this chat
+                cursor = conn.execute(
+                    "SELECT COUNT(*) as count FROM messages WHERE chat_id = ? AND is_group_chat = 1",
+                    (chat_id,),
+                )
+                total = cursor.fetchone()["count"]
+
+                if total > keep_recent:
+                    # Delete older messages, keeping only recent ones
+                    conn.execute(
+                        """
+                        DELETE FROM messages
+                        WHERE chat_id = ? AND is_group_chat = 1
+                        AND id NOT IN (
+                            SELECT id FROM messages
+                            WHERE chat_id = ? AND is_group_chat = 1
+                            ORDER BY timestamp DESC
+                            LIMIT ?
+                        )
+                        """,
+                        (chat_id, chat_id, keep_recent),
+                    )
+                    deleted = total - keep_recent
+                    logger.info(f"Cleaned up {deleted} old messages from group chat {chat_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to cleanup old messages: {e}", exc_info=True)
 
     def backup_database(self):
         """Create a backup of the database file."""

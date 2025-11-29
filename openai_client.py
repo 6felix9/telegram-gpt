@@ -17,6 +17,16 @@ Important: When asked who you are or what your name is, always identify yourself
 
 Response style: Be direct and concise. Do not include prose, conversational filler, or preambles. Just respond directly to the request."""
 
+    SYSTEM_PROMPT_GROUP = """You are Tze Foong's Assistant, an AI assistant operating in a Telegram group chat.
+
+Your purpose is to assist Tze Foong and provide helpful responses based on the conversation context.
+
+Important:
+- Messages are formatted as [Name]: message content
+- Pay attention to who is speaking and reference previous messages when relevant
+- When someone says "answer her question" or similar, look at the previous messages to understand the context
+- Be conversational and context-aware of the group discussion"""
+
     def __init__(self, api_key: str, model: str, timeout: int):
         """
         Initialize OpenAI client.
@@ -32,22 +42,41 @@ Response style: Be direct and concise. Do not include prose, conversational fill
 
         logger.info(f"Initialized OpenAI client with model {model}")
 
-    async def get_completion(self, messages: list[dict]) -> str:
+    async def get_completion(self, messages: list[dict], is_group: bool = False) -> str:
         """
         Get completion from OpenAI API.
 
         Args:
-            messages: List of message dicts with 'role' and 'content'
+            messages: List of message dicts with 'role', 'content', and optionally sender info
+            is_group: Whether this is a group chat (affects formatting and system prompt)
 
         Returns:
             Assistant's response text or error message
         """
         try:
-            logger.debug(f"Requesting completion with {len(messages)} messages")
+            logger.debug(f"Requesting completion with {len(messages)} messages (group={is_group})")
 
-            # Prepend system prompt
-            system_message = {"role": "system", "content": self.SYSTEM_PROMPT}
-            messages_with_system = [system_message] + messages
+            # Format messages for group chats with sender names
+            formatted_messages = []
+            for msg in messages:
+                formatted_content = msg["content"]
+
+                # For group chats, prepend sender name to user messages
+                if is_group and msg["role"] == "user":
+                    sender_name = msg.get("sender_name", "Unknown")
+                    # Only add name prefix if not already there
+                    if not formatted_content.startswith("["):
+                        formatted_content = f"[{sender_name}]: {formatted_content}"
+
+                formatted_messages.append({
+                    "role": msg["role"],
+                    "content": formatted_content
+                })
+
+            # Choose system prompt based on chat type
+            system_prompt = self.SYSTEM_PROMPT_GROUP if is_group else self.SYSTEM_PROMPT
+            system_message = {"role": "system", "content": system_prompt}
+            messages_with_system = [system_message] + formatted_messages
 
             # Run sync OpenAI call in thread pool
             response = await asyncio.to_thread(

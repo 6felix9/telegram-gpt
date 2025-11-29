@@ -1,6 +1,7 @@
 """Telegram message handlers and bot logic."""
 import logging
 import re
+import random
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -59,13 +60,48 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not message or not message.text:
         return  # Ignore non-text messages
 
+    user_id = message.from_user.id
+    chat_id = str(message.chat_id)
+    is_group = message.chat.type in ["group", "supergroup"]
+
+    # Get sender information
+    sender_name = message.from_user.first_name or "Unknown"
+    sender_username = message.from_user.username
+
     # 2. Check for activation keyword
     has_keyword, prompt = extract_keyword(message.text)
+
+    # In group chats, store ALL messages for context (even without keyword)
+    if is_group and not has_keyword:
+        # Store this message for context
+        try:
+            message_tokens = token_manager.count_message_tokens("user", message.text)
+            db.add_message(
+                chat_id=chat_id,
+                role="user",
+                content=message.text,
+                user_id=user_id,
+                message_id=message.message_id,
+                token_count=message_tokens,
+                sender_name=sender_name,
+                sender_username=sender_username,
+                is_group_chat=True,
+            )
+            logger.debug(f"Stored group message from {sender_name} for context")
+
+            # Periodically cleanup old messages (10% chance)
+            if random.random() < 0.1:
+                db.cleanup_old_group_messages(chat_id, config.MAX_GROUP_CONTEXT_MESSAGES)
+
+        except Exception as e:
+            logger.error(f"Failed to store group message: {e}")
+        return  # Don't process, just store for context
+
+    # If no keyword at all (private chat or group), ignore
     if not has_keyword:
-        return  # Silently ignore messages without keyword
+        return
 
     # 3. Authorization check
-    user_id = message.from_user.id
     if not is_authorized(user_id):
         await message.reply_text("Sorry, you have no access to me.")
         return
@@ -76,10 +112,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # 5. Process request
-    await process_request(message, prompt, user_id)
+    await process_request(message, prompt, user_id, sender_name, sender_username, is_group)
 
 
-async def process_request(message, prompt: str, user_id: int):
+async def process_request(message, prompt: str, user_id: int, sender_name: str, sender_username: str, is_group: bool):
     """Process GPT request with context management."""
 
     chat_id = str(message.chat_id)
@@ -97,6 +133,9 @@ async def process_request(message, prompt: str, user_id: int):
             user_id=user_id,
             message_id=message_id,
             token_count=user_tokens,
+            sender_name=sender_name,
+            sender_username=sender_username,
+            is_group_chat=is_group,
         )
 
         # 3. Get conversation history within token budget
@@ -112,7 +151,7 @@ async def process_request(message, prompt: str, user_id: int):
         )
 
         # 5. Get completion from OpenAI
-        response = await openai_client.get_completion(messages)
+        response = await openai_client.get_completion(messages, is_group)
 
         # 6. Count and store assistant's response
         assistant_tokens = token_manager.count_message_tokens("assistant", response)
@@ -121,6 +160,7 @@ async def process_request(message, prompt: str, user_id: int):
             role="assistant",
             content=response,
             token_count=assistant_tokens,
+            is_group_chat=is_group,
         )
 
         # 7. Send response to user
