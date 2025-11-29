@@ -29,6 +29,9 @@ class Config:
     # Database
     DATABASE_PATH = os.getenv("DATABASE_PATH", "data/messages.db")
 
+    # Group chat settings
+    MAX_GROUP_CONTEXT_MESSAGES = int(os.getenv("MAX_GROUP_CONTEXT_MESSAGES", "100"))
+
     # Logging
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
