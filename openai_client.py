@@ -9,6 +9,8 @@ logger = logging.getLogger(__name__)
 class OpenAIClient:
     """Wrapper for OpenAI API with comprehensive error handling."""
 
+    SYSTEM_PROMPT = "You are Tze Foong's Assistant, an AI assistant operating in Telegram. Your purpose is to assist Tze Foong with their requests."
+
     def __init__(self, api_key: str, model: str, timeout: int):
         """
         Initialize OpenAI client.
@@ -37,11 +39,15 @@ class OpenAIClient:
         try:
             logger.debug(f"Requesting completion with {len(messages)} messages")
 
+            # Prepend system prompt
+            system_message = {"role": "system", "content": self.SYSTEM_PROMPT}
+            messages_with_system = [system_message] + messages
+
             # Run sync OpenAI call in thread pool
             response = await asyncio.to_thread(
                 self.client.chat.completions.create,
                 model=self.model,
-                messages=messages,
+                messages=messages_with_system,
                 temperature=0.7,  # Balanced creativity
             )
 
