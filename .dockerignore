@@ -1,0 +1,50 @@
+# Environment and secrets
+.env
+
+# Database files
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+README.md
+*.md
+docs/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker files (don't need in image)
+docker-compose.yml
+.dockerignore
+
+# Logs
+*.log
+
+# Plan files
+.claude/
