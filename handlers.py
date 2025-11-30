@@ -2,6 +2,8 @@
 import logging
 import re
 import random
+import time
+import asyncio
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -116,7 +118,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def process_request(message, prompt: str, user_id: int, sender_name: str, sender_username: str, is_group: bool):
-    """Process GPT request with context management."""
+    """Process GPT request with context management and streaming."""
 
     chat_id = str(message.chat_id)
     message_id = message.message_id
@@ -150,21 +152,47 @@ async def process_request(message, prompt: str, user_id: int, sender_name: str, 
             f"{len(messages)} messages, {user_tokens} tokens"
         )
 
-        # 5. Get completion from OpenAI
-        response = await openai_client.get_completion(messages, is_group)
+        # 5. Send placeholder message
+        sent_message = await message.reply_text("...")
+        last_update_time = time.time()
+        full_response = ""
 
-        # 6. Count and store assistant's response
-        assistant_tokens = token_manager.count_message_tokens("assistant", response)
+        # 6. Get streaming completion from OpenAI
+        stream = await openai_client.get_completion(messages, is_group, stream=True)
+
+        async for chunk in stream:
+            content = chunk.choices[0].delta.content
+            if content:
+                full_response += content
+
+                # Update message periodically to avoid hitting rate limits
+                current_time = time.time()
+                if current_time - last_update_time > 1.5:
+                    try:
+                        await sent_message.edit_text(full_response + " ▌")
+                        last_update_time = current_time
+                    except Exception:
+                        # Ignore transient edit errors (e.g., message not modified)
+                        pass
+
+        # 7. Final message update (remove cursor)
+        try:
+            if full_response:
+                await sent_message.edit_text(full_response)
+            else:
+                await sent_message.edit_text("Received empty response.")
+        except Exception as e:
+            logger.error(f"Error in final update: {e}")
+
+        # 8. Count and store assistant's response
+        assistant_tokens = token_manager.count_message_tokens("assistant", full_response)
         db.add_message(
             chat_id=chat_id,
             role="assistant",
-            content=response,
+            content=full_response,
             token_count=assistant_tokens,
             is_group_chat=is_group,
         )
-
-        # 7. Send response to user
-        await message.reply_text(response)
 
         logger.info(
             f"Response sent for chat {chat_id}: {assistant_tokens} tokens"

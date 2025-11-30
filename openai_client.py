@@ -36,25 +36,26 @@ Important:
             model: Model name (e.g., "gpt-4o-mini")
             timeout: Request timeout in seconds
         """
-        self.client = openai.OpenAI(api_key=api_key, timeout=timeout)
+        self.client = openai.AsyncOpenAI(api_key=api_key, timeout=timeout)
         self.model = model
         self.timeout = timeout
 
         logger.info(f"Initialized OpenAI client with model {model}")
 
-    async def get_completion(self, messages: list[dict], is_group: bool = False) -> str:
+    async def get_completion(self, messages: list[dict], is_group: bool = False, stream: bool = False):
         """
         Get completion from OpenAI API.
 
         Args:
             messages: List of message dicts with 'role', 'content', and optionally sender info
             is_group: Whether this is a group chat (affects formatting and system prompt)
+            stream: Whether to stream the response
 
         Returns:
-            Assistant's response text or error message
+            Assistant's response text (if stream=False) or AsyncGenerator (if stream=True)
         """
         try:
-            logger.debug(f"Requesting completion with {len(messages)} messages (group={is_group})")
+            logger.debug(f"Requesting completion with {len(messages)} messages (group={is_group}, stream={stream})")
 
             # Format messages for group chats with sender names
             formatted_messages = []
@@ -78,13 +79,16 @@ Important:
             system_message = {"role": "system", "content": system_prompt}
             messages_with_system = [system_message] + formatted_messages
 
-            # Run sync OpenAI call in thread pool
-            response = await asyncio.to_thread(
-                self.client.chat.completions.create,
+            # Call OpenAI API
+            response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=messages_with_system,
-                temperature=0.7,  # Balanced creativity
+                temperature=0.7,
+                stream=stream
             )
+
+            if stream:
+                return response
 
             content = response.choices[0].message.content
 
@@ -149,7 +153,7 @@ Important:
                 "Please try again or contact support."
             )
 
-    def test_connection(self) -> bool:
+    async def test_connection(self) -> bool:
         """
         Test the OpenAI API connection.
 
@@ -158,7 +162,7 @@ Important:
         """
         try:
             # Simple test with minimal tokens
-            response = self.client.chat.completions.create(
+            response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": "Hi"}],
                 max_tokens=5,
