@@ -32,6 +32,14 @@ class Config:
     # Group chat settings
     MAX_GROUP_CONTEXT_MESSAGES = int(os.getenv("MAX_GROUP_CONTEXT_MESSAGES", "100"))
 
+    # Feature Flags
+    ENABLE_WEB_SEARCH = os.getenv("ENABLE_WEB_SEARCH", "true").lower() == "true"
+
+    # Web Search Configuration
+    MAX_WEB_SOURCES = int(os.getenv("MAX_WEB_SOURCES", "1"))  # Max number of source links to show
+    SHOW_WEB_SOURCES = os.getenv("SHOW_WEB_SOURCES", "true").lower() == "true"  # Whether to show sources at all
+    WEB_SUMMARY_SENTENCES = int(os.getenv("WEB_SUMMARY_SENTENCES", "3"))  # Target number of sentences in summary
+
     # Logging
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 

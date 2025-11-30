@@ -2,6 +2,8 @@
 import logging
 import asyncio
 import openai
+from config import config
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,12 @@ Important:
 - When someone says "answer her question" or similar, look at the previous messages to understand the context
 - Be conversational and context-aware of the group discussion"""
 
+    WEB_SEARCH_INSTRUCTION = """When using web search:
+- Provide a concise, paraphrased summary in 2-3 sentences
+- Do NOT quote verbatim from sources
+- Focus on directly answering the question
+- Be brief and to the point"""
+
     def __init__(self, api_key: str, model: str, timeout: int):
         """
         Initialize OpenAI client.
@@ -42,19 +50,20 @@ Important:
 
         logger.info(f"Initialized OpenAI client with model {model}")
 
-    async def get_completion(self, messages: list[dict], is_group: bool = False) -> str:
+    async def get_completion(self, messages: list[dict], is_group: bool = False, tools: list[dict] | None = None) -> str:
         """
         Get completion from OpenAI API.
 
         Args:
             messages: List of message dicts with 'role', 'content', and optionally sender info
             is_group: Whether this is a group chat (affects formatting and system prompt)
+            tools: Optional list of tools to enable (e.g. [{"type": "web_search"}])
 
         Returns:
             Assistant's response text or error message
         """
         try:
-            logger.debug(f"Requesting completion with {len(messages)} messages (group={is_group})")
+            logger.debug(f"Requesting completion with {len(messages)} messages (group={is_group}, tools={tools})")
 
             # Format messages for group chats with sender names
             formatted_messages = []
@@ -75,25 +84,91 @@ Important:
 
             # Choose system prompt based on chat type
             system_prompt = self.SYSTEM_PROMPT_GROUP if is_group else self.SYSTEM_PROMPT
+
+            # Check for web_search tool
+            use_web_search = False
+            if tools:
+                for tool in tools:
+                    if tool.get("type") == "web_search":
+                        use_web_search = True
+                        break
+
+            # Append web search instruction if using web search
+            if use_web_search:
+                system_prompt = system_prompt + "\n\n" + self.WEB_SEARCH_INSTRUCTION
+
             system_message = {"role": "system", "content": system_prompt}
             messages_with_system = [system_message] + formatted_messages
 
-            # Run sync OpenAI call in thread pool
-            response = await asyncio.to_thread(
-                self.client.chat.completions.create,
-                model=self.model,
-                messages=messages_with_system,
-                temperature=0.7,  # Balanced creativity
-            )
+            if use_web_search:
+                # Use Responses API
+                response = await asyncio.to_thread(
+                    self.client.responses.create,
+                    model=self.model,
+                    input=messages_with_system,
+                    tools=tools
+                )
+                
+                # Extract text and citations from the first output message
+                # Note: output is a list of ResponseOutputMessage or WebSearchCall
+                # We look for the message type
+                final_text = ""
+                citations = []
+                
+                if hasattr(response, 'output'):
+                    for item in response.output:
+                        if item.type == 'message':
+                            for content_item in item.content:
+                                if content_item.type == 'output_text':
+                                    final_text += content_item.text
+                                    if hasattr(content_item, 'annotations'):
+                                        citations.extend(content_item.annotations)
+                
+                # Format citations if present and configured to show
+                if citations and config.SHOW_WEB_SOURCES:
+                    final_text += "\n\nSources:\n"
+                    seen_urls = set()
+                    citation_count = 1
+                    for note in citations:
+                        # Stop if we've reached the max number of sources
+                        if citation_count > config.MAX_WEB_SOURCES:
+                            break
 
-            content = response.choices[0].message.content
+                        # Check for url_citation structure
+                        # Depending on API version, it might be note.url_citation or just note dict
+                        # Adjust based on typical OpenAI object structure (pydantic models)
+                        url = getattr(note, 'url_citation', None)
+                        if url:
+                            url_str = getattr(url, 'url', None)
+                            title_str = getattr(url, 'title', url_str)
+                            if url_str and url_str not in seen_urls:
+                                final_text += f"{citation_count}. [{title_str}]({url_str})\n"
+                                seen_urls.add(url_str)
+                                citation_count += 1
 
-            logger.debug(
-                f"Received completion: {len(content)} chars, "
-                f"usage: {response.usage.total_tokens} tokens"
-            )
+                if not final_text:
+                    final_text = "I found some information but couldn't extract the text."
 
-            return content
+                logger.debug(f"Received web search response: {len(final_text)} chars")
+                return final_text
+
+            else:
+                # Use Standard Chat Completion API
+                response = await asyncio.to_thread(
+                    self.client.chat.completions.create,
+                    model=self.model,
+                    messages=messages_with_system,
+                    temperature=0.7,
+                )
+
+                content = response.choices[0].message.content
+
+                logger.debug(
+                    f"Received completion: {len(content)} chars, "
+                    f"usage: {response.usage.total_tokens} tokens"
+                )
+
+                return content
 
         except openai.AuthenticationError as e:
             logger.error(f"Authentication failed: {e}")
