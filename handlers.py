@@ -319,6 +319,12 @@ async def revoke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Parse user_id from argument
         target_user_id = int(context.args[0])
 
+        # Validate that the user ID is positive
+        if target_user_id <= 0:
+            await update.message.reply_text(
+                "❌ Invalid user ID. User IDs must be positive integers."
+            )
+            return
         # Check if trying to revoke access from self
         if str(target_user_id) == config.AUTHORIZED_USER_ID:
             await update.message.reply_text(
