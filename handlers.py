@@ -265,6 +265,11 @@ async def grant_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         # Parse user_id from argument
         target_user_id = int(context.args[0])
+        if target_user_id <= 0:
+            await update.message.reply_text(
+                "❌ Invalid user ID. User IDs must be positive integers."
+            )
+            return
 
         # Check if trying to grant access to self
         if str(target_user_id) == config.AUTHORIZED_USER_ID:
