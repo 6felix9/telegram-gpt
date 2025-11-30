@@ -25,6 +25,16 @@ def init_handlers(cfg, database, token_mgr, openai_cl):
 
 def is_authorized(user_id: int) -> bool:
     """Check if user is authorized to use the bot."""
+    # Check if user is the main authorized user
+    if str(user_id) == config.AUTHORIZED_USER_ID:
+        return True
+
+    # Check if user has been granted access
+    return db.is_user_granted(user_id)
+
+
+def is_main_authorized_user(user_id: int) -> bool:
+    """Check if user is the main authorized user (for admin commands)."""
     return str(user_id) == config.AUTHORIZED_USER_ID
 
 
@@ -233,6 +243,111 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error getting stats: {e}", exc_info=True)
         await update.message.reply_text(
             "❌ Failed to retrieve statistics. Please try again."
+        )
+
+
+async def grant_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Grant access to a user (main authorized user only)."""
+
+    user_id = update.message.from_user.id
+    if not is_main_authorized_user(user_id):
+        await update.message.reply_text("Sorry, only the main authorized user can grant access.")
+        return
+
+    # Check if user_id argument is provided
+    if not context.args or len(context.args) == 0:
+        await update.message.reply_text(
+            "❌ Usage: /grant <user_id>\n"
+            "Example: /grant 123456789"
+        )
+        return
+
+    try:
+        # Parse user_id from argument
+        target_user_id = int(context.args[0])
+
+        # Check if trying to grant access to self
+        if str(target_user_id) == config.AUTHORIZED_USER_ID:
+            await update.message.reply_text(
+                "ℹ️ You are already the main authorized user."
+            )
+            return
+
+        # Grant access
+        was_granted = db.grant_access(target_user_id)
+
+        if was_granted:
+            await update.message.reply_text(
+                f"✅ Access granted to user {target_user_id}.\n"
+                f"They can now use the bot with 'chatgpt' keyword."
+            )
+            logger.info(f"User {user_id} granted access to {target_user_id}")
+        else:
+            await update.message.reply_text(
+                f"ℹ️ User {target_user_id} already has access."
+            )
+
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Invalid user ID. Please provide a numeric user ID.\n"
+            "Example: /grant 123456789"
+        )
+    except Exception as e:
+        logger.error(f"Error granting access: {e}", exc_info=True)
+        await update.message.reply_text(
+            "❌ Failed to grant access. Please try again."
+        )
+
+
+async def revoke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Revoke access from a user (main authorized user only)."""
+
+    user_id = update.message.from_user.id
+    if not is_main_authorized_user(user_id):
+        await update.message.reply_text("Sorry, only the main authorized user can revoke access.")
+        return
+
+    # Check if user_id argument is provided
+    if not context.args or len(context.args) == 0:
+        await update.message.reply_text(
+            "❌ Usage: /revoke <user_id>\n"
+            "Example: /revoke 123456789"
+        )
+        return
+
+    try:
+        # Parse user_id from argument
+        target_user_id = int(context.args[0])
+
+        # Check if trying to revoke access from self
+        if str(target_user_id) == config.AUTHORIZED_USER_ID:
+            await update.message.reply_text(
+                "❌ Cannot revoke access from the main authorized user."
+            )
+            return
+
+        # Revoke access
+        was_revoked = db.revoke_access(target_user_id)
+
+        if was_revoked:
+            await update.message.reply_text(
+                f"✅ Access revoked from user {target_user_id}."
+            )
+            logger.info(f"User {user_id} revoked access from {target_user_id}")
+        else:
+            await update.message.reply_text(
+                f"ℹ️ User {target_user_id} didn't have access."
+            )
+
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Invalid user ID. Please provide a numeric user ID.\n"
+            "Example: /revoke 123456789"
+        )
+    except Exception as e:
+        logger.error(f"Error revoking access: {e}", exc_info=True)
+        await update.message.reply_text(
+            "❌ Failed to revoke access. Please try again."
         )
 
 
