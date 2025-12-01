@@ -70,6 +70,14 @@ class Database:
                     ON messages(chat_id, timestamp DESC)
                 """)
 
+                # Create granted_users table
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS granted_users (
+                        user_id TEXT PRIMARY KEY,
+                        granted_at TEXT NOT NULL
+                    )
+                """)
+
                 # Migrate existing database if needed
                 self._migrate_schema(conn)
 
@@ -342,3 +350,117 @@ class Database:
         except Exception as e:
             logger.error(f"Failed to backup database: {e}", exc_info=True)
             return None
+
+    def grant_access(self, user_id: int) -> bool:
+        """
+        Grant access to a user.
+
+        Args:
+            user_id: Telegram user ID to grant access to
+
+        Returns:
+            True if access was granted, False if user already had access
+        """
+        try:
+            user_id_str = str(user_id)
+            timestamp = datetime.utcnow().isoformat()
+
+            with self._get_connection() as conn:
+                cursor = conn.execute(
+                    "SELECT user_id FROM granted_users WHERE user_id = ?",
+                    (user_id_str,),
+                )
+                existing = cursor.fetchone()
+
+                if existing:
+                    logger.info(f"User {user_id} already has access")
+                    return False
+
+                conn.execute(
+                    "INSERT INTO granted_users (user_id, granted_at) VALUES (?, ?)",
+                    (user_id_str, timestamp),
+                )
+
+            logger.info(f"Granted access to user {user_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to grant access: {e}", exc_info=True)
+            raise
+
+    def revoke_access(self, user_id: int) -> bool:
+        """
+        Revoke access from a user.
+
+        Args:
+            user_id: Telegram user ID to revoke access from
+
+        Returns:
+            True if access was revoked, False if user didn't have access
+        """
+        try:
+            user_id_str = str(user_id)
+
+            with self._get_connection() as conn:
+                cursor = conn.execute(
+                    "DELETE FROM granted_users WHERE user_id = ?",
+                    (user_id_str,),
+                )
+                deleted_count = cursor.rowcount
+
+            if deleted_count > 0:
+                logger.info(f"Revoked access from user {user_id}")
+                return True
+            else:
+                logger.info(f"User {user_id} didn't have access")
+                return False
+
+        except Exception as e:
+            logger.error(f"Failed to revoke access: {e}", exc_info=True)
+            raise
+
+    def is_user_granted(self, user_id: int) -> bool:
+        """
+        Check if a user has been granted access.
+
+        Args:
+            user_id: Telegram user ID to check
+
+        Returns:
+            True if user has been granted access, False otherwise
+        """
+        try:
+            user_id_str = str(user_id)
+
+            with self._get_connection() as conn:
+                cursor = conn.execute(
+                    "SELECT user_id FROM granted_users WHERE user_id = ?",
+                    (user_id_str,),
+                )
+                result = cursor.fetchone()
+
+            return result is not None
+
+        except Exception as e:
+            logger.error(f"Failed to check granted access: {e}", exc_info=True)
+            return False
+
+    def get_granted_users(self) -> list:
+        """
+        Get list of all users with granted access.
+
+        Returns:
+            List of tuples (user_id, granted_at)
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.execute(
+                    "SELECT user_id, granted_at FROM granted_users ORDER BY granted_at DESC"
+                )
+                users = [(row["user_id"], row["granted_at"]) for row in cursor]
+
+            return users
+
+        except Exception as e:
+            logger.error(f"Failed to get granted users: {e}", exc_info=True)
+            return []
