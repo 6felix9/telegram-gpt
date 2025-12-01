@@ -62,6 +62,32 @@ def extract_keyword(text: str) -> tuple[bool, str]:
     return True, prompt
 
 
+def should_use_web_search(text: str) -> bool:
+    """
+    Detect if the user is requesting web/online information.
+
+    Args:
+        text: Message text
+
+    Returns:
+        True if web search should be enabled
+    """
+    if not config.ENABLE_WEB_SEARCH:
+        return False
+
+    text_lower = text.lower()
+
+    # Keywords that indicate need for web search
+    web_keywords = [
+        "search", "google", "web", "online", "internet",
+        "latest", "current", "recent", "news", "today",
+        "find", "look up", "lookup", "check online",
+        "what's new", "what is new", "browse"
+    ]
+
+    return any(keyword in text_lower for keyword in web_keywords)
+
+
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Main message handler for all text messages."""
 
@@ -160,10 +186,15 @@ async def process_request(message, prompt: str, user_id: int, sender_name: str, 
             f"{len(messages)} messages, {user_tokens} tokens"
         )
 
-        # 5. Get completion from OpenAI
-        response = await openai_client.get_completion(messages, is_group)
+        # 5. Configure tools
+        tools = []
+        if should_use_web_search(prompt):
+            tools.append({"type": "web_search"})
 
-        # 6. Count and store assistant's response
+        # 6. Get completion from OpenAI
+        response = await openai_client.get_completion(messages, is_group, tools=tools if tools else None)
+
+        # 7. Count and store assistant's response
         assistant_tokens = token_manager.count_message_tokens("assistant", response)
         db.add_message(
             chat_id=chat_id,
@@ -173,7 +204,7 @@ async def process_request(message, prompt: str, user_id: int, sender_name: str, 
             is_group_chat=is_group,
         )
 
-        # 7. Send response to user
+        # 8. Send response to user
         await message.reply_text(response)
 
         logger.info(
