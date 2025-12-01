@@ -101,6 +101,8 @@ def main():
         # Command handlers
         application.add_handler(CommandHandler("clear", handlers.clear_command))
         application.add_handler(CommandHandler("stats", handlers.stats_command))
+        application.add_handler(CommandHandler("grant", handlers.grant_command))
+        application.add_handler(CommandHandler("revoke", handlers.revoke_command))
 
         # Error handler
         application.add_error_handler(handlers.error_handler)
