@@ -4,23 +4,22 @@ import re
 import random
 from telegram import Update
 from telegram.ext import ContextTypes
+from utils.context_trimmer import trim_messages_to_fit
 
 logger = logging.getLogger(__name__)
 
 # Global instances (will be set by bot.py)
 config = None
 db = None
-token_manager = None
-openai_client = None
+llm_provider = None
 
 
-def init_handlers(cfg, database, token_mgr, openai_cl):
+def init_handlers(cfg, database, provider):
     """Initialize handler dependencies."""
-    global config, db, token_manager, openai_client
+    global config, db, llm_provider
     config = cfg
     db = database
-    token_manager = token_mgr
-    openai_client = openai_cl
+    llm_provider = provider
 
 
 def is_authorized(user_id: int) -> bool:
@@ -85,7 +84,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_group and not has_keyword:
         # Store this message for context
         try:
-            message_tokens = token_manager.count_message_tokens("user", message.text)
+            message_tokens = llm_provider.count_tokens([{"role": "user", "content": message.text}])
             db.add_message(
                 chat_id=chat_id,
                 role="user",
@@ -133,7 +132,7 @@ async def process_request(message, prompt: str, user_id: int, sender_name: str, 
 
     try:
         # 1. Count tokens in user's message
-        user_tokens = token_manager.count_message_tokens("user", prompt)
+        user_tokens = llm_provider.count_tokens([{"role": "user", "content": prompt}])
 
         # 2. Store user message
         db.add_message(
@@ -149,22 +148,32 @@ async def process_request(message, prompt: str, user_id: int, sender_name: str, 
         )
 
         # 3. Get conversation history within token budget
-        max_tokens = config.MAX_CONTEXT_TOKENS
+        # Use the minimum of config limit and provider's model limit
+        provider_limit = llm_provider.get_max_context_tokens()
+        max_tokens = min(config.MAX_CONTEXT_TOKENS, provider_limit)
+
+        # Log when provider limit is more restrictive
+        if provider_limit < config.MAX_CONTEXT_TOKENS:
+            logger.debug(
+                f"Using provider context limit {provider_limit} "
+                f"(config: {config.MAX_CONTEXT_TOKENS})"
+            )
+
         messages = db.get_messages_by_tokens(chat_id, max_tokens)
 
         # 4. Final trim to ensure we fit (accounting for response)
-        messages = token_manager.trim_to_fit(messages, reserve_tokens=1000)
+        messages = trim_messages_to_fit(messages, max_tokens, llm_provider, reserve_tokens=1000)
 
         logger.info(
             f"Processing request for chat {chat_id}: "
             f"{len(messages)} messages, {user_tokens} tokens"
         )
 
-        # 5. Get completion from OpenAI
-        response = await openai_client.get_completion(messages, is_group)
+        # 5. Get completion from LLM provider
+        response = await llm_provider.get_completion(messages, is_group=is_group)
 
         # 6. Count and store assistant's response
-        assistant_tokens = token_manager.count_message_tokens("assistant", response)
+        assistant_tokens = llm_provider.count_tokens([{"role": "assistant", "content": response}])
         db.add_message(
             chat_id=chat_id,
             role="assistant",

@@ -8,8 +8,7 @@ from telegram.ext import Application, MessageHandler, CommandHandler, filters
 
 from config import config
 from database import Database
-from token_manager import TokenManager
-from openai_client import OpenAIClient
+import llm_factory
 import handlers
 
 # Configure logging
@@ -21,8 +20,7 @@ logger = logging.getLogger(__name__)
 
 # Global instances
 db = None
-token_manager = None
-openai_client = None
+llm_provider = None
 application = None
 
 
@@ -30,7 +28,8 @@ async def post_init(app: Application):
     """Called after bot starts."""
     logger.info("=" * 50)
     logger.info("Bot started successfully!")
-    logger.info(f"Model: {config.OPENAI_MODEL}")
+    logger.info(f"Provider: {config.PROVIDER}")
+    logger.info(f"Model: {config.MODEL}")
     logger.info(f"Max context tokens: {config.MAX_CONTEXT_TOKENS}")
     logger.info(f"Authorized user: {config.AUTHORIZED_USER_ID}")
     logger.info(f"Database: {config.DATABASE_PATH}")
@@ -51,7 +50,7 @@ def signal_handler(signum, frame):
 def main():
     """Initialize and run the bot."""
 
-    global db, token_manager, openai_client, application
+    global db, llm_provider, application
 
     try:
         # 1. Validate configuration
@@ -62,22 +61,12 @@ def main():
         logger.info("Initializing database...")
         db = Database(config.DATABASE_PATH)
 
-        # 3. Initialize token manager
-        logger.info("Initializing token manager...")
-        model_limit = config.get_model_context_limit(config.OPENAI_MODEL)
-        max_tokens = min(config.MAX_CONTEXT_TOKENS, model_limit - 2000)
-        token_manager = TokenManager(config.OPENAI_MODEL, max_tokens)
+        # 3. Initialize LLM provider
+        logger.info("Initializing LLM provider...")
+        llm_provider = llm_factory.create_provider(config)
 
-        # 4. Initialize OpenAI client
-        logger.info("Initializing OpenAI client...")
-        openai_client = OpenAIClient(
-            api_key=config.OPENAI_API_KEY,
-            model=config.OPENAI_MODEL,
-            timeout=config.OPENAI_TIMEOUT,
-        )
-
-        # 5. Initialize handlers with dependencies
-        handlers.init_handlers(config, db, token_manager, openai_client)
+        # 4. Initialize handlers with dependencies
+        handlers.init_handlers(config, db, llm_provider)
 
         # 6. Build Telegram application
         logger.info("Building Telegram application...")

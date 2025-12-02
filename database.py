@@ -464,3 +464,124 @@ class Database:
         except Exception as e:
             logger.error(f"Failed to get granted users: {e}", exc_info=True)
             return []
+
+    def cleanup_unauthorized_history(self, authorized_user_id: str) -> dict:
+        """
+        Remove conversation history for unauthorized users.
+
+        This removes:
+        1. All messages in private chats with unauthorized users
+        2. Individual messages from unauthorized users in group chats
+
+        Args:
+            authorized_user_id: The main authorized user ID from config
+
+        Returns:
+            Dictionary with cleanup statistics:
+            - private_chats_deleted: Number of private chats removed
+            - group_messages_deleted: Number of group chat messages removed
+            - total_messages_deleted: Total messages deleted
+            - unauthorized_user_ids: List of unauthorized user IDs that had data
+        """
+        try:
+            with self._get_connection() as conn:
+                # Step 1: Get all authorized user IDs
+                authorized_ids = {authorized_user_id}
+
+                # Add granted users
+                cursor = conn.execute("SELECT user_id FROM granted_users")
+                for row in cursor:
+                    authorized_ids.add(row["user_id"])
+
+                logger.info(f"Authorized user IDs: {authorized_ids}")
+
+                # Step 2: Find unauthorized users with message history
+                placeholders = ",".join("?" * len(authorized_ids))
+                cursor = conn.execute(
+                    f"""
+                    SELECT DISTINCT user_id
+                    FROM messages
+                    WHERE user_id IS NOT NULL
+                    AND user_id NOT IN ({placeholders})
+                    """,
+                    tuple(authorized_ids),
+                )
+                unauthorized_user_ids = [row["user_id"] for row in cursor]
+
+                if not unauthorized_user_ids:
+                    logger.info("No unauthorized user history found")
+                    return {
+                        "private_chats_deleted": 0,
+                        "group_messages_deleted": 0,
+                        "total_messages_deleted": 0,
+                        "unauthorized_user_ids": [],
+                    }
+
+                logger.info(f"Found {len(unauthorized_user_ids)} unauthorized users with history")
+
+                # Step 3: Delete private chats with unauthorized users
+                # Private chats have chat_id == user_id
+                # We identify them by checking if chat_id matches an unauthorized user_id
+                unauth_placeholders = ",".join("?" * len(unauthorized_user_ids))
+
+                # Find private chats (chat_id matches unauthorized user_id)
+                cursor = conn.execute(
+                    f"""
+                    SELECT DISTINCT chat_id, COUNT(*) as msg_count
+                    FROM messages
+                    WHERE chat_id IN ({unauth_placeholders})
+                    GROUP BY chat_id
+                    """,
+                    tuple(unauthorized_user_ids),
+                )
+                private_chats = list(cursor)
+
+                # Delete messages from private chats with unauthorized users
+                cursor = conn.execute(
+                    f"""
+                    DELETE FROM messages
+                    WHERE chat_id IN ({unauth_placeholders})
+                    """,
+                    tuple(unauthorized_user_ids),
+                )
+                private_chat_messages_deleted = cursor.rowcount
+                private_chats_deleted = len(private_chats)
+
+                logger.info(
+                    f"Deleted {private_chats_deleted} private chats "
+                    f"({private_chat_messages_deleted} messages)"
+                )
+
+                # Step 4: Delete individual messages from unauthorized users in group chats
+                # These are messages where user_id is unauthorized but chat_id != user_id
+                cursor = conn.execute(
+                    f"""
+                    DELETE FROM messages
+                    WHERE user_id IS NOT NULL
+                    AND user_id IN ({unauth_placeholders})
+                    AND chat_id NOT IN ({unauth_placeholders})
+                    """,
+                    tuple(unauthorized_user_ids) + tuple(unauthorized_user_ids),
+                )
+                group_messages_deleted = cursor.rowcount
+
+                logger.info(
+                    f"Deleted {group_messages_deleted} messages from "
+                    f"unauthorized users in group chats"
+                )
+
+                total_deleted = private_chat_messages_deleted + group_messages_deleted
+
+                result = {
+                    "private_chats_deleted": private_chats_deleted,
+                    "group_messages_deleted": group_messages_deleted,
+                    "total_messages_deleted": total_deleted,
+                    "unauthorized_user_ids": unauthorized_user_ids,
+                }
+
+                logger.info(f"Cleanup complete: {result}")
+                return result
+
+        except Exception as e:
+            logger.error(f"Failed to cleanup unauthorized history: {e}", exc_info=True)
+            raise

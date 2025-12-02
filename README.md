@@ -1,23 +1,26 @@
 # Telegram GPT Bot
 
-An AI-powered Telegram bot using OpenAI's GPT models with persistent conversation history and intelligent context management.
+An AI-powered Telegram bot with support for multiple LLM providers (OpenAI, Gemini, Groq), featuring persistent conversation history and intelligent context management.
 
 ## Features
 
+- **Multi-Provider Support**: Choose between OpenAI, Google Gemini, or Groq
 - **Keyword Activation**: Bot responds only when "chatgpt" is mentioned
 - **Persistent Conversation History**: SQLite-backed storage for reliable conversation tracking
 - **Token-Aware Context Management**: Intelligent trimming to stay within model limits
+- **Benchmark Harness**: CLI tool for testing provider performance
 - **Docker-Ready**: Production deployment with Docker and docker-compose
-- **Private Authorization**: Single-user access control
+- **Private Authorization**: Single-user access control with grant/revoke commands
 - **Error Resilient**: Comprehensive error handling for all edge cases
 
 ## Architecture
 
 - **Python 3.12+** with modern async/await patterns
 - **SQLite** with WAL mode for concurrent access
-- **tiktoken** for accurate token counting
+- **tiktoken** for accurate token counting (OpenAI/Groq)
 - **python-telegram-bot 21.7** for Telegram API
-- **OpenAI API** for GPT completions
+- **Pluggable LLM Providers**: OpenAI, Google Gemini, Groq
+- **Provider Interface**: Extensible architecture for adding new providers
 
 ## Quick Start
 
@@ -25,7 +28,10 @@ An AI-powered Telegram bot using OpenAI's GPT models with persistent conversatio
 
 - Python 3.12 or higher
 - Telegram account
-- OpenAI API key
+- API key for at least one provider:
+  - OpenAI API key, or
+  - Google Gemini API key, or
+  - Groq API key
 
 ### Local Development
 
@@ -43,7 +49,11 @@ An AI-powered Telegram bot using OpenAI's GPT models with persistent conversatio
 
 4. **Edit `.env` with your credentials**
    - `TELEGRAM_BOT_TOKEN`: Get from [@BotFather](https://t.me/BotFather)
-   - `OPENAI_API_KEY`: Get from [OpenAI Platform](https://platform.openai.com/api-keys)
+   - `PROVIDER`: Choose `openai`, `gemini`, or `groq`
+   - API Key (choose one based on provider):
+     - `OPENAI_API_KEY`: Get from [OpenAI Platform](https://platform.openai.com/api-keys)
+     - `GEMINI_API_KEY`: Get from [Google AI Studio](https://aistudio.google.com/app/apikey)
+     - `GROQ_API_KEY`: Get from [Groq Console](https://console.groq.com/keys)
    - `AUTHORIZED_USER_ID`: Get from [@userinfobot](https://t.me/userinfobot)
 
 5. **Run the bot**
@@ -89,12 +99,27 @@ An AI-powered Telegram bot using OpenAI's GPT models with persistent conversatio
 2. Send `/start` command
 3. Copy your user ID (numeric value)
 
-### OpenAI API Key
+### LLM Provider API Keys
 
+Choose at least one provider:
+
+**OpenAI**
 1. Visit [OpenAI Platform](https://platform.openai.com/api-keys)
 2. Sign in or create an account
 3. Create a new API key
 4. Copy the key immediately (you won't see it again)
+
+**Google Gemini**
+1. Visit [Google AI Studio](https://aistudio.google.com/app/apikey)
+2. Sign in with your Google account
+3. Create a new API key
+4. Copy the key
+
+**Groq**
+1. Visit [Groq Console](https://console.groq.com/keys)
+2. Sign in or create an account
+3. Create a new API key
+4. Copy the key
 
 ## Usage
 
@@ -114,6 +139,8 @@ The keyword is case-insensitive and will be removed from your prompt.
 
 - `/clear` - Clear conversation history for current chat
 - `/stats` - Show chat statistics (message count, tokens used, etc.)
+- `/grant <user_id>` - Grant access to another user (main authorized user only)
+- `/revoke <user_id>` - Revoke access from a user (main authorized user only)
 
 ### Authorization
 
@@ -133,49 +160,130 @@ All configuration is done via environment variables in `.env`:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Required | Your bot token from BotFather |
-| `OPENAI_API_KEY` | Required | Your OpenAI API key |
+| `PROVIDER` | `openai` | LLM provider: `openai`, `gemini`, or `groq` |
+| `OPENAI_API_KEY` | - | OpenAI API key (required if PROVIDER=openai) |
+| `GEMINI_API_KEY` | - | Gemini API key (required if PROVIDER=gemini) |
+| `GROQ_API_KEY` | - | Groq API key (required if PROVIDER=groq) |
 | `AUTHORIZED_USER_ID` | Required | Telegram user ID allowed to use bot |
-| `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI model to use |
+| `MODEL` | Provider default | Model name (see Provider Models below) |
 | `MAX_CONTEXT_TOKENS` | `16000` | Maximum tokens in conversation context |
-| `OPENAI_TIMEOUT` | `60` | API request timeout in seconds |
+| `TIMEOUT` | `60` | API request timeout in seconds |
 | `DATABASE_PATH` | `data/messages.db` | SQLite database file path |
 | `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 
-### Model Options
+If `MODEL` is blank, the provider’s default model is applied automatically (see Provider Models below).
 
-Supported models:
-- `gpt-4o-mini` (default, recommended for cost/performance)
-- `gpt-4o` (most capable)
-- `gpt-3.5-turbo` (faster, cheaper)
-- `gpt-4-turbo` (previous generation flagship)
+## LLM Providers
+
+### OpenAI
+
+**Default Model**: `gpt-4o-mini`
+
+**Supported Models**:
+- `gpt-4o-mini` (recommended for cost/performance, 128K context)
+- `gpt-4o` (most capable, 128K context)
+- `gpt-3.5-turbo` (faster, cheaper, 16K context)
+- `gpt-4-turbo` (previous generation flagship, 128K context)
+- `gpt-4` (legacy, 8K context)
+
+**Configuration Example**:
+```bash
+PROVIDER=openai
+OPENAI_API_KEY=sk-...
+MODEL=gpt-4o-mini
+```
+
+**Pricing**: ~$0.15/$0.60 per 1M tokens (input/output)
+
+### Google Gemini
+
+**Default Model**: `gemini-2.5-flash-preview-09-2025`
+
+**Supported Models**:
+- `gemini-2.5-flash-preview-09-2025` (latest, 1M context)
+- `gemini-1.5-pro` (high capability, 2M context)
+- `gemini-1.5-flash` (fast, 1M context)
+
+**Configuration Example**:
+```bash
+PROVIDER=gemini
+GEMINI_API_KEY=AIza...
+MODEL=gemini-2.5-flash-preview-09-2025
+```
+
+**Pricing**: Free tier available, then ~$0.075/$0.30 per 1M tokens
+
+### Groq
+
+**Default Model**: `llama-3.3-70b-versatile`
+
+**Supported Models**:
+- `llama-3.3-70b-versatile` (recommended, 128K context)
+- `llama-3.1-8b-instant` (fastest, 128K context)
+- `mixtral-8x7b-32768` (32K context)
+
+**Configuration Example**:
+```bash
+PROVIDER=groq
+GROQ_API_KEY=gsk_...
+MODEL=llama-3.3-70b-versatile
+```
+
+**Pricing**: Free tier available, very fast inference
+
+## Benchmark Tool
+
+Test provider performance with the included benchmark harness:
+
+```bash
+# Benchmark OpenAI
+python benchmark.py --provider openai --model gpt-4o-mini --prompt "Explain quantum computing"
+
+# Benchmark Gemini
+python benchmark.py --provider gemini --prompt "Write a Python function to sort a list"
+
+# Benchmark Groq
+python benchmark.py --provider groq --model llama-3.3-70b-versatile --prompt "Tell me a joke"
+```
+
+The benchmark tool measures:
+- End-to-end latency (ms)
+- Token counts (input/output)
+- Throughput (tokens/sec)
+- Response preview
 
 ## Project Structure
 
 ```
-telegram-gpt-bot/
-├── bot.py              # Main entry point
-├── config.py           # Configuration management
-├── database.py         # SQLite message storage
-├── token_manager.py    # Token counting and trimming
-├── openai_client.py    # OpenAI API wrapper
-├── handlers.py         # Telegram message handlers
-├── requirements.txt    # Python dependencies
-├── .env.example        # Environment template
-├── .gitignore         # Git ignore rules
-├── Dockerfile         # Docker image definition
-├── docker-compose.yml # Docker orchestration
-├── .dockerignore      # Docker build exclusions
-└── data/              # Database storage (created at runtime)
+telegram-gpt/
+├── bot.py                  # Main entry point
+├── config.py               # Configuration management
+├── database.py             # SQLite message storage
+├── handlers.py             # Telegram message handlers
+├── llm_provider.py         # Abstract provider interface
+├── llm_factory.py          # Provider factory
+├── benchmark.py            # CLI benchmark harness
+├── providers/              # LLM provider implementations
+│   ├── openai_provider.py
+│   ├── gemini_provider.py
+│   └── groq_provider.py
+├── utils/                  # Utility functions
+│   └── context_trimmer.py  # Token budget management
+├── requirements.txt        # Python dependencies
+├── .env.example            # Environment template
+├── Dockerfile              # Docker image definition
+├── docker-compose.yml      # Docker orchestration
+└── data/                   # Database storage (created at runtime)
 ```
 
 ## How It Works
 
 1. **Message Reception**: Bot receives all messages but only processes those containing "chatgpt"
-2. **Authorization**: Checks if sender's user ID matches `AUTHORIZED_USER_ID`
+2. **Authorization**: Checks if sender's user ID matches `AUTHORIZED_USER_ID` or has been granted access
 3. **Context Retrieval**: Fetches conversation history from SQLite database
-4. **Token Management**: Uses tiktoken to count tokens and trim history to fit model's context window
-5. **API Call**: Sends trimmed conversation to OpenAI API
-6. **Storage**: Saves both user message and assistant response to database
+4. **Token Management**: Provider-specific token counting and intelligent trimming to fit model's context window
+5. **API Call**: Sends trimmed conversation to selected LLM provider
+6. **Storage**: Saves both user message and assistant response to database with token counts
 7. **Response**: Sends assistant's response back to Telegram
 
 ## Error Handling
@@ -248,6 +356,46 @@ SELECT chat_id, COUNT(*) FROM messages GROUP BY chat_id;
 
 # Total tokens used
 SELECT SUM(token_count) FROM messages;
+```
+
+### Database Cleanup
+
+Remove conversation history from unauthorized users using the cleanup utility:
+
+```bash
+# Preview what will be deleted (safe, read-only)
+python cleanup_db.py
+
+# The script will:
+# 1. Show authorized users
+# 2. Preview unauthorized user history
+# 3. Ask for confirmation
+# 4. Create automatic backup
+# 5. Perform cleanup
+# 6. Show results
+```
+
+**What gets deleted:**
+- All messages in private chats with unauthorized users (both user messages and bot responses)
+- Individual messages from unauthorized users in group chats
+- Keeps all history for authorized users (main user + granted users)
+
+**Safety features:**
+- Preview mode shows what will be deleted before confirmation
+- Automatic database backup before deletion
+- Requires explicit "yes" confirmation
+- Detailed logging of all operations
+
+**When to use:**
+- After revoking access from users with `/revoke`
+- Regular maintenance to clean up old unauthorized data
+- Before deploying to production with fresh user list
+
+**Backup restoration:**
+If you need to restore from backup:
+```bash
+# Backups are created as data/messages.db.bak
+cp data/messages.db.bak data/messages.db
 ```
 
 ## Security Considerations
