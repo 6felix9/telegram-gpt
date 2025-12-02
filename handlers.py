@@ -235,7 +235,7 @@ async def process_image_request(
     sender_username: str,
     is_group: bool
 ):
-    """Process image request with vision model."""
+    """Process image request with vision model - split storage approach."""
 
     chat_id = str(message.chat_id)
     message_id = message.message_id
@@ -251,35 +251,43 @@ async def process_image_request(
         base64_image = base64.b64encode(photo_bytes).decode('utf-8')
         image_data_url = f"data:image/jpeg;base64,{base64_image}"
 
-        # 3. Store user message with metadata (NO token count yet)
-        content_text = prompt if prompt else "[image attached]"
+        # 3. Prepare content text
+        content_text = prompt if prompt else ""
+
+        # 4. Store caption as separate text message (preserved in future context)
+        # Prefix with [image] to indicate image was part of this turn
+        if content_text:
+            caption_with_marker = f"[image] {content_text}"
+        else:
+            caption_with_marker = "[image]"
+
+        caption_tokens = token_manager.count_message_tokens("user", caption_with_marker)
         db.add_message(
             chat_id=chat_id,
             role="user",
-            content=content_text,
+            content=caption_with_marker,
             user_id=user_id,
             message_id=message_id,
-            token_count=0,  # Will update after API call
+            token_count=caption_tokens,
             sender_name=sender_name,
             sender_username=sender_username,
             is_group_chat=is_group,
-            has_image=True,
-            image_metadata=f"photo_{photo.file_id[:20]}"
+            has_image=False,  # This is the text part, will be included in context
         )
-        user_message_id = db.get_last_insert_id(chat_id)
 
-        # 4. Get conversation history (text messages only)
+        # 5. Get conversation history (now includes caption from step 4)
         max_tokens = config.MAX_CONTEXT_TOKENS
-        messages = db.get_messages_by_tokens(chat_id, max_tokens, exclude_images=True)
+        messages = db.get_messages_by_tokens(chat_id, max_tokens)
 
-        # 5. Trim text history conservatively (reserve more for image)
+        # 7. Trim text history conservatively (reserve more for image)
         messages = token_manager.trim_to_fit(messages, reserve_tokens=3000)
 
-        # 6. Build multimodal message array for OpenAI
+        # 8. Build multimodal message array for OpenAI
+        # Use the original content_text (without [image] prefix) for API call
         messages.append({
             "role": "user",
             "content": [
-                {"type": "text", "text": content_text},
+                {"type": "text", "text": content_text if content_text else "What's in this image?"},
                 {
                     "type": "image_url",
                     "image_url": {
@@ -295,35 +303,27 @@ async def process_image_request(
 
         logger.info(
             f"Processing image request for chat {chat_id}: "
-            f"{len(messages)} messages in context"
+            f"{len(messages)} messages in context, caption={caption_tokens} tokens"
         )
 
-        # 7. Call OpenAI with vision support, get response AND usage
-        response_text, usage = await openai_client.get_completion_with_usage(
-            messages, is_group
-        )
+        # 9. Call OpenAI with vision support
+        response_text = await openai_client.get_completion(messages, is_group)
 
-        # 8. Update user message with actual token count from API
-        actual_prompt_tokens = usage.get("prompt_tokens", 0)
-        db.update_message_tokens(user_message_id, actual_prompt_tokens)
-
-        # 9. Store assistant response with actual token count
-        actual_completion_tokens = usage.get("completion_tokens", 0)
+        # 10. Store assistant response with tiktoken-counted tokens
+        response_tokens = token_manager.count_message_tokens("assistant", response_text)
         db.add_message(
             chat_id=chat_id,
             role="assistant",
             content=response_text,
-            token_count=actual_completion_tokens,
+            token_count=response_tokens,
             is_group_chat=is_group,
         )
 
-        # 10. Send response to user
+        # 11. Send response to user
         await message.reply_text(response_text)
 
         logger.info(
-            f"Image processed for chat {chat_id}: "
-            f"prompt_tokens={actual_prompt_tokens}, "
-            f"completion_tokens={actual_completion_tokens}"
+            f"Image processed for chat {chat_id}: caption={caption_tokens} tokens"
         )
 
     except Exception as e:
