@@ -59,19 +59,46 @@ Important:
             # Format messages for group chats with sender names
             formatted_messages = []
             for msg in messages:
-                formatted_content = msg["content"]
+                content = msg["content"]
 
-                # For group chats, prepend sender name to user messages
-                if is_group and msg["role"] == "user":
-                    sender_name = msg.get("sender_name", "Unknown")
-                    # Only add name prefix if not already there
-                    if not formatted_content.startswith("["):
-                        formatted_content = f"[{sender_name}]: {formatted_content}"
+                # Handle text-only messages
+                if isinstance(content, str):
+                    formatted_content = content
 
-                formatted_messages.append({
-                    "role": msg["role"],
-                    "content": formatted_content
-                })
+                    # For group chats, prepend sender name to user messages
+                    if is_group and msg["role"] == "user":
+                        sender_name = msg.get("sender_name", "Unknown")
+                        # Only add name prefix if not already there
+                        if not formatted_content.startswith("["):
+                            formatted_content = f"[{sender_name}]: {formatted_content}"
+
+                    formatted_messages.append({
+                        "role": msg["role"],
+                        "content": formatted_content
+                    })
+
+                # Handle multimodal messages (image + text)
+                elif isinstance(content, list):
+                    if is_group and msg["role"] == "user":
+                        sender_name = msg.get("sender_name", "Unknown")
+                        updated_content = []
+                        for part in content:
+                            if part.get("type") == "text":
+                                text = part["text"]
+                                if not text.startswith("["):
+                                    text = f"[{sender_name}]: {text}"
+                                updated_content.append({"type": "text", "text": text})
+                            else:
+                                updated_content.append(part)
+                        formatted_messages.append({
+                            "role": msg["role"],
+                            "content": updated_content
+                        })
+                    else:
+                        formatted_messages.append({
+                            "role": msg["role"],
+                            "content": content
+                        })
 
             # Choose system prompt based on chat type
             system_prompt = self.SYSTEM_PROMPT_GROUP if is_group else self.SYSTEM_PROMPT
@@ -147,156 +174,6 @@ Important:
             return (
                 "❌ An unexpected error occurred. "
                 "Please try again or contact support."
-            )
-
-    async def get_completion_with_usage(
-        self,
-        messages: list[dict],
-        is_group: bool = False
-    ) -> tuple[str, dict]:
-        """
-        Get completion from OpenAI API with usage statistics.
-
-        Args:
-            messages: List of message dicts. Can include:
-                - Text: {"role": "user", "content": "text"}
-                - Multimodal: {"role": "user", "content": [{"type": "text", ...}, {"type": "image_url", ...}]}
-            is_group: Whether this is a group chat
-
-        Returns:
-            Tuple of (response_text, usage_dict) where usage_dict contains:
-                - prompt_tokens: int
-                - completion_tokens: int
-                - total_tokens: int
-        """
-        try:
-            logger.debug(f"Requesting completion with {len(messages)} messages (group={is_group})")
-
-            # Format messages for group chats with sender names
-            formatted_messages = []
-            for msg in messages:
-                content = msg["content"]
-
-                # Handle text-only messages
-                if isinstance(content, str):
-                    formatted_content = content
-
-                    if is_group and msg["role"] == "user":
-                        sender_name = msg.get("sender_name", "Unknown")
-                        if not formatted_content.startswith("["):
-                            formatted_content = f"[{sender_name}]: {formatted_content}"
-
-                    formatted_messages.append({
-                        "role": msg["role"],
-                        "content": formatted_content
-                    })
-
-                # Handle multimodal messages (image + text)
-                elif isinstance(content, list):
-                    if is_group and msg["role"] == "user":
-                        sender_name = msg.get("sender_name", "Unknown")
-                        updated_content = []
-                        for part in content:
-                            if part.get("type") == "text":
-                                text = part["text"]
-                                if not text.startswith("["):
-                                    text = f"[{sender_name}]: {text}"
-                                updated_content.append({"type": "text", "text": text})
-                            else:
-                                updated_content.append(part)
-                        formatted_messages.append({
-                            "role": msg["role"],
-                            "content": updated_content
-                        })
-                    else:
-                        formatted_messages.append({
-                            "role": msg["role"],
-                            "content": content
-                        })
-
-            # Choose system prompt based on chat type
-            system_prompt = self.SYSTEM_PROMPT_GROUP if is_group else self.SYSTEM_PROMPT
-            system_message = {"role": "system", "content": system_prompt}
-            messages_with_system = [system_message] + formatted_messages
-
-            # Run sync OpenAI call in thread pool
-            response = await asyncio.to_thread(
-                self.client.chat.completions.create,
-                model=self.model,
-                messages=messages_with_system,
-                temperature=0.7,
-            )
-
-            content = response.choices[0].message.content
-            usage = {
-                "prompt_tokens": response.usage.prompt_tokens,
-                "completion_tokens": response.usage.completion_tokens,
-                "total_tokens": response.usage.total_tokens,
-            }
-
-            logger.debug(
-                f"Received completion: {len(content)} chars, "
-                f"usage: {usage['total_tokens']} tokens "
-                f"({usage['prompt_tokens']} prompt + {usage['completion_tokens']} completion)"
-            )
-
-            return content, usage
-
-        except openai.AuthenticationError as e:
-            logger.error(f"Authentication failed: {e}")
-            return (
-                "❌ OpenAI API key is invalid. Please check your configuration.",
-                {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-            )
-
-        except openai.RateLimitError as e:
-            logger.warning(f"Rate limit exceeded: {e}")
-            return (
-                "⏱️ Rate limit exceeded. Please wait a moment and try again.",
-                {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-            )
-
-        except openai.APITimeoutError as e:
-            logger.warning(f"Request timed out: {e}")
-            return (
-                f"⏱️ Request timed out after {self.timeout}s. Please try again.",
-                {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-            )
-
-        except openai.BadRequestError as e:
-            error_msg = str(e)
-            logger.error(f"Bad request: {error_msg}")
-
-            if "context_length_exceeded" in error_msg:
-                return (
-                    "❌ Message history is too long for the model. Use /clear to clear history and try again.",
-                    {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-                )
-
-            return (
-                f"❌ Invalid request: {error_msg}",
-                {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-            )
-
-        except openai.APIConnectionError as e:
-            logger.error(f"Connection error: {e}")
-            return (
-                "❌ Network error connecting to OpenAI. Please check your internet connection.",
-                {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-            )
-
-        except openai.InternalServerError as e:
-            logger.error(f"OpenAI server error: {e}")
-            return (
-                "❌ OpenAI service is experiencing issues. Please try again in a moment.",
-                {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-            )
-
-        except Exception as e:
-            logger.error(f"Unexpected error: {e}", exc_info=True)
-            return (
-                "❌ An unexpected error occurred. Please try again or contact support.",
-                {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
             )
 
     def test_connection(self) -> bool:

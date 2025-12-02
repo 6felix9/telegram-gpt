@@ -173,34 +173,6 @@ class Database:
             logger.error(f"Failed to add message: {e}", exc_info=True)
             raise
 
-    def get_last_insert_id(self, chat_id: str) -> int:
-        """Get ID of last inserted message for a chat."""
-        try:
-            chat_id = str(chat_id)
-            with self._get_connection() as conn:
-                cursor = conn.execute(
-                    "SELECT id FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT 1",
-                    (chat_id,)
-                )
-                row = cursor.fetchone()
-                return row["id"] if row else None
-        except Exception as e:
-            logger.error(f"Failed to get last insert ID: {e}", exc_info=True)
-            return None
-
-    def update_message_tokens(self, message_id: int, token_count: int):
-        """Update token count for a message (used after API returns actual usage)."""
-        try:
-            with self._get_connection() as conn:
-                conn.execute(
-                    "UPDATE messages SET token_count = ? WHERE id = ?",
-                    (token_count, message_id)
-                )
-            logger.debug(f"Updated message {message_id} with {token_count} tokens")
-        except Exception as e:
-            logger.error(f"Failed to update message tokens: {e}", exc_info=True)
-            raise
-
     def get_messages_by_tokens(self, chat_id: str, max_tokens: int, exclude_images: bool = False) -> list:
         """
         Retrieve recent messages within token budget.
