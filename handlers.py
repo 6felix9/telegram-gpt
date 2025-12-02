@@ -188,6 +188,152 @@ async def process_request(message, prompt: str, user_id: int, sender_name: str, 
         )
 
 
+async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle photo messages with OpenAI vision."""
+
+    # 1. Extract message details
+    message = update.message
+    if not message or not message.photo:
+        return
+
+    user_id = message.from_user.id
+    chat_id = str(message.chat_id)
+    is_group = message.chat.type in ["group", "supergroup"]
+
+    # Get sender information
+    sender_name = message.from_user.first_name or "Unknown"
+    sender_username = message.from_user.username
+
+    # 2. Check for activation keyword in caption
+    caption = message.caption or ""
+    has_keyword, prompt = extract_keyword(caption) if caption else (False, "")
+
+    # In group chats without keyword, ignore
+    if is_group and not has_keyword:
+        return
+
+    # If no keyword at all, ignore
+    if not has_keyword:
+        return
+
+    # 3. Authorization check
+    if not is_authorized(user_id):
+        await message.reply_text("Sorry, you have no access to me.")
+        return
+
+    # 4. Process image request
+    await process_image_request(
+        message, prompt, user_id, sender_name, sender_username, is_group
+    )
+
+
+async def process_image_request(
+    message,
+    prompt: str,
+    user_id: int,
+    sender_name: str,
+    sender_username: str,
+    is_group: bool
+):
+    """Process image request with vision model."""
+
+    chat_id = str(message.chat_id)
+    message_id = message.message_id
+
+    try:
+        # 1. Download image as bytes (in-memory only)
+        import base64
+        photo = message.photo[-1]  # Get highest resolution
+        photo_file = await photo.get_file()
+        photo_bytes = await photo_file.download_as_bytearray()
+
+        # 2. Convert to base64 data URL
+        base64_image = base64.b64encode(photo_bytes).decode('utf-8')
+        image_data_url = f"data:image/jpeg;base64,{base64_image}"
+
+        # 3. Store user message with metadata (NO token count yet)
+        content_text = prompt if prompt else "[image attached]"
+        db.add_message(
+            chat_id=chat_id,
+            role="user",
+            content=content_text,
+            user_id=user_id,
+            message_id=message_id,
+            token_count=0,  # Will update after API call
+            sender_name=sender_name,
+            sender_username=sender_username,
+            is_group_chat=is_group,
+            has_image=True,
+            image_metadata=f"photo_{photo.file_id[:20]}"
+        )
+        user_message_id = db.get_last_insert_id(chat_id)
+
+        # 4. Get conversation history (text messages only)
+        max_tokens = config.MAX_CONTEXT_TOKENS
+        messages = db.get_messages_by_tokens(chat_id, max_tokens, exclude_images=True)
+
+        # 5. Trim text history conservatively (reserve more for image)
+        messages = token_manager.trim_to_fit(messages, reserve_tokens=3000)
+
+        # 6. Build multimodal message array for OpenAI
+        messages.append({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": content_text},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": image_data_url,
+                        "detail": "auto"
+                    }
+                }
+            ],
+            "sender_name": sender_name,
+            "sender_username": sender_username,
+            "is_group_chat": is_group,
+        })
+
+        logger.info(
+            f"Processing image request for chat {chat_id}: "
+            f"{len(messages)} messages in context"
+        )
+
+        # 7. Call OpenAI with vision support, get response AND usage
+        response_text, usage = await openai_client.get_completion_with_usage(
+            messages, is_group
+        )
+
+        # 8. Update user message with actual token count from API
+        actual_prompt_tokens = usage.get("prompt_tokens", 0)
+        db.update_message_tokens(user_message_id, actual_prompt_tokens)
+
+        # 9. Store assistant response with actual token count
+        actual_completion_tokens = usage.get("completion_tokens", 0)
+        db.add_message(
+            chat_id=chat_id,
+            role="assistant",
+            content=response_text,
+            token_count=actual_completion_tokens,
+            is_group_chat=is_group,
+        )
+
+        # 10. Send response to user
+        await message.reply_text(response_text)
+
+        logger.info(
+            f"Image processed for chat {chat_id}: "
+            f"prompt_tokens={actual_prompt_tokens}, "
+            f"completion_tokens={actual_completion_tokens}"
+        )
+
+    except Exception as e:
+        logger.error(f"Error processing image: {e}", exc_info=True)
+        await message.reply_text(
+            "Sorry, I encountered an error processing your image. "
+            "Please try again."
+        )
+
+
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Clear conversation history for current chat."""
 
