@@ -40,6 +40,16 @@ class Database:
                 conn.execute("ALTER TABLE messages ADD COLUMN is_group_chat INTEGER DEFAULT 0")
                 logger.info("Added is_group_chat column to messages table")
 
+            # Add has_image if missing
+            if "has_image" not in columns:
+                conn.execute("ALTER TABLE messages ADD COLUMN has_image INTEGER DEFAULT 0")
+                logger.info("Added has_image column to messages table")
+
+            # Add image_metadata if missing
+            if "image_metadata" not in columns:
+                conn.execute("ALTER TABLE messages ADD COLUMN image_metadata TEXT")
+                logger.info("Added image_metadata column to messages table")
+
         except Exception as e:
             logger.warning(f"Schema migration warning: {e}")
 
@@ -130,6 +140,8 @@ class Database:
         sender_name: str = None,
         sender_username: str = None,
         is_group_chat: bool = False,
+        has_image: bool = False,
+        image_metadata: str = None,
     ) -> int:
         """Add a message to the database with atomic transaction."""
         try:
@@ -142,17 +154,18 @@ class Database:
                     """
                     INSERT INTO messages
                     (chat_id, role, content, timestamp, user_id, message_id, token_count,
-                     sender_name, sender_username, is_group_chat)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     sender_name, sender_username, is_group_chat, has_image, image_metadata)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (chat_id, role, content, timestamp, user_id, message_id, token_count,
-                     sender_name, sender_username, 1 if is_group_chat else 0),
+                     sender_name, sender_username, 1 if is_group_chat else 0,
+                     1 if has_image else 0, image_metadata),
                 )
                 msg_id = cursor.lastrowid
 
             logger.debug(
                 f"Added message {msg_id} for chat {chat_id}: "
-                f"{role} ({token_count} tokens)"
+                f"{role} ({token_count} tokens){'[with image]' if has_image else ''}"
             )
             return msg_id
 
@@ -160,9 +173,42 @@ class Database:
             logger.error(f"Failed to add message: {e}", exc_info=True)
             raise
 
-    def get_messages_by_tokens(self, chat_id: str, max_tokens: int) -> list:
+    def get_last_insert_id(self, chat_id: str) -> int:
+        """Get ID of last inserted message for a chat."""
+        try:
+            chat_id = str(chat_id)
+            with self._get_connection() as conn:
+                cursor = conn.execute(
+                    "SELECT id FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT 1",
+                    (chat_id,)
+                )
+                row = cursor.fetchone()
+                return row["id"] if row else None
+        except Exception as e:
+            logger.error(f"Failed to get last insert ID: {e}", exc_info=True)
+            return None
+
+    def update_message_tokens(self, message_id: int, token_count: int):
+        """Update token count for a message (used after API returns actual usage)."""
+        try:
+            with self._get_connection() as conn:
+                conn.execute(
+                    "UPDATE messages SET token_count = ? WHERE id = ?",
+                    (token_count, message_id)
+                )
+            logger.debug(f"Updated message {message_id} with {token_count} tokens")
+        except Exception as e:
+            logger.error(f"Failed to update message tokens: {e}", exc_info=True)
+            raise
+
+    def get_messages_by_tokens(self, chat_id: str, max_tokens: int, exclude_images: bool = False) -> list:
         """
         Retrieve recent messages within token budget.
+
+        Args:
+            chat_id: Chat ID to retrieve messages from
+            max_tokens: Maximum token budget
+            exclude_images: If True, exclude messages with images
 
         Returns messages in chronological order (oldest first).
         For group chats, includes sender information in the format [Name]: message
@@ -174,15 +220,16 @@ class Database:
 
             with self._get_connection() as conn:
                 # Get messages newest first with sender info
-                cursor = conn.execute(
-                    """
+                query = """
                     SELECT role, content, token_count, sender_name, sender_username, is_group_chat
                     FROM messages
                     WHERE chat_id = ?
-                    ORDER BY timestamp DESC
-                    """,
-                    (chat_id,),
-                )
+                """
+                if exclude_images:
+                    query += " AND has_image = 0"
+                query += " ORDER BY timestamp DESC"
+
+                cursor = conn.execute(query, (chat_id,))
 
                 # Accumulate messages while within token budget
                 temp_messages = []
@@ -207,7 +254,7 @@ class Database:
 
             logger.debug(
                 f"Retrieved {len(messages)} messages for chat {chat_id} "
-                f"({total_tokens} tokens)"
+                f"({total_tokens} tokens){' [excluding images]' if exclude_images else ''}"
             )
             return messages
 

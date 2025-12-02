@@ -98,6 +98,14 @@ def main():
             )
         )
 
+        # Photo handler (images with optional captions)
+        application.add_handler(
+            MessageHandler(
+                filters.PHOTO,
+                handlers.photo_handler
+            )
+        )
+
         # Command handlers
         application.add_handler(CommandHandler("clear", handlers.clear_command))
         application.add_handler(CommandHandler("stats", handlers.stats_command))
