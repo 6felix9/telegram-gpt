@@ -508,6 +508,18 @@ async def revoke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def version_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the version of the bot."""
+
+    user_id = update.message.from_user.id
+    if not is_authorized(user_id):
+        await update.message.reply_text("Sorry, you have no access to me.")
+        return
+
+    await update.message.reply_text(f"Bot version: {config.BOT_VERSION}")
+    logger.info(f"Version shown for chat {update.message.chat_id}")
+
+
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Global error handler for unhandled exceptions."""
 
