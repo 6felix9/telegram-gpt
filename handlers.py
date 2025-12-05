@@ -188,6 +188,152 @@ async def process_request(message, prompt: str, user_id: int, sender_name: str, 
         )
 
 
+async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle photo messages with OpenAI vision."""
+
+    # 1. Extract message details
+    message = update.message
+    if not message or not message.photo:
+        return
+
+    user_id = message.from_user.id
+    chat_id = str(message.chat_id)
+    is_group = message.chat.type in ["group", "supergroup"]
+
+    # Get sender information
+    sender_name = message.from_user.first_name or "Unknown"
+    sender_username = message.from_user.username
+
+    # 2. Check for activation keyword in caption
+    caption = message.caption or ""
+    has_keyword, prompt = extract_keyword(caption) if caption else (False, "")
+
+    # In group chats without keyword, ignore
+    if is_group and not has_keyword:
+        return
+
+    # If no keyword at all, ignore
+    if not has_keyword:
+        return
+
+    # 3. Authorization check
+    if not is_authorized(user_id):
+        await message.reply_text("Sorry, you have no access to me.")
+        return
+
+    # 4. Process image request
+    await process_image_request(
+        message, prompt, user_id, sender_name, sender_username, is_group
+    )
+
+
+async def process_image_request(
+    message,
+    prompt: str,
+    user_id: int,
+    sender_name: str,
+    sender_username: str,
+    is_group: bool
+):
+    """Process image request with vision model - split storage approach."""
+
+    chat_id = str(message.chat_id)
+    message_id = message.message_id
+
+    try:
+        # 1. Download image as bytes (in-memory only)
+        import base64
+        photo = message.photo[-1]  # Get highest resolution
+        photo_file = await photo.get_file()
+        photo_bytes = await photo_file.download_as_bytearray()
+
+        # 2. Convert to base64 data URL
+        base64_image = base64.b64encode(photo_bytes).decode('utf-8')
+        image_data_url = f"data:image/jpeg;base64,{base64_image}"
+
+        # 3. Prepare content text
+        content_text = prompt if prompt else ""
+
+        # 4. Store caption as separate text message (preserved in future context)
+        # Prefix with [image] to indicate image was part of this turn
+        if content_text:
+            caption_with_marker = f"[image] {content_text}"
+        else:
+            caption_with_marker = "[image]"
+
+        caption_tokens = token_manager.count_message_tokens("user", caption_with_marker)
+        db.add_message(
+            chat_id=chat_id,
+            role="user",
+            content=caption_with_marker,
+            user_id=user_id,
+            message_id=message_id,
+            token_count=caption_tokens,
+            sender_name=sender_name,
+            sender_username=sender_username,
+            is_group_chat=is_group,
+            has_image=False,  # This is the text part, will be included in context
+        )
+
+        # 5. Get conversation history (now includes caption from step 4)
+        max_tokens = config.MAX_CONTEXT_TOKENS
+        messages = db.get_messages_by_tokens(chat_id, max_tokens)
+
+        # 7. Trim text history conservatively (reserve more for image)
+        messages = token_manager.trim_to_fit(messages, reserve_tokens=3000)
+
+        # 8. Build multimodal message array for OpenAI
+        # Use the original content_text (without [image] prefix) for API call
+        messages.append({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": content_text if content_text else "What's in this image?"},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": image_data_url,
+                        "detail": "auto"
+                    }
+                }
+            ],
+            "sender_name": sender_name,
+            "sender_username": sender_username,
+            "is_group_chat": is_group,
+        })
+
+        logger.info(
+            f"Processing image request for chat {chat_id}: "
+            f"{len(messages)} messages in context, caption={caption_tokens} tokens"
+        )
+
+        # 9. Call OpenAI with vision support
+        response_text = await openai_client.get_completion(messages, is_group)
+
+        # 10. Store assistant response with tiktoken-counted tokens
+        response_tokens = token_manager.count_message_tokens("assistant", response_text)
+        db.add_message(
+            chat_id=chat_id,
+            role="assistant",
+            content=response_text,
+            token_count=response_tokens,
+            is_group_chat=is_group,
+        )
+
+        # 11. Send response to user
+        await message.reply_text(response_text)
+
+        logger.info(
+            f"Image processed for chat {chat_id}: caption={caption_tokens} tokens"
+        )
+
+    except Exception as e:
+        logger.error(f"Error processing image: {e}", exc_info=True)
+        await message.reply_text(
+            "Sorry, I encountered an error processing your image. "
+            "Please try again."
+        )
+
+
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Clear conversation history for current chat."""
 

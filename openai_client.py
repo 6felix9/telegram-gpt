@@ -59,25 +59,52 @@ Important:
             # Format messages for group chats with sender names
             formatted_messages = []
             for msg in messages:
-                formatted_content = msg["content"]
+                content = msg["content"]
 
-                # For group chats, prepend sender name to user messages
-                if is_group and msg["role"] == "user":
-                    sender_name = msg.get("sender_name", "Unknown")
-                    # Only add name prefix if not already there
-                    if not formatted_content.startswith("["):
-                        formatted_content = f"[{sender_name}]: {formatted_content}"
+                # Handle text-only messages
+                if isinstance(content, str):
+                    formatted_content = content
 
-                formatted_messages.append({
-                    "role": msg["role"],
-                    "content": formatted_content
-                })
+                    # For group chats, prepend sender name to user messages
+                    if is_group and msg["role"] == "user":
+                        sender_name = msg.get("sender_name", "Unknown")
+                        # Only add name prefix if not already there
+                        if not formatted_content.startswith("["):
+                            formatted_content = f"[{sender_name}]: {formatted_content}"
+
+                    formatted_messages.append({
+                        "role": msg["role"],
+                        "content": formatted_content
+                    })
+
+                # Handle multimodal messages (image + text)
+                elif isinstance(content, list):
+                    if is_group and msg["role"] == "user":
+                        sender_name = msg.get("sender_name", "Unknown")
+                        updated_content = []
+                        for part in content:
+                            if part.get("type") == "text":
+                                text = part["text"]
+                                if not text.startswith("["):
+                                    text = f"[{sender_name}]: {text}"
+                                updated_content.append({"type": "text", "text": text})
+                            else:
+                                updated_content.append(part)
+                        formatted_messages.append({
+                            "role": msg["role"],
+                            "content": updated_content
+                        })
+                    else:
+                        formatted_messages.append({
+                            "role": msg["role"],
+                            "content": content
+                        })
 
             # Choose system prompt based on chat type
             system_prompt = self.SYSTEM_PROMPT_GROUP if is_group else self.SYSTEM_PROMPT
             system_message = {"role": "system", "content": system_prompt}
             messages_with_system = [system_message] + formatted_messages
-
+            
             # Run sync OpenAI call in thread pool
             response = await asyncio.to_thread(
                 self.client.chat.completions.create,
