@@ -35,6 +35,9 @@ class Config:
     # Logging
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
+    # Bot version
+    BOT_VERSION = os.getenv("BOT_VERSION", "1.0.0")
+
     @classmethod
     def validate(cls):
         """Validate all required environment variables are present and correct format."""
