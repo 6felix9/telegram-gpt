@@ -5,7 +5,7 @@ An AI-powered Telegram bot using OpenAI's GPT models with persistent conversatio
 ## Features
 
 - **Keyword Activation**: Bot responds only when "chatgpt" is mentioned
-- **Persistent Conversation History**: SQLite-backed storage for reliable conversation tracking
+- **Persistent Conversation History**: PostgreSQL-backed storage with connection pooling for reliable concurrent access
 - **Token-Aware Context Management**: Intelligent trimming to stay within model limits
 - **Docker-Ready**: Production deployment with Docker and docker-compose
 - **Private Authorization**: Single-user access control
@@ -14,7 +14,7 @@ An AI-powered Telegram bot using OpenAI's GPT models with persistent conversatio
 ## Architecture
 
 - **Python 3.12+** with modern async/await patterns
-- **SQLite** with WAL mode for concurrent access
+- **PostgreSQL** (Neon) with connection pooling for concurrent access
 - **tiktoken** for accurate token counting
 - **python-telegram-bot 21.7** for Telegram API
 - **OpenAI API** for GPT completions
@@ -138,7 +138,7 @@ All configuration is done via environment variables in `.env`:
 | `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI model to use |
 | `MAX_CONTEXT_TOKENS` | `16000` | Maximum tokens in conversation context |
 | `OPENAI_TIMEOUT` | `60` | API request timeout in seconds |
-| `DATABASE_PATH` | `data/messages.db` | SQLite database file path |
+| `DATABASE_URL` | Required | PostgreSQL connection string (e.g., Neon DB) |
 | `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 
 ### Model Options
@@ -149,13 +149,30 @@ Supported models:
 - `gpt-3.5-turbo` (faster, cheaper)
 - `gpt-4-turbo` (previous generation flagship)
 
+## Database Setup
+
+### PostgreSQL / Neon DB
+
+This bot uses PostgreSQL (or Neon DB for cloud hosting) for conversation storage.
+
+#### Getting Started with Neon
+
+1. **Sign up at [neon.tech](https://neon.tech)** (free tier available)
+2. **Create a new project** and note your connection string
+3. **Format your DATABASE_URL**:
+   ```
+   postgresql://username:password@host:port/database?sslmode=require&channel_binding=require
+   ```
+4. **Update `.env`** with the connection string
+5. **Start the bot** - tables are created automatically on first run
+
 ## Project Structure
 
 ```
-telegram-gpt-bot/
+telegram-gpt-bot/s
 ├── bot.py              # Main entry point
 ├── config.py           # Configuration management
-├── database.py         # SQLite message storage
+├── database.py         # PostgreSQL message storage
 ├── token_manager.py    # Token counting and trimming
 ├── openai_client.py    # OpenAI API wrapper
 ├── handlers.py         # Telegram message handlers
@@ -164,15 +181,14 @@ telegram-gpt-bot/
 ├── .gitignore         # Git ignore rules
 ├── Dockerfile         # Docker image definition
 ├── docker-compose.yml # Docker orchestration
-├── .dockerignore      # Docker build exclusions
-└── data/              # Database storage (created at runtime)
+└── .dockerignore      # Docker build exclusions
 ```
 
 ## How It Works
 
 1. **Message Reception**: Bot receives all messages but only processes those containing "chatgpt"
 2. **Authorization**: Checks if sender's user ID matches `AUTHORIZED_USER_ID`
-3. **Context Retrieval**: Fetches conversation history from SQLite database
+3. **Context Retrieval**: Fetches conversation history from PostgreSQL database
 4. **Token Management**: Uses tiktoken to count tokens and trim history to fit model's context window
 5. **API Call**: Sends trimmed conversation to OpenAI API
 6. **Storage**: Saves both user message and assistant response to database
@@ -212,8 +228,10 @@ All errors are logged and user-friendly messages are returned.
 
 ### Database errors
 
-- Check that `data/` directory exists and is writable
-- Try clearing the database: `rm data/messages.db`
+- Verify `DATABASE_URL` is set correctly in `.env`
+- Check that Neon DB instance is accessible
+- Ensure Neon connection limits haven't been exceeded
+- Check logs for specific PostgreSQL error messages
 
 ### Docker issues
 
@@ -238,7 +256,8 @@ View logs:
 ### Database Inspection
 
 ```bash
-sqlite3 data/messages.db
+# Connect to PostgreSQL database using psql or your preferred PostgreSQL client
+# Use the DATABASE_URL from your .env file
 
 # View all messages
 SELECT * FROM messages;
@@ -260,10 +279,11 @@ SELECT SUM(token_count) FROM messages;
 
 ## Performance
 
-- SQLite WAL mode enables concurrent reads
+- PostgreSQL connection pooling enables concurrent access
 - Token counting is done locally (no API calls)
 - Database queries use indexes for speed
 - Context trimming prevents excessive API costs
+- Keepalive settings prevent idle connection timeouts
 
 ## License
 

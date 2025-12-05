@@ -2,7 +2,6 @@
 import os
 import sys
 import logging
-from pathlib import Path
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -27,7 +26,7 @@ class Config:
     AUTHORIZED_USER_ID = os.getenv("AUTHORIZED_USER_ID", "")
 
     # Database
-    DATABASE_PATH = os.getenv("DATABASE_PATH", "data/messages.db")
+    DATABASE_URL = os.getenv("DATABASE_URL", "")
 
     # Group chat settings
     MAX_GROUP_CONTEXT_MESSAGES = int(os.getenv("MAX_GROUP_CONTEXT_MESSAGES", "100"))
@@ -59,6 +58,11 @@ class Config:
         elif not cls.AUTHORIZED_USER_ID.isdigit():
             errors.append("AUTHORIZED_USER_ID must be numeric")
 
+        if not cls.DATABASE_URL:
+            errors.append("DATABASE_URL is required")
+        elif not cls.DATABASE_URL.strip():
+            errors.append("DATABASE_URL cannot be empty")
+
         # Validate numeric ranges
         if cls.OPENAI_TIMEOUT <= 0:
             errors.append("OPENAI_TIMEOUT must be positive")
@@ -73,15 +77,6 @@ class Config:
                 f"Unknown model '{cls.OPENAI_MODEL}'. "
                 f"Known models: {', '.join(known_models)}"
             )
-
-        # Ensure database directory exists
-        db_dir = Path(cls.DATABASE_PATH).parent
-        if not db_dir.exists():
-            try:
-                db_dir.mkdir(parents=True, exist_ok=True)
-                logger.info(f"Created database directory: {db_dir}")
-            except Exception as e:
-                errors.append(f"Cannot create database directory {db_dir}: {e}")
 
         # Report all errors
         if errors:
