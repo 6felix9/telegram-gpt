@@ -1,97 +1,86 @@
-"""SQLite database handler for message storage."""
-import sqlite3
+"""PostgreSQL database handler for message storage."""
+import psycopg2
+from psycopg2 import pool
+from psycopg2.extras import RealDictCursor
 import logging
 from contextlib import contextmanager
 from datetime import datetime
-from pathlib import Path
-import shutil
-import time
 
 logger = logging.getLogger(__name__)
 
 
 class Database:
-    """Thread-safe SQLite message storage."""
+    """Thread-safe PostgreSQL message storage with connection pooling."""
 
-    def __init__(self, db_path: str):
-        """Initialize database connection with proper settings."""
-        self.db_path = db_path
+    def __init__(self, db_url: str):
+        """Initialize database connection pool with proper settings."""
+        self.db_url = db_url
+        # Initialize connection pool with keepalive settings for Neon
+        try:
+            self.pool = psycopg2.pool.ThreadedConnectionPool(
+                minconn=1,
+                maxconn=10,
+                dsn=db_url,
+                keepalives=1,        # Enable TCP keepalives
+                keepalives_idle=30,  # Start sending keepalives after 30 seconds of inactivity
+                keepalives_interval=10,  # Send keepalive every 10 seconds
+                keepalives_count=5   # Close connection after 5 failed keepalives
+            )
+            logger.info("Database connection pool initialized with keepalives")
+        except Exception as e:
+            logger.error(f"Failed to create connection pool: {e}", exc_info=True)
+            raise
+
         self._init_db()
 
-    def _migrate_schema(self, conn):
-        """Add new columns to existing database if they don't exist."""
+    def close(self):
+        """Close all connections in the pool."""
         try:
-            # Check if new columns exist
-            cursor = conn.execute("PRAGMA table_info(messages)")
-            columns = {row[1] for row in cursor.fetchall()}
-
-            # Add sender_name if missing
-            if "sender_name" not in columns:
-                conn.execute("ALTER TABLE messages ADD COLUMN sender_name TEXT")
-                logger.info("Added sender_name column to messages table")
-
-            # Add sender_username if missing
-            if "sender_username" not in columns:
-                conn.execute("ALTER TABLE messages ADD COLUMN sender_username TEXT")
-                logger.info("Added sender_username column to messages table")
-
-            # Add is_group_chat if missing
-            if "is_group_chat" not in columns:
-                conn.execute("ALTER TABLE messages ADD COLUMN is_group_chat INTEGER DEFAULT 0")
-                logger.info("Added is_group_chat column to messages table")
-
-            # Add has_image if missing
-            if "has_image" not in columns:
-                conn.execute("ALTER TABLE messages ADD COLUMN has_image INTEGER DEFAULT 0")
-                logger.info("Added has_image column to messages table")
-
-            # Add image_metadata if missing
-            if "image_metadata" not in columns:
-                conn.execute("ALTER TABLE messages ADD COLUMN image_metadata TEXT")
-                logger.info("Added image_metadata column to messages table")
-
+            if hasattr(self, 'pool') and self.pool:
+                self.pool.closeall()
+                logger.info("Database connection pool closed")
         except Exception as e:
-            logger.warning(f"Schema migration warning: {e}")
+            logger.error(f"Failed to close connection pool: {e}", exc_info=True)
 
     def _init_db(self):
         """Create tables and indexes if they don't exist."""
         try:
             with self._get_connection() as conn:
-                # Create messages table
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS messages (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        chat_id TEXT NOT NULL,
-                        role TEXT NOT NULL,
-                        content TEXT NOT NULL,
-                        timestamp TEXT NOT NULL,
-                        user_id INTEGER,
-                        message_id INTEGER,
-                        token_count INTEGER DEFAULT 0,
-                        sender_name TEXT,
-                        sender_username TEXT,
-                        is_group_chat INTEGER DEFAULT 0
-                    )
-                """)
+                with conn.cursor() as cur:
+                    # Create messages table
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS messages (
+                            id SERIAL PRIMARY KEY,
+                            chat_id TEXT NOT NULL,
+                            role TEXT NOT NULL,
+                            content TEXT NOT NULL,
+                            timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                            user_id BIGINT,
+                            message_id BIGINT,
+                            token_count INTEGER DEFAULT 0,
+                            sender_name TEXT,
+                            sender_username TEXT,
+                            is_group_chat BOOLEAN DEFAULT FALSE,
+                            has_image BOOLEAN DEFAULT FALSE,
+                            image_metadata TEXT
+                        )
+                    """)
 
-                # Create index for efficient querying
-                conn.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_chat_timestamp
-                    ON messages(chat_id, timestamp DESC)
-                """)
+                    # Create index for efficient querying
+                    cur.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_chat_timestamp
+                        ON messages(chat_id, timestamp DESC)
+                    """)
 
-                # Create granted_users table
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS granted_users (
-                        user_id TEXT PRIMARY KEY,
-                        granted_at TEXT NOT NULL
-                    )
-                """)
+                    # Create granted_users table
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS granted_users (
+                            user_id TEXT PRIMARY KEY,
+                            granted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """)
 
-                # Migrate existing database if needed
-                self._migrate_schema(conn)
-
-                logger.info(f"Database initialized at {self.db_path}")
+                logger.info("Database tables initialized successfully")
 
         except Exception as e:
             logger.error(f"Failed to initialize database: {e}", exc_info=True)
@@ -99,35 +88,44 @@ class Database:
 
     @contextmanager
     def _get_connection(self):
-        """Thread-safe connection context manager with retry logic."""
-        max_retries = 3
-        retry_delay = 0.1  # 100ms
+        """Thread-safe connection context manager using connection pool with validation."""
+        conn = None
+        try:
+            conn = self.pool.getconn()
+            # Validate connection is still alive
+            if conn.closed:
+                logger.warning("Retrieved closed connection from pool, discarding")
+                self.pool.putconn(conn, close=True)
+                conn = self.pool.getconn()
 
-        for attempt in range(max_retries):
+            # Actively probe the connection to avoid yielding a stale one
             try:
-                conn = sqlite3.connect(self.db_path, timeout=10.0)
-                conn.row_factory = sqlite3.Row
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+            except psycopg2.OperationalError:
+                logger.warning("Connection failed health check, replacing")
+                self.pool.putconn(conn, close=True)
+                conn = self.pool.getconn()
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
 
-                # Enable WAL mode for better concurrency
-                conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute("PRAGMA busy_timeout=5000")  # 5 second timeout
-
+            yield conn
+            conn.commit()
+        except psycopg2.OperationalError as e:
+            # Handle "connection already closed" and "SSL connection closed" errors
+            if conn and not conn.closed:
                 try:
-                    yield conn
-                    conn.commit()
-                    return
-                except Exception:
                     conn.rollback()
-                    raise
-                finally:
-                    conn.close()
-
-            except sqlite3.OperationalError as e:
-                if "locked" in str(e).lower() and attempt < max_retries - 1:
-                    logger.warning(f"Database locked, retrying... (attempt {attempt + 1})")
-                    time.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
-                else:
-                    raise
+                except psycopg2.OperationalError:
+                    pass  # Connection is already closed, rollback not needed
+            raise
+        except Exception:
+            if conn and not conn.closed:
+                conn.rollback()
+            raise
+        finally:
+            if conn:
+                self.pool.putconn(conn, close=conn.closed)
 
     def add_message(
         self,
@@ -147,21 +145,22 @@ class Database:
         try:
             # Ensure chat_id is string for consistency
             chat_id = str(chat_id)
-            timestamp = datetime.utcnow().isoformat()
+            timestamp = datetime.utcnow()
 
             with self._get_connection() as conn:
-                cursor = conn.execute(
-                    """
-                    INSERT INTO messages
-                    (chat_id, role, content, timestamp, user_id, message_id, token_count,
-                     sender_name, sender_username, is_group_chat, has_image, image_metadata)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (chat_id, role, content, timestamp, user_id, message_id, token_count,
-                     sender_name, sender_username, 1 if is_group_chat else 0,
-                     1 if has_image else 0, image_metadata),
-                )
-                msg_id = cursor.lastrowid
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO messages
+                        (chat_id, role, content, timestamp, user_id, message_id, token_count,
+                         sender_name, sender_username, is_group_chat, has_image, image_metadata)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        RETURNING id
+                        """,
+                        (chat_id, role, content, timestamp, user_id, message_id, token_count,
+                         sender_name, sender_username, is_group_chat, has_image, image_metadata),
+                    )
+                    msg_id = cur.fetchone()[0]
 
             logger.debug(
                 f"Added message {msg_id} for chat {chat_id}: "
@@ -191,38 +190,39 @@ class Database:
             total_tokens = 0
 
             with self._get_connection() as conn:
-                # Get messages newest first with sender info
-                query = """
-                    SELECT role, content, token_count, sender_name, sender_username, is_group_chat
-                    FROM messages
-                    WHERE chat_id = ?
-                """
-                if exclude_images:
-                    query += " AND has_image = 0"
-                query += " ORDER BY timestamp DESC"
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    # Get messages newest first with sender info
+                    query = """
+                        SELECT role, content, token_count, sender_name, sender_username, is_group_chat
+                        FROM messages
+                        WHERE chat_id = %s
+                    """
+                    if exclude_images:
+                        query += " AND has_image = FALSE"
+                    query += " ORDER BY timestamp DESC"
 
-                cursor = conn.execute(query, (chat_id,))
+                    cur.execute(query, (chat_id,))
 
-                # Accumulate messages while within token budget
-                temp_messages = []
-                for row in cursor:
-                    msg_tokens = row["token_count"] or 0
+                    # Accumulate messages while within token budget
+                    temp_messages = []
+                    for row in cur.fetchall():
+                        msg_tokens = row["token_count"] or 0
 
-                    # Always include at least the last message (user's prompt)
-                    if not temp_messages or total_tokens + msg_tokens <= max_tokens:
-                        temp_messages.append({
-                            "role": row["role"],
-                            "content": row["content"],
-                            "sender_name": row["sender_name"],
-                            "sender_username": row["sender_username"],
-                            "is_group_chat": row["is_group_chat"],
-                        })
-                        total_tokens += msg_tokens
-                    else:
-                        break
+                        # Always include at least the last message (user's prompt)
+                        if not temp_messages or total_tokens + msg_tokens <= max_tokens:
+                            temp_messages.append({
+                                "role": row["role"],
+                                "content": row["content"],
+                                "sender_name": row["sender_name"],
+                                "sender_username": row["sender_username"],
+                                "is_group_chat": row["is_group_chat"],
+                            })
+                            total_tokens += msg_tokens
+                        else:
+                            break
 
-                # Reverse to chronological order (oldest first)
-                messages = list(reversed(temp_messages))
+                    # Reverse to chronological order (oldest first)
+                    messages = list(reversed(temp_messages))
 
             logger.debug(
                 f"Retrieved {len(messages)} messages for chat {chat_id} "
@@ -241,21 +241,22 @@ class Database:
             chat_id = str(chat_id)
 
             with self._get_connection() as conn:
-                cursor = conn.execute(
-                    """
-                    SELECT role, content
-                    FROM messages
-                    WHERE chat_id = ?
-                    ORDER BY timestamp ASC
-                    LIMIT ?
-                    """,
-                    (chat_id, limit),
-                )
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(
+                        """
+                        SELECT role, content
+                        FROM messages
+                        WHERE chat_id = %s
+                        ORDER BY timestamp ASC
+                        LIMIT %s
+                        """,
+                        (chat_id, limit),
+                    )
 
-                messages = [
-                    {"role": row["role"], "content": row["content"]}
-                    for row in cursor
-                ]
+                    messages = [
+                        {"role": row["role"], "content": row["content"]}
+                        for row in cur.fetchall()
+                    ]
 
             logger.debug(f"Retrieved {len(messages)} recent messages for chat {chat_id}")
             return messages
@@ -270,11 +271,12 @@ class Database:
             chat_id = str(chat_id)
 
             with self._get_connection() as conn:
-                cursor = conn.execute(
-                    "DELETE FROM messages WHERE chat_id = ?",
-                    (chat_id,),
-                )
-                deleted_count = cursor.rowcount
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "DELETE FROM messages WHERE chat_id = %s",
+                        (chat_id,),
+                    )
+                    deleted_count = cur.rowcount
 
             logger.info(f"Cleared {deleted_count} messages for chat {chat_id}")
 
@@ -288,26 +290,27 @@ class Database:
             chat_id = str(chat_id)
 
             with self._get_connection() as conn:
-                cursor = conn.execute(
-                    """
-                    SELECT
-                        COUNT(*) as total_messages,
-                        SUM(token_count) as total_tokens,
-                        MIN(timestamp) as first_message,
-                        MAX(timestamp) as last_message
-                    FROM messages
-                    WHERE chat_id = ?
-                    """,
-                    (chat_id,),
-                )
-                row = cursor.fetchone()
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(
+                        """
+                        SELECT
+                            COUNT(*) as total_messages,
+                            COALESCE(SUM(token_count), 0) as total_tokens,
+                            MIN(timestamp) as first_message,
+                            MAX(timestamp) as last_message
+                        FROM messages
+                        WHERE chat_id = %s
+                        """,
+                        (chat_id,),
+                    )
+                    row = cur.fetchone()
 
-                return {
-                    "total_messages": row["total_messages"] or 0,
-                    "total_tokens": row["total_tokens"] or 0,
-                    "first_message": row["first_message"] or "N/A",
-                    "last_message": row["last_message"] or "N/A",
-                }
+                    return {
+                        "total_messages": row["total_messages"] or 0,
+                        "total_tokens": row["total_tokens"] or 0,
+                        "first_message": row["first_message"].isoformat() if row["first_message"] else "N/A",
+                        "last_message": row["last_message"].isoformat() if row["last_message"] else "N/A",
+                    }
 
         except Exception as e:
             logger.error(f"Failed to get stats: {e}", exc_info=True)
@@ -331,44 +334,34 @@ class Database:
             chat_id = str(chat_id)
 
             with self._get_connection() as conn:
-                # Count total messages for this chat
-                cursor = conn.execute(
-                    "SELECT COUNT(*) as count FROM messages WHERE chat_id = ? AND is_group_chat = 1",
-                    (chat_id,),
-                )
-                total = cursor.fetchone()["count"]
-
-                if total > keep_recent:
-                    # Delete older messages, keeping only recent ones
-                    conn.execute(
-                        """
-                        DELETE FROM messages
-                        WHERE chat_id = ? AND is_group_chat = 1
-                        AND id NOT IN (
-                            SELECT id FROM messages
-                            WHERE chat_id = ? AND is_group_chat = 1
-                            ORDER BY timestamp DESC
-                            LIMIT ?
-                        )
-                        """,
-                        (chat_id, chat_id, keep_recent),
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    # Count total messages for this chat
+                    cur.execute(
+                        "SELECT COUNT(*) as count FROM messages WHERE chat_id = %s AND is_group_chat = TRUE",
+                        (chat_id,),
                     )
-                    deleted = total - keep_recent
-                    logger.info(f"Cleaned up {deleted} old messages from group chat {chat_id}")
+                    total = cur.fetchone()["count"]
+
+                    if total > keep_recent:
+                        # Delete older messages, keeping only recent ones
+                        cur.execute(
+                            """
+                            DELETE FROM messages
+                            WHERE chat_id = %s AND is_group_chat = TRUE
+                            AND id NOT IN (
+                                SELECT id FROM messages
+                                WHERE chat_id = %s AND is_group_chat = TRUE
+                                ORDER BY timestamp DESC
+                                LIMIT %s
+                            )
+                            """,
+                            (chat_id, chat_id, keep_recent),
+                        )
+                        deleted = total - keep_recent
+                        logger.info(f"Cleaned up {deleted} old messages from group chat {chat_id}")
 
         except Exception as e:
             logger.error(f"Failed to cleanup old messages: {e}", exc_info=True)
-
-    def backup_database(self):
-        """Create a backup of the database file."""
-        try:
-            backup_path = f"{self.db_path}.bak"
-            shutil.copy2(self.db_path, backup_path)
-            logger.info(f"Database backed up to {backup_path}")
-            return backup_path
-        except Exception as e:
-            logger.error(f"Failed to backup database: {e}", exc_info=True)
-            return None
 
     def grant_access(self, user_id: int) -> bool:
         """
@@ -382,23 +375,24 @@ class Database:
         """
         try:
             user_id_str = str(user_id)
-            timestamp = datetime.utcnow().isoformat()
+            timestamp = datetime.utcnow()
 
             with self._get_connection() as conn:
-                cursor = conn.execute(
-                    "SELECT user_id FROM granted_users WHERE user_id = ?",
-                    (user_id_str,),
-                )
-                existing = cursor.fetchone()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT user_id FROM granted_users WHERE user_id = %s",
+                        (user_id_str,),
+                    )
+                    existing = cur.fetchone()
 
-                if existing:
-                    logger.info(f"User {user_id} already has access")
-                    return False
+                    if existing:
+                        logger.info(f"User {user_id} already has access")
+                        return False
 
-                conn.execute(
-                    "INSERT INTO granted_users (user_id, granted_at) VALUES (?, ?)",
-                    (user_id_str, timestamp),
-                )
+                    cur.execute(
+                        "INSERT INTO granted_users (user_id, granted_at) VALUES (%s, %s)",
+                        (user_id_str, timestamp),
+                    )
 
             logger.info(f"Granted access to user {user_id}")
             return True
@@ -421,11 +415,12 @@ class Database:
             user_id_str = str(user_id)
 
             with self._get_connection() as conn:
-                cursor = conn.execute(
-                    "DELETE FROM granted_users WHERE user_id = ?",
-                    (user_id_str,),
-                )
-                deleted_count = cursor.rowcount
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "DELETE FROM granted_users WHERE user_id = %s",
+                        (user_id_str,),
+                    )
+                    deleted_count = cur.rowcount
 
             if deleted_count > 0:
                 logger.info(f"Revoked access from user {user_id}")
@@ -452,11 +447,12 @@ class Database:
             user_id_str = str(user_id)
 
             with self._get_connection() as conn:
-                cursor = conn.execute(
-                    "SELECT user_id FROM granted_users WHERE user_id = ?",
-                    (user_id_str,),
-                )
-                result = cursor.fetchone()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT user_id FROM granted_users WHERE user_id = %s",
+                        (user_id_str,),
+                    )
+                    result = cur.fetchone()
 
             return result is not None
 
@@ -473,10 +469,14 @@ class Database:
         """
         try:
             with self._get_connection() as conn:
-                cursor = conn.execute(
-                    "SELECT user_id, granted_at FROM granted_users ORDER BY granted_at DESC"
-                )
-                users = [(row["user_id"], row["granted_at"]) for row in cursor]
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(
+                        "SELECT user_id, granted_at FROM granted_users ORDER BY granted_at DESC"
+                    )
+                    users = [
+                        (row["user_id"], row["granted_at"].isoformat() if row["granted_at"] else "N/A")
+                        for row in cur.fetchall()
+                    ]
 
             return users
 

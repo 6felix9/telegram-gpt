@@ -24,8 +24,7 @@ COPY --from=builder /root/.local /root/.local
 # Copy entire project directory
 COPY . .
 
-# Ensure data directory exists
-RUN mkdir -p data
+# Note: No local data directory needed for PostgreSQL
 
 # Make sure scripts are in PATH
 ENV PATH=/root/.local/bin:$PATH
@@ -39,8 +38,8 @@ RUN useradd -m -u 1000 botuser && \
     chown -R botuser:botuser /app
 USER botuser
 
-# Health check - verify database file is accessible
+# Health check - verify PostgreSQL database connection
 HEALTHCHECK --interval=60s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import sqlite3; sqlite3.connect('data/messages.db').close()" || exit 1
+    CMD python -c "import psycopg2; import os; psycopg2.connect(os.getenv('DATABASE_URL')).close()" || exit 1
 
 CMD ["./start.sh"]
