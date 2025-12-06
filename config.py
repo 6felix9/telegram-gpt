@@ -16,8 +16,10 @@ class Config:
     # Telegram Configuration
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
-    # OpenAI Configuration
+    # OpenAI/Gemini Configuration
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+    GEMINI_BASE_URL = os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     OPENAI_TIMEOUT = int(os.getenv("OPENAI_TIMEOUT", "60"))
     MAX_CONTEXT_TOKENS = int(os.getenv("MAX_CONTEXT_TOKENS", "16000"))
@@ -48,10 +50,13 @@ class Config:
         elif not cls.TELEGRAM_BOT_TOKEN.strip():
             errors.append("TELEGRAM_BOT_TOKEN cannot be empty")
 
-        if not cls.OPENAI_API_KEY:
-            errors.append("OPENAI_API_KEY is required")
-        elif not cls.OPENAI_API_KEY.strip():
+        # Check for either OpenAI or Gemini API key
+        if not cls.OPENAI_API_KEY and not cls.GEMINI_API_KEY:
+            errors.append("Either OPENAI_API_KEY or GEMINI_API_KEY is required")
+        elif cls.OPENAI_API_KEY and not cls.OPENAI_API_KEY.strip():
             errors.append("OPENAI_API_KEY cannot be empty")
+        elif cls.GEMINI_API_KEY and not cls.GEMINI_API_KEY.strip():
+            errors.append("GEMINI_API_KEY cannot be empty")
 
         if not cls.AUTHORIZED_USER_ID:
             errors.append("AUTHORIZED_USER_ID is required")
@@ -71,7 +76,10 @@ class Config:
             errors.append("MAX_CONTEXT_TOKENS must be positive")
 
         # Validate model is known
-        known_models = ["gpt-5-mini", "gpt-4.1-mini", "gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo", "gpt-4-turbo", "gpt-4"]
+        known_models = [
+            "gpt-5-mini", "gpt-4.1-mini", "gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo", "gpt-4-turbo", "gpt-4",
+            "gemini-2.5-flash-preview-09-2025","gemini-2.5-flash", "gemini-2.0-flash-exp", "gemini-1.5-pro", "gemini-1.5-flash"
+        ]
         if cls.OPENAI_MODEL not in known_models:
             logger.warning(
                 f"Unknown model '{cls.OPENAI_MODEL}'. "
@@ -88,6 +96,20 @@ class Config:
         logger.info("Configuration validated successfully")
 
     @classmethod
+    def get_api_key(cls) -> str:
+        """Get the appropriate API key (Gemini takes precedence if both are set)."""
+        if cls.GEMINI_API_KEY:
+            return cls.GEMINI_API_KEY
+        return cls.OPENAI_API_KEY
+
+    @classmethod
+    def get_base_url(cls) -> str | None:
+        """Get the base URL if using Gemini, None for OpenAI."""
+        if cls.GEMINI_API_KEY:
+            return cls.GEMINI_BASE_URL
+        return None
+
+    @classmethod
     def get_model_context_limit(cls, model: str) -> int:
         """Return maximum tokens for given model."""
         LIMITS = {
@@ -98,6 +120,11 @@ class Config:
             "gpt-3.5-turbo": 16384,
             "gpt-4-turbo": 128000,
             "gpt-4": 8192,
+            "gemini-2.5-flash-preview-09-2025": 1000000,
+            "gemini-2.5-flash": 1000000,
+            "gemini-2.0-flash-exp": 1000000,
+            "gemini-1.5-pro": 2000000,
+            "gemini-1.5-flash": 1000000,
         }
         return LIMITS.get(model, 16384)  # Conservative default
 

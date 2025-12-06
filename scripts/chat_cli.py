@@ -70,11 +70,12 @@ class ChatCLI:
         max_tokens = min(config.MAX_CONTEXT_TOKENS, model_limit - 2000)
         self.token_manager = TokenManager(config.OPENAI_MODEL, max_tokens)
 
-        # OpenAI client
+        # OpenAI/Gemini client
         self.openai_client = OpenAIClient(
-            api_key=config.OPENAI_API_KEY,
+            api_key=config.get_api_key(),
             model=config.OPENAI_MODEL,
             timeout=config.OPENAI_TIMEOUT,
+            base_url=config.get_base_url(),
         )
 
         logger.info(f"CLI initialized for chat_id={self.chat_id}, group={is_group}, test_mode={self.is_test_mode}")

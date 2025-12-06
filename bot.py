@@ -73,12 +73,13 @@ def main():
         max_tokens = min(config.MAX_CONTEXT_TOKENS, model_limit - 2000)
         token_manager = TokenManager(config.OPENAI_MODEL, max_tokens)
 
-        # 4. Initialize OpenAI client
-        logger.info("Initializing OpenAI client...")
+        # 4. Initialize OpenAI/Gemini client
+        logger.info("Initializing API client...")
         openai_client = OpenAIClient(
-            api_key=config.OPENAI_API_KEY,
+            api_key=config.get_api_key(),
             model=config.OPENAI_MODEL,
             timeout=config.OPENAI_TIMEOUT,
+            base_url=config.get_base_url(),
         )
 
         # 5. Initialize handlers with dependencies

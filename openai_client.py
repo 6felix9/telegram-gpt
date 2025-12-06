@@ -26,20 +26,25 @@ Important:
 - Be conversational and context-aware of the group discussion
 - Just respond directly, no need to prefix your response with [Tze Foong's Assistant]"""
 
-    def __init__(self, api_key: str, model: str, timeout: int):
+    def __init__(self, api_key: str, model: str, timeout: int, base_url: str | None = None):
         """
-        Initialize OpenAI client.
+        Initialize OpenAI client (supports both OpenAI and Gemini via OpenAI SDK).
 
         Args:
-            api_key: OpenAI API key
-            model: Model name (e.g., "gpt-4o-mini")
+            api_key: API key (OpenAI or Gemini)
+            model: Model name (e.g., "gpt-4o-mini" or "gemini-2.5-flash")
             timeout: Request timeout in seconds
+            base_url: Base URL for API (None for OpenAI, Gemini URL for Gemini)
         """
-        self.client = openai.OpenAI(api_key=api_key, timeout=timeout)
+        if base_url:
+            self.client = openai.OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
+            logger.info(f"Initialized Gemini client with model {model}")
+        else:
+            self.client = openai.OpenAI(api_key=api_key, timeout=timeout)
+            logger.info(f"Initialized OpenAI client with model {model}")
         self.model = model
         self.timeout = timeout
-
-        logger.info(f"Initialized OpenAI client with model {model}")
+        self.base_url = base_url
 
     async def get_completion(self, messages: list[dict], is_group: bool = False) -> str:
         """
@@ -78,63 +83,72 @@ Important:
 
                 # Handle multimodal messages (image + text)
                 elif isinstance(content, list):
-                    if is_group and msg["role"] == "user":
-                        sender_name = msg.get("sender_name", "Unknown")
-                        updated_content = []
-                        for part in content:
-                            # Convert old Chat Completions format to Responses API format
-                            if part.get("type") == "text":
-                                text = part["text"]
+                    updated_content = []
+                    for part in content:
+                        # Handle text parts
+                        if part.get("type") == "text":
+                            text = part["text"]
+                            # For group chats, prepend sender name to user messages
+                            if is_group and msg["role"] == "user":
+                                sender_name = msg.get("sender_name", "Unknown")
                                 if not text.startswith("["):
                                     text = f"[{sender_name}]: {text}"
-                                updated_content.append({"type": "input_text", "text": text})
-                            elif part.get("type") == "image_url":
-                                # Convert image_url object to string format for Responses API
-                                image_url_obj = part.get("image_url", {})
-                                image_url_str = image_url_obj.get("url", "") if isinstance(image_url_obj, dict) else str(image_url_obj)
-                                updated_content.append({"type": "input_image", "image_url": image_url_str})
+                            updated_content.append({
+                                "type": "text",
+                                "text": text
+                            })
+                        # Handle image parts (standard OpenAI format)
+                        elif part.get("type") == "image_url":
+                            image_url_obj = part.get("image_url", {})
+                            if isinstance(image_url_obj, dict):
+                                image_url_str = image_url_obj.get("url", "")
                             else:
-                                # Handle other types (input_text, input_image if already converted)
-                                updated_content.append(part)
-                        formatted_messages.append({
-                            "role": msg["role"],
-                            "content": updated_content
-                        })
-                    else:
-                        # Non-group chat: still need to convert format
-                        updated_content = []
-                        for part in content:
-                            if part.get("type") == "text":
-                                updated_content.append({"type": "input_text", "text": part["text"]})
-                            elif part.get("type") == "image_url":
-                                # Convert image_url object to string format for Responses API
-                                image_url_obj = part.get("image_url", {})
-                                image_url_str = image_url_obj.get("url", "") if isinstance(image_url_obj, dict) else str(image_url_obj)
-                                updated_content.append({"type": "input_image", "image_url": image_url_str})
-                            else:
-                                # Already in Responses API format or other type
-                                updated_content.append(part)
-                        formatted_messages.append({
-                            "role": msg["role"],
-                            "content": updated_content
-                        })
+                                image_url_str = str(image_url_obj)
+                            updated_content.append({
+                                "type": "image_url",
+                                "image_url": {"url": image_url_str}
+                            })
+                        else:
+                            # Pass through other formats
+                            updated_content.append(part)
+                    
+                    formatted_messages.append({
+                        "role": msg["role"],
+                        "content": updated_content
+                    })
 
             # Choose system prompt based on chat type
             system_prompt = self.SYSTEM_PROMPT_GROUP if is_group else self.SYSTEM_PROMPT
             
-            # Run sync OpenAI call in thread pool using Responses API
+            # Add system message to the beginning of messages
+            formatted_messages.insert(0, {
+                "role": "system",
+                "content": system_prompt
+            })
+            
+            # Run sync OpenAI call in thread pool using chat.completions API
             response = await asyncio.to_thread(
-                self.client.responses.create,
+                self.client.chat.completions.create,
                 model=self.model,
-                instructions=system_prompt,
-                input=formatted_messages,
+                messages=formatted_messages,
                 temperature=0.7,  # Balanced creativity
             )
 
-            content = response.output_text
+            content = response.choices[0].message.content
+
+            # Normalize and guard against None / list payloads (e.g., Gemini-style parts)
+            if content is None:
+                logger.error(f"Provider returned empty content: {response}")
+                return "❌ Model returned empty content. Please try again."
+
+            if isinstance(content, list):
+                content = " ".join(
+                    part.get("text", "") if isinstance(part, dict) else str(part)
+                    for part in content
+                )
 
             logger.debug(
-                f"Received Responses API completion: {len(content)} chars, "
+                f"Received chat completion: {len(content)} chars, "
                 f"usage: {response.usage.total_tokens} tokens"
             )
 
@@ -142,8 +156,9 @@ Important:
 
         except openai.AuthenticationError as e:
             logger.error(f"Authentication failed: {e}")
+            provider = "Gemini" if self.base_url else "OpenAI"
             return (
-                "❌ OpenAI API key is invalid. "
+                f"❌ {provider} API key is invalid. "
                 "Please check your configuration."
             )
 
@@ -175,15 +190,17 @@ Important:
 
         except openai.APIConnectionError as e:
             logger.error(f"Connection error: {e}")
+            provider = "Gemini" if self.base_url else "OpenAI"
             return (
-                "❌ Network error connecting to OpenAI. "
+                f"❌ Network error connecting to {provider}. "
                 "Please check your internet connection."
             )
 
         except openai.InternalServerError as e:
-            logger.error(f"OpenAI server error: {e}")
+            logger.error(f"API server error: {e}")
+            provider = "Gemini" if self.base_url else "OpenAI"
             return (
-                "❌ OpenAI service is experiencing issues. "
+                f"❌ {provider} service is experiencing issues. "
                 "Please try again in a moment."
             )
 
@@ -196,21 +213,23 @@ Important:
 
     def test_connection(self) -> bool:
         """
-        Test the OpenAI API connection.
+        Test the API connection.
 
         Returns:
             True if connection successful, False otherwise
         """
         try:
-            # Simple test with minimal tokens using Responses API
-            response = self.client.responses.create(
+            # Simple test with minimal tokens using chat.completions
+            response = self.client.chat.completions.create(
                 model=self.model,
-                input="Hi",
+                messages=[{"role": "user", "content": "Hi"}],
             )
 
-            logger.info("OpenAI API connection test successful")
+            provider = "Gemini" if self.base_url else "OpenAI"
+            logger.info(f"{provider} API connection test successful")
             return True
 
         except Exception as e:
-            logger.error(f"OpenAI API connection test failed: {e}")
+            provider = "Gemini" if self.base_url else "OpenAI"
+            logger.error(f"{provider} API connection test failed: {e}")
             return False

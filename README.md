@@ -1,6 +1,6 @@
 # Telegram GPT Bot
 
-An AI-powered Telegram bot using OpenAI's GPT models with persistent conversation history and intelligent context management.
+An AI-powered Telegram bot using OpenAI's GPT models or Google's Gemini models with persistent conversation history and intelligent context management.
 
 ## Features
 
@@ -17,7 +17,7 @@ An AI-powered Telegram bot using OpenAI's GPT models with persistent conversatio
 - **PostgreSQL** (Neon) with connection pooling for concurrent access
 - **tiktoken** for accurate token counting
 - **python-telegram-bot 21.7** for Telegram API
-- **OpenAI API** for GPT completions
+- **OpenAI API** for GPT completions or **Google Gemini API** via OpenAI-compatible endpoint
 
 ## Quick Start
 
@@ -25,7 +25,7 @@ An AI-powered Telegram bot using OpenAI's GPT models with persistent conversatio
 
 - Python 3.12 or higher
 - Telegram account
-- OpenAI API key
+- OpenAI API key OR Gemini API key
 
 ### Local Development
 
@@ -43,8 +43,11 @@ An AI-powered Telegram bot using OpenAI's GPT models with persistent conversatio
 
 4. **Edit `.env` with your credentials**
    - `TELEGRAM_BOT_TOKEN`: Get from [@BotFather](https://t.me/BotFather)
-   - `OPENAI_API_KEY`: Get from [OpenAI Platform](https://platform.openai.com/api-keys)
+   - `OPENAI_API_KEY`: Get from [OpenAI Platform](https://platform.openai.com/api-keys) (for OpenAI models)
+   - `GEMINI_API_KEY`: Get from [Google AI Studio](https://aistudio.google.com/app/apikey) (for Gemini models)
    - `AUTHORIZED_USER_ID`: Get from [@userinfobot](https://t.me/userinfobot)
+   
+   **Note**: You need either `OPENAI_API_KEY` OR `GEMINI_API_KEY`, not both. If both are set, Gemini will be used.
 
 5. **Run the bot**
    ```bash
@@ -113,12 +116,19 @@ An AI-powered Telegram bot using OpenAI's GPT models with persistent conversatio
 2. Send `/start` command
 3. Copy your user ID (numeric value)
 
-### OpenAI API Key
+### API Key (OpenAI or Gemini)
 
+**For OpenAI:**
 1. Visit [OpenAI Platform](https://platform.openai.com/api-keys)
 2. Sign in or create an account
 3. Create a new API key
 4. Copy the key immediately (you won't see it again)
+
+**For Gemini:**
+1. Visit [Google AI Studio](https://aistudio.google.com/app/apikey)
+2. Sign in with your Google account
+3. Create a new API key
+4. Copy the key immediately
 
 ## Usage
 
@@ -197,9 +207,11 @@ All configuration is done via environment variables in `.env`:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Required | Your bot token from BotFather |
-| `OPENAI_API_KEY` | Required | Your OpenAI API key |
+| `OPENAI_API_KEY` | Required* | Your OpenAI API key (if using OpenAI) |
+| `GEMINI_API_KEY` | Required* | Your Gemini API key (if using Gemini) |
+| `GEMINI_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta/openai/` | Gemini API base URL |
 | `AUTHORIZED_USER_ID` | Required | Telegram user ID allowed to use bot |
-| `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI model to use |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Model to use (e.g., `gpt-4o-mini`, `gemini-2.5-flash`) |
 | `MAX_CONTEXT_TOKENS` | `16000` | Maximum tokens in conversation context |
 | `OPENAI_TIMEOUT` | `60` | API request timeout in seconds |
 | `DATABASE_URL` | Required | PostgreSQL connection string (e.g., Neon DB) |
@@ -280,9 +292,10 @@ All errors are logged and user-friendly messages are returned.
 - Verify your Telegram user ID matches `AUTHORIZED_USER_ID`
 - Check bot logs for errors: `docker-compose logs -f`
 
-### "OpenAI API key is invalid"
+### "API key is invalid"
 
-- Verify `OPENAI_API_KEY` in `.env` is correct
+- Verify `OPENAI_API_KEY` or `GEMINI_API_KEY` in `.env` is correct
+- Ensure you're using the correct API key for the model you've selected
 - Ensure no extra spaces or quotes around the key
 
 ### "Rate limit exceeded"
