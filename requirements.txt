@@ -2,3 +2,4 @@ python-telegram-bot==21.7
 openai==2.9.0
 tiktoken==0.8.0
 python-dotenv==1.0.1
+psycopg2-binary==2.9.9

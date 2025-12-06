@@ -33,13 +33,18 @@ async def post_init(app: Application):
     logger.info(f"Model: {config.OPENAI_MODEL}")
     logger.info(f"Max context tokens: {config.MAX_CONTEXT_TOKENS}")
     logger.info(f"Authorized user: {config.AUTHORIZED_USER_ID}")
-    logger.info(f"Database: {config.DATABASE_PATH}")
+    # Hide sensitive connection string details in logs
+    db_display = config.DATABASE_URL[:50] + "..." if len(config.DATABASE_URL) > 50 else config.DATABASE_URL
+    logger.info(f"Database: {db_display}")
     logger.info("=" * 50)
 
 
 async def post_shutdown(app: Application):
     """Called before bot stops."""
     logger.info("Bot shutting down gracefully...")
+    # Close database connection pool
+    if db:
+        db.close()
 
 
 def signal_handler(signum, frame):
@@ -60,7 +65,7 @@ def main():
 
         # 2. Initialize database
         logger.info("Initializing database...")
-        db = Database(config.DATABASE_PATH)
+        db = Database(config.DATABASE_URL)
 
         # 3. Initialize token manager
         logger.info("Initializing token manager...")
