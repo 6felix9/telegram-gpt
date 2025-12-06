@@ -59,19 +59,39 @@ An AI-powered Telegram bot using OpenAI's GPT models with persistent conversatio
    # Edit .env with your credentials
    ```
 
-2. **Build and run**
+2. **Build and push arm64 image (local build machine)**
    ```bash
-   docker-compose up -d
+   docker login
+   docker buildx build --platform linux/arm64 -t felixlmao/telegram-gpt:latest --push .
    ```
 
-3. **View logs**
+3. **Run from the published image**
    ```bash
-   docker-compose logs -f
+   docker pull felixlmao/telegram-gpt:latest
+   docker run -d \
+     --name telegram-gpt-bot \
+     --restart unless-stopped \
+     --env-file .env \
+     -v "$(pwd)/data:/app/data" \
+     felixlmao/telegram-gpt:latest
    ```
 
-4. **Stop the bot**
+4. **View logs**
    ```bash
-   docker-compose down
+   docker logs -f telegram-gpt-bot
+   ```
+
+5. **Redeploy with a newer image**
+   ```bash
+   docker stop telegram-gpt-bot || true
+   docker rm telegram-gpt-bot || true
+   docker pull felixlmao/telegram-gpt:latest
+   docker run -d \
+     --name telegram-gpt-bot \
+     --restart unless-stopped \
+     --env-file .env \
+     -v "$(pwd)/data:/app/data" \
+     felixlmao/telegram-gpt:latest
    ```
 
 ## Getting Credentials
