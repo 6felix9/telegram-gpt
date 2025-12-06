@@ -71,7 +71,7 @@ class Config:
             errors.append("MAX_CONTEXT_TOKENS must be positive")
 
         # Validate model is known
-        known_models = ["gpt-4.1-mini", "gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo", "gpt-4-turbo", "gpt-4"]
+        known_models = ["gpt-5-mini", "gpt-4.1-mini", "gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo", "gpt-4-turbo", "gpt-4"]
         if cls.OPENAI_MODEL not in known_models:
             logger.warning(
                 f"Unknown model '{cls.OPENAI_MODEL}'. "
@@ -91,6 +91,7 @@ class Config:
     def get_model_context_limit(cls, model: str) -> int:
         """Return maximum tokens for given model."""
         LIMITS = {
+            "gpt-5-mini": 128000,
             "gpt-4.1-mini": 128000,
             "gpt-4o-mini": 128000,
             "gpt-4o": 128000,
