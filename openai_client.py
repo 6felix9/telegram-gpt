@@ -13,19 +13,20 @@ class OpenAIClient:
 
 You are an AI assistant operating in Telegram, and your purpose is to assist Tze Foong with their requests.
 
-Important: When asked who you are or what your name is, always identify yourself as "Tze Foong's Assistant" - never mention OpenAI.
-
 Response style: Be direct and concise. Do not include prose, conversational filler, or preambles. Just respond directly to the request."""
 
-    SYSTEM_PROMPT_GROUP = """You are Tze Foong's Assistant, an AI assistant operating in a Telegram group chat.
+    SYSTEM_PROMPT_GROUP = """You are Tze Foong's Assistant. This is your name and identity - never say you are OpenAI or an OpenAI language model.
 
-Your purpose is to assist Tze Foong and provide helpful responses based on the conversation context.
+You are an AI assistant operating in a group chat on Telegram, and your purpose is to assist everyone in the group with their requests.
 
-Important:
-- Messages are formatted as [Name]: message content
-- Pay attention to who is speaking and reference previous messages when relevant
-- When someone says "answer her question" or similar, look at the previous messages to understand the context
-- Be conversational and context-aware of the group discussion"""
+Message format:
+- Messages from users are formatted as [Name]: message content
+
+Response style:
+- Pay attention to who is speaking and reference pervious messages when relevant
+- If someone asks another person a question and then asks you to answer it, look at the context to understand what was asked
+- You are conversational and context-aware, keep responses concise unless detail is needed
+- Never prefix your responses with your name or any tag like [Tze Foong's Assistant]"""
 
     def __init__(self, api_key: str, model: str, timeout: int):
         """
@@ -83,40 +84,59 @@ Important:
                         sender_name = msg.get("sender_name", "Unknown")
                         updated_content = []
                         for part in content:
+                            # Convert old Chat Completions format to Responses API format
                             if part.get("type") == "text":
                                 text = part["text"]
                                 if not text.startswith("["):
                                     text = f"[{sender_name}]: {text}"
-                                updated_content.append({"type": "text", "text": text})
+                                updated_content.append({"type": "input_text", "text": text})
+                            elif part.get("type") == "image_url":
+                                # Convert image_url object to string format for Responses API
+                                image_url_obj = part.get("image_url", {})
+                                image_url_str = image_url_obj.get("url", "") if isinstance(image_url_obj, dict) else str(image_url_obj)
+                                updated_content.append({"type": "input_image", "image_url": image_url_str})
                             else:
+                                # Handle other types (input_text, input_image if already converted)
                                 updated_content.append(part)
                         formatted_messages.append({
                             "role": msg["role"],
                             "content": updated_content
                         })
                     else:
+                        # Non-group chat: still need to convert format
+                        updated_content = []
+                        for part in content:
+                            if part.get("type") == "text":
+                                updated_content.append({"type": "input_text", "text": part["text"]})
+                            elif part.get("type") == "image_url":
+                                # Convert image_url object to string format for Responses API
+                                image_url_obj = part.get("image_url", {})
+                                image_url_str = image_url_obj.get("url", "") if isinstance(image_url_obj, dict) else str(image_url_obj)
+                                updated_content.append({"type": "input_image", "image_url": image_url_str})
+                            else:
+                                # Already in Responses API format or other type
+                                updated_content.append(part)
                         formatted_messages.append({
                             "role": msg["role"],
-                            "content": content
+                            "content": updated_content
                         })
 
             # Choose system prompt based on chat type
             system_prompt = self.SYSTEM_PROMPT_GROUP if is_group else self.SYSTEM_PROMPT
-            system_message = {"role": "system", "content": system_prompt}
-            messages_with_system = [system_message] + formatted_messages
             
-            # Run sync OpenAI call in thread pool
+            # Run sync OpenAI call in thread pool using Responses API
             response = await asyncio.to_thread(
-                self.client.chat.completions.create,
+                self.client.responses.create,
                 model=self.model,
-                messages=messages_with_system,
+                instructions=system_prompt,
+                input=formatted_messages,
                 temperature=0.7,  # Balanced creativity
             )
 
-            content = response.choices[0].message.content
+            content = response.output_text
 
             logger.debug(
-                f"Received completion: {len(content)} chars, "
+                f"Received Responses API completion: {len(content)} chars, "
                 f"usage: {response.usage.total_tokens} tokens"
             )
 
@@ -184,11 +204,10 @@ Important:
             True if connection successful, False otherwise
         """
         try:
-            # Simple test with minimal tokens
-            response = self.client.chat.completions.create(
+            # Simple test with minimal tokens using Responses API
+            response = self.client.responses.create(
                 model=self.model,
-                messages=[{"role": "user", "content": "Hi"}],
-                max_tokens=5,
+                input="Hi",
             )
 
             logger.info("OpenAI API connection test successful")
