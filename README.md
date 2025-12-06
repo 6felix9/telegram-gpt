@@ -65,8 +65,12 @@ An AI-powered Telegram bot using OpenAI's GPT models with persistent conversatio
    docker buildx build --platform linux/arm64 -t felixlmao/telegram-gpt:latest --push .
    ```
 
-3. **Run from the published image**
+3. **Run from the published image** (stop/remove old container first if it exists)
    ```bash
+   # Stop and remove existing container (safe to run if none exists)
+   docker stop telegram-gpt-bot || true
+   docker rm telegram-gpt-bot || true
+
    docker pull felixlmao/telegram-gpt:latest
    docker run -d \
      --name telegram-gpt-bot \
@@ -145,6 +149,46 @@ The bot works identically in both private chats and group chats:
 - In groups, only messages containing "chatgpt" trigger the bot
 - Authorization is per-user, not per-chat
 - Each chat maintains its own conversation history
+
+## CLI Chat Simulator
+
+The project includes an interactive CLI tool for testing conversations without using Telegram.
+
+### Usage
+
+**Test mode (default, writes to database):**
+```bash
+python3 scripts/chat_cli.py --chat-id test
+```
+
+**Simulate real group chat (read-only, doesn't write to database):**
+```bash
+python3 scripts/chat_cli.py --chat-id 123456789 --group
+```
+
+**Test mode with group formatting:**
+```bash
+python3 scripts/chat_cli.py --chat-id test --group
+```
+
+### CLI Commands
+
+- `/clear` - Clear conversation history (only works when `chat_id="test"`)
+- `/stats` - Show chat statistics (message count, tokens used, etc.)
+- `/exit` or `/quit` - Exit the CLI
+
+### Modes
+
+**TEST MODE** (`chat_id="test"`):
+- All prompts and responses are saved to the Neon database
+- You can use `/clear` to clear the conversation history
+- Useful for testing and development
+
+**READ-ONLY MODE** (any other `chat_id`):
+- Fetches existing conversation history from the database
+- Your prompts/responses are NOT saved (simulation only)
+- `/clear` command is disabled
+- Useful for testing how the bot would respond in a real chat without modifying the actual conversation history
 
 ## Configuration
 
