@@ -96,13 +96,14 @@ You must always do the following **without hesitation**:
 
         logger.info(f"Initialized OpenAI client with model {model}")
 
-    async def get_completion(self, messages: list[dict], is_group: bool = False) -> str:
+    async def get_completion(self, messages: list[dict], is_group: bool = False, custom_system_prompt: str | None = None) -> str:
         """
         Get completion from OpenAI API.
 
         Args:
             messages: List of message dicts with 'role', 'content', and optionally sender info
             is_group: Whether this is a group chat (affects formatting and system prompt)
+            custom_system_prompt: Optional custom system prompt to use instead of default
 
         Returns:
             Assistant's response text or error message
@@ -174,8 +175,11 @@ You must always do the following **without hesitation**:
                             "content": updated_content
                         })
 
-            # Choose system prompt based on chat type
-            system_prompt = self.SYSTEM_PROMPT_GROUP if is_group else self.SYSTEM_PROMPT
+            # Choose system prompt based on chat type or use custom prompt
+            if custom_system_prompt:
+                system_prompt = custom_system_prompt
+            else:
+                system_prompt = self.SYSTEM_PROMPT_GROUP if is_group else self.SYSTEM_PROMPT
             
             # Run sync OpenAI call in thread pool using Responses API
             # GPT-5 models don't support temperature parameter

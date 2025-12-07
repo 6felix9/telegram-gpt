@@ -6,6 +6,7 @@ This script allows you to:
 - Test conversations using a dedicated "test" chat_id (default)
 - Simulate conversations in real group chats (read-only mode)
 - Clear conversation history (only for chat_id="test")
+- Change bot personality for group chats
 
 Usage:
     # Test mode (default, writes to database)
@@ -19,6 +20,8 @@ Usage:
 
 Commands:
     /clear - Clear conversation history (only works when chat_id="test")
+    /stats - Show chat statistics
+    /personality [name] - View or change active personality (group chats only)
     /exit or /quit - Exit the CLI
 """
 import argparse
@@ -130,7 +133,23 @@ class ChatCLI:
             )
 
             # Get completion from OpenAI
-            response = await self.openai_client.get_completion(messages, self.is_group)
+            # For group chats, fetch active personality and use custom prompt if available
+            custom_prompt = None
+            if self.is_group:
+                try:
+                    active_personality = self.db.get_active_personality()
+                    # If personality is "normal", use default SYSTEM_PROMPT_GROUP
+                    # Otherwise fetch custom prompt from database
+                    if active_personality != "normal":
+                        custom_prompt = self.db.get_personality_prompt(active_personality)
+                        # If custom prompt not found, fall back to default
+                        if not custom_prompt:
+                            logger.warning(f"Personality '{active_personality}' not found in database, using default")
+                except Exception as e:
+                    logger.error(f"Error fetching personality: {e}", exc_info=True)
+                    # Continue with default prompt on error
+
+            response = await self.openai_client.get_completion(messages, self.is_group, custom_system_prompt=custom_prompt)
 
             # For test mode, store assistant's response
             if self.is_test_mode:
@@ -181,6 +200,39 @@ class ChatCLI:
                 "last_message": "N/A",
             }
 
+    def handle_personality_command(self, args: list[str]) -> None:
+        """
+        Handle /personality command.
+
+        Args:
+            args: Command arguments (empty list or [personality_name])
+        """
+        try:
+            # If no args, show current active personality
+            if not args or len(args) == 0:
+                active_personality = self.db.get_active_personality()
+                print(f"\nCurrent personality: {active_personality}")
+                print("Usage: /personality <name>")
+                print("Example: /personality villain\n")
+                return
+
+            # Parse personality name from argument
+            personality_name = args[0].strip()
+
+            # Check if personality exists
+            if not self.db.personality_exists(personality_name):
+                print(f"\n❌ No personality '{personality_name}' found.\n")
+                return
+
+            # Set active personality
+            self.db.set_active_personality(personality_name)
+            print(f"\n✅ Personality changed to '{personality_name}'\n")
+            logger.info(f"Personality changed to {personality_name}")
+
+        except Exception as e:
+            logger.error(f"Error handling personality command: {e}", exc_info=True)
+            print(f"\n❌ Failed to change personality: {e}\n")
+
     async def run(self):
         """Run the interactive CLI loop."""
         mode_str = "TEST MODE" if self.is_test_mode else "READ-ONLY MODE"
@@ -197,7 +249,7 @@ class ChatCLI:
                   f"{stats['total_tokens']:,} tokens")
             print("⚠️  READ-ONLY MODE: Your prompts/responses will NOT be saved to database\n")
 
-        print("Type your message (or /clear to clear history, /exit to quit):\n")
+        print("Type your message (or /clear, /stats, /personality [name], /exit to quit):\n")
 
         while True:
             try:
@@ -231,6 +283,13 @@ class ChatCLI:
                     print(f"  Messages: {stats['total_messages']}")
                     print(f"  Total tokens: {stats['total_tokens']:,}")
                     print(f"  Since: {first_msg}\n")
+                    continue
+
+                if user_input.lower().startswith("/personality"):
+                    # Parse command: /personality or /personality <name>
+                    parts = user_input.split(None, 1)
+                    args = parts[1:] if len(parts) > 1 else []
+                    self.handle_personality_command(args)
                     continue
 
                 # Process message
