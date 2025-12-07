@@ -161,7 +161,23 @@ async def process_request(message, prompt: str, user_id: int, sender_name: str, 
         )
 
         # 5. Get completion from OpenAI
-        response = await openai_client.get_completion(messages, is_group)
+        # For group chats, fetch active personality and use custom prompt if available
+        custom_prompt = None
+        if is_group:
+            try:
+                active_personality = db.get_active_personality()
+                # If personality is "normal", use default SYSTEM_PROMPT_GROUP
+                # Otherwise fetch custom prompt from database
+                if active_personality != "normal":
+                    custom_prompt = db.get_personality_prompt(active_personality)
+                    # If custom prompt not found, fall back to default
+                    if not custom_prompt:
+                        logger.warning(f"Personality '{active_personality}' not found in database, using default")
+            except Exception as e:
+                logger.error(f"Error fetching personality: {e}", exc_info=True)
+                # Continue with default prompt on error
+
+        response = await openai_client.get_completion(messages, is_group, custom_system_prompt=custom_prompt)
 
         # 6. Count and store assistant's response
         assistant_tokens = token_manager.count_message_tokens("assistant", response)
@@ -307,7 +323,23 @@ async def process_image_request(
         )
 
         # 9. Call OpenAI with vision support
-        response_text = await openai_client.get_completion(messages, is_group)
+        # For group chats, fetch active personality and use custom prompt if available
+        custom_prompt = None
+        if is_group:
+            try:
+                active_personality = db.get_active_personality()
+                # If personality is "normal", use default SYSTEM_PROMPT_GROUP
+                # Otherwise fetch custom prompt from database
+                if active_personality != "normal":
+                    custom_prompt = db.get_personality_prompt(active_personality)
+                    # If custom prompt not found, fall back to default
+                    if not custom_prompt:
+                        logger.warning(f"Personality '{active_personality}' not found in database, using default")
+            except Exception as e:
+                logger.error(f"Error fetching personality: {e}", exc_info=True)
+                # Continue with default prompt on error
+
+        response_text = await openai_client.get_completion(messages, is_group, custom_system_prompt=custom_prompt)
 
         # 10. Store assistant response with tiktoken-counted tokens
         response_tokens = token_manager.count_message_tokens("assistant", response_text)
@@ -518,6 +550,56 @@ async def version_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"Bot version: {config.BOT_VERSION}")
     logger.info(f"Version shown for chat {update.message.chat_id}")
+
+
+async def personality_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Change or view the active personality (main authorized user only)."""
+
+    user_id = update.message.from_user.id
+    if not is_main_authorized_user(user_id):
+        await update.message.reply_text("Sorry, only the main authorized user can change personality.")
+        return
+
+    # If no args, show current active personality
+    if not context.args or len(context.args) == 0:
+        try:
+            active_personality = db.get_active_personality()
+            await update.message.reply_text(
+                f"Current personality: **{active_personality}**\n\n"
+                f"Usage: /personality <name>\n"
+                f"Example: /personality villain",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.error(f"Error getting active personality: {e}", exc_info=True)
+            await update.message.reply_text(
+                "❌ Failed to retrieve active personality. Please try again."
+            )
+        return
+
+    # Parse personality name from argument
+    personality_name = context.args[0].strip()
+
+    try:
+        # Check if personality exists
+        if not db.personality_exists(personality_name):
+            await update.message.reply_text(
+                f"❌ No personality '{personality_name}' found."
+            )
+            return
+
+        # Set active personality
+        db.set_active_personality(personality_name)
+        await update.message.reply_text(
+            f"✅ Personality changed to '{personality_name}'"
+        )
+        logger.info(f"User {user_id} changed personality to {personality_name}")
+
+    except Exception as e:
+        logger.error(f"Error changing personality: {e}", exc_info=True)
+        await update.message.reply_text(
+            "❌ Failed to change personality. Please try again."
+        )
 
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
