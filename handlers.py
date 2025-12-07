@@ -132,14 +132,14 @@ async def process_request(message, prompt: str, user_id: int, sender_name: str, 
     message_id = message.message_id
 
     try:
-        # 1. Count tokens in user's message
+        # 1. Count tokens in user's message (use prompt for token counting)
         user_tokens = token_manager.count_message_tokens("user", prompt)
 
-        # 2. Store user message
+        # 2. Store user message (store original message with "chatgpt" keyword)
         db.add_message(
             chat_id=chat_id,
             role="user",
-            content=prompt,
+            content=message.text,
             user_id=user_id,
             message_id=message_id,
             token_count=user_tokens,
@@ -255,9 +255,9 @@ async def process_image_request(
         content_text = prompt if prompt else ""
 
         # 4. Store caption as separate text message (preserved in future context)
-        # Prefix with [image] to indicate image was part of this turn
-        if content_text:
-            caption_with_marker = f"[image] {content_text}"
+        # Store original caption (with "chatgpt" keyword) prefixed with [image]
+        if message.caption:
+            caption_with_marker = f"[image] {message.caption}"
         else:
             caption_with_marker = "[image]"
 
