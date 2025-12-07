@@ -80,6 +80,30 @@ class Database:
                         )
                     """)
 
+                    # Create personality table
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS personality (
+                            personality TEXT PRIMARY KEY,
+                            prompt TEXT NOT NULL
+                        )
+                    """)
+
+                    # Create active_personality table (single row table)
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS active_personality (
+                            id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+                            personality TEXT NOT NULL DEFAULT 'normal',
+                            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """)
+
+                    # Initialize active_personality if empty
+                    cur.execute("""
+                        INSERT INTO active_personality (id, personality, updated_at)
+                        SELECT 1, 'normal', CURRENT_TIMESTAMP
+                        WHERE NOT EXISTS (SELECT 1 FROM active_personality WHERE id = 1)
+                    """)
+
                 logger.info("Database tables initialized successfully")
 
         except Exception as e:
@@ -483,3 +507,103 @@ class Database:
         except Exception as e:
             logger.error(f"Failed to get granted users: {e}", exc_info=True)
             return []
+
+    def get_personality_prompt(self, personality: str) -> str | None:
+        """
+        Get the prompt for a specific personality.
+
+        Args:
+            personality: Personality name to fetch
+
+        Returns:
+            Prompt text if found, None otherwise
+        """
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(
+                        "SELECT prompt FROM personality WHERE personality = %s",
+                        (personality,)
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        return row["prompt"]
+                    return None
+
+        except Exception as e:
+            logger.error(f"Failed to get personality prompt: {e}", exc_info=True)
+            return None
+
+    def get_active_personality(self) -> str:
+        """
+        Get the currently active personality.
+
+        Returns:
+            Active personality name (defaults to 'normal')
+        """
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(
+                        "SELECT personality FROM active_personality WHERE id = 1"
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        return row["personality"]
+                    return "normal"
+
+        except Exception as e:
+            logger.error(f"Failed to get active personality: {e}", exc_info=True)
+            return "normal"
+
+    def set_active_personality(self, personality: str) -> None:
+        """
+        Set the active personality.
+
+        Args:
+            personality: Personality name to activate
+        """
+        try:
+            timestamp = datetime.utcnow()
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO active_personality (id, personality, updated_at)
+                        VALUES (1, %s, %s)
+                        ON CONFLICT (id) DO UPDATE
+                        SET personality = EXCLUDED.personality,
+                            updated_at = EXCLUDED.updated_at
+                        """,
+                        (personality, timestamp)
+                    )
+
+            logger.info(f"Active personality set to: {personality}")
+
+        except Exception as e:
+            logger.error(f"Failed to set active personality: {e}", exc_info=True)
+            raise
+
+    def personality_exists(self, personality: str) -> bool:
+        """
+        Check if a personality exists in the database.
+
+        Args:
+            personality: Personality name to check
+
+        Returns:
+            True if personality exists, False otherwise
+        """
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT personality FROM personality WHERE personality = %s",
+                        (personality,)
+                    )
+                    result = cur.fetchone()
+                    return result is not None
+
+        except Exception as e:
+            logger.error(f"Failed to check personality existence: {e}", exc_info=True)
+            return False
