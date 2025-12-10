@@ -223,7 +223,8 @@ class Database:
                     """
                     if exclude_images:
                         query += " AND has_image = FALSE"
-                    query += " ORDER BY timestamp DESC"
+                    # Fetch a bounded set of recent messages to avoid large loads
+                    query += " ORDER BY timestamp DESC LIMIT 500"
 
                     cur.execute(query, (chat_id,))
 
