@@ -132,8 +132,16 @@ async def process_request(message, prompt: str, user_id: int, sender_name: str, 
     message_id = message.message_id
 
     try:
+        # 0. Get active model from database
+        try:
+            active_model = db.get_active_model()
+        except Exception as e:
+            logger.error(f"Error fetching active model: {e}", exc_info=True)
+            # Fall back to config default
+            active_model = config.OPENAI_MODEL
+
         # 1. Count tokens in user's message (use prompt for token counting)
-        user_tokens = token_manager.count_message_tokens("user", prompt)
+        user_tokens = token_manager.count_message_tokens_for_model("user", prompt, active_model)
 
         # 2. Store user message (store original message with "chatgpt" keyword)
         db.add_message(
@@ -177,10 +185,10 @@ async def process_request(message, prompt: str, user_id: int, sender_name: str, 
                 logger.error(f"Error fetching personality: {e}", exc_info=True)
                 # Continue with default prompt on error
 
-        response = await openai_client.get_completion(messages, is_group, custom_system_prompt=custom_prompt)
+        response = await openai_client.get_completion(messages, is_group, custom_system_prompt=custom_prompt, model=active_model)
 
         # 6. Count and store assistant's response
-        assistant_tokens = token_manager.count_message_tokens("assistant", response)
+        assistant_tokens = token_manager.count_message_tokens_for_model("assistant", response, active_model)
         db.add_message(
             chat_id=chat_id,
             role="assistant",
@@ -257,6 +265,14 @@ async def process_image_request(
     message_id = message.message_id
 
     try:
+        # 0. Get active model from database
+        try:
+            active_model = db.get_active_model()
+        except Exception as e:
+            logger.error(f"Error fetching active model: {e}", exc_info=True)
+            # Fall back to config default
+            active_model = config.OPENAI_MODEL
+
         # 1. Download image as bytes (in-memory only)
         import base64
         photo = message.photo[-1]  # Get highest resolution
@@ -277,7 +293,7 @@ async def process_image_request(
         else:
             caption_with_marker = "[image]"
 
-        caption_tokens = token_manager.count_message_tokens("user", caption_with_marker)
+        caption_tokens = token_manager.count_message_tokens_for_model("user", caption_with_marker, active_model)
         db.add_message(
             chat_id=chat_id,
             role="user",
@@ -339,10 +355,10 @@ async def process_image_request(
                 logger.error(f"Error fetching personality: {e}", exc_info=True)
                 # Continue with default prompt on error
 
-        response_text = await openai_client.get_completion(messages, is_group, custom_system_prompt=custom_prompt)
+        response_text = await openai_client.get_completion(messages, is_group, custom_system_prompt=custom_prompt, model=active_model)
 
         # 10. Store assistant response with tiktoken-counted tokens
-        response_tokens = token_manager.count_message_tokens("assistant", response_text)
+        response_tokens = token_manager.count_message_tokens_for_model("assistant", response_text, active_model)
         db.add_message(
             chat_id=chat_id,
             role="assistant",
@@ -599,6 +615,56 @@ async def personality_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         logger.error(f"Error changing personality: {e}", exc_info=True)
         await update.message.reply_text(
             "❌ Failed to change personality. Please try again."
+        )
+
+
+async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Change or view the active model (main authorized user only)."""
+
+    user_id = update.message.from_user.id
+    if not is_main_authorized_user(user_id):
+        await update.message.reply_text("Sorry, only the main authorized user can change model.")
+        return
+
+    # If no args, show current active model
+    if not context.args or len(context.args) == 0:
+        try:
+            active_model = db.get_active_model()
+            await update.message.reply_text(
+                f"Current model: **{active_model}**\n\n"
+                f"Usage: /model <name>\n"
+                f"Example: /model gpt-4.1-mini",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.error(f"Error getting active model: {e}", exc_info=True)
+            await update.message.reply_text(
+                "❌ Failed to retrieve active model. Please try again."
+            )
+        return
+
+    # Parse model name from argument
+    model_name = context.args[0].strip()
+
+    try:
+        # Check if model exists
+        if not db.model_exists(model_name):
+            await update.message.reply_text(
+                f"❌ No model '{model_name}' found."
+            )
+            return
+
+        # Set active model
+        db.set_active_model(model_name)
+        await update.message.reply_text(
+            f"✅ Model changed to '{model_name}'"
+        )
+        logger.info(f"User {user_id} changed model to {model_name}")
+
+    except Exception as e:
+        logger.error(f"Error changing model: {e}", exc_info=True)
+        await update.message.reply_text(
+            "❌ Failed to change model. Please try again."
         )
 
 

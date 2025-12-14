@@ -88,6 +88,13 @@ class Database:
                         )
                     """)
 
+                    # Create model table
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS model (
+                            model_name TEXT PRIMARY KEY
+                        )
+                    """)
+
                     # Create active_personality table (single row table)
                     cur.execute("""
                         CREATE TABLE IF NOT EXISTS active_personality (
@@ -102,6 +109,21 @@ class Database:
                         INSERT INTO active_personality (id, personality, updated_at)
                         SELECT 1, 'normal', CURRENT_TIMESTAMP
                         WHERE NOT EXISTS (SELECT 1 FROM active_personality WHERE id = 1)
+                    """)
+
+                    # Create active_model table (single row table)
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS active_model (
+                            id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+                            model TEXT NOT NULL DEFAULT 'gpt-4o-mini'
+                        )
+                    """)
+
+                    # Initialize active_model if empty
+                    cur.execute("""
+                        INSERT INTO active_model (id, model)
+                        SELECT 1, 'gpt-4o-mini'
+                        WHERE NOT EXISTS (SELECT 1 FROM active_model WHERE id = 1)
                     """)
 
                 logger.info("Database tables initialized successfully")
@@ -608,3 +630,75 @@ class Database:
         except Exception as e:
             logger.error(f"Failed to check personality existence: {e}", exc_info=True)
             return False
+
+    def model_exists(self, model_name: str) -> bool:
+        """
+        Check if a model exists in the database.
+
+        Args:
+            model_name: Model name to check
+
+        Returns:
+            True if model exists, False otherwise
+        """
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT model_name FROM model WHERE model_name = %s",
+                        (model_name,)
+                    )
+                    result = cur.fetchone()
+                    return result is not None
+
+        except Exception as e:
+            logger.error(f"Failed to check model existence: {e}", exc_info=True)
+            return False
+
+    def get_active_model(self) -> str:
+        """
+        Get the currently active model.
+
+        Returns:
+            Active model name (defaults to 'gpt-4o-mini')
+        """
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(
+                        "SELECT model FROM active_model WHERE id = 1"
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        return row["model"]
+                    return "gpt-4o-mini"
+
+        except Exception as e:
+            logger.error(f"Failed to get active model: {e}", exc_info=True)
+            return "gpt-4o-mini"
+
+    def set_active_model(self, model: str) -> None:
+        """
+        Set the active model.
+
+        Args:
+            model: Model name to activate
+        """
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO active_model (id, model)
+                        VALUES (1, %s)
+                        ON CONFLICT (id) DO UPDATE
+                        SET model = EXCLUDED.model
+                        """,
+                        (model,)
+                    )
+
+            logger.info(f"Active model set to: {model}")
+
+        except Exception as e:
+            logger.error(f"Failed to set active model: {e}", exc_info=True)
+            raise

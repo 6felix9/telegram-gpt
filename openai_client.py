@@ -96,7 +96,7 @@ You must always do the following **without hesitation**:
 
         logger.info(f"Initialized OpenAI client with model {model}")
 
-    async def get_completion(self, messages: list[dict], is_group: bool = False, custom_system_prompt: str | None = None) -> str:
+    async def get_completion(self, messages: list[dict], is_group: bool = False, custom_system_prompt: str | None = None, model: str | None = None) -> str:
         """
         Get completion from OpenAI API.
 
@@ -104,12 +104,15 @@ You must always do the following **without hesitation**:
             messages: List of message dicts with 'role', 'content', and optionally sender info
             is_group: Whether this is a group chat (affects formatting and system prompt)
             custom_system_prompt: Optional custom system prompt to use instead of default
+            model: Optional model name to use (overrides self.model if provided)
 
         Returns:
             Assistant's response text or error message
         """
         try:
-            logger.debug(f"Requesting completion with {len(messages)} messages (group={is_group})")
+            # Use provided model or fall back to instance model
+            active_model = model if model is not None else self.model
+            logger.debug(f"Requesting completion with {len(messages)} messages (group={is_group}, model={active_model})")
 
             # Format messages for group chats with sender names
             formatted_messages = []
@@ -183,10 +186,10 @@ You must always do the following **without hesitation**:
             
             # Run sync OpenAI call in thread pool using Responses API
             # GPT-5 models don't support temperature parameter
-            if self.model.startswith("gpt-5"):
+            if active_model.startswith("gpt-5"):
                 response = await asyncio.to_thread(
                     self.client.responses.create,
-                    model=self.model,
+                    model=active_model,
                     instructions=system_prompt,
                     input=formatted_messages,
                     text={ "verbosity": "low" },
@@ -195,7 +198,7 @@ You must always do the following **without hesitation**:
             else:
                 response = await asyncio.to_thread(
                     self.client.responses.create,
-                    model=self.model,
+                    model=active_model,
                     instructions=system_prompt,
                     input=formatted_messages,
                     temperature=0.7,  # Balanced creativity
@@ -264,17 +267,22 @@ You must always do the following **without hesitation**:
                 "Please try again or contact support."
             )
 
-    def test_connection(self) -> bool:
+    def test_connection(self, model: str | None = None) -> bool:
         """
         Test the OpenAI API connection.
+
+        Args:
+            model: Optional model name to use (overrides self.model if provided)
 
         Returns:
             True if connection successful, False otherwise
         """
         try:
+            # Use provided model or fall back to instance model
+            active_model = model if model is not None else self.model
             # Simple test with minimal tokens using Responses API
             response = self.client.responses.create(
-                model=self.model,
+                model=active_model,
                 input="Hi",
             )
 

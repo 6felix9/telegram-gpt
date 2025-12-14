@@ -71,6 +71,43 @@ class TokenManager:
         message = {"role": role, "content": content}
         return self.count_tokens([message]) - 2  # Remove reply priming
 
+    def count_message_tokens_for_model(self, role: str, content: str, model: str) -> int:
+        """
+        Count tokens for a single message using a specific model's encoding.
+
+        Args:
+            role: Message role (user, assistant, system)
+            content: Message content
+            model: Model name to use for token counting
+
+        Returns:
+            Token count for the message
+        """
+        try:
+            # Get encoding for the specified model
+            encoding = tiktoken.encoding_for_model(model)
+        except KeyError:
+            logger.warning(
+                f"Model {model} not found in tiktoken, "
+                "using cl100k_base encoding as fallback"
+            )
+            encoding = tiktoken.get_encoding("cl100k_base")
+        except Exception as e:
+            logger.error(f"Failed to get encoding for model {model}: {e}", exc_info=True)
+            # Fallback: estimate 4 chars ≈ 1 token
+            return (len(str(role)) + len(str(content))) // 4 + 4
+
+        try:
+            # Count tokens similar to count_tokens method
+            num_tokens = 4  # Message formatting overhead
+            num_tokens += len(encoding.encode(str(role)))
+            num_tokens += len(encoding.encode(str(content)))
+            return num_tokens
+        except Exception as e:
+            logger.error(f"Token counting failed for model {model}: {e}", exc_info=True)
+            # Fallback: estimate 4 chars ≈ 1 token
+            return (len(str(role)) + len(str(content))) // 4 + 4
+
     def trim_to_fit(
         self,
         messages: list[dict],

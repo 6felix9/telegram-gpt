@@ -118,6 +118,7 @@ def main():
         application.add_handler(CommandHandler("revoke", handlers.revoke_command))
         application.add_handler(CommandHandler("version", handlers.version_command))
         application.add_handler(CommandHandler("personality", handlers.personality_command))
+        application.add_handler(CommandHandler("model", handlers.model_command))
 
         # Error handler
         application.add_error_handler(handlers.error_handler)

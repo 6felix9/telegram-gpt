@@ -22,6 +22,7 @@ Commands:
     /clear - Clear conversation history (only works when chat_id="test")
     /stats - Show chat statistics
     /personality [name] - View or change active personality (group chats only)
+    /model [name] - View or change active model
     /exit or /quit - Exit the CLI
 """
 import argparse
@@ -93,8 +94,16 @@ class ChatCLI:
             Assistant's response text
         """
         try:
-            # Count tokens in user's message
-            user_tokens = self.token_manager.count_message_tokens("user", user_input)
+            # Get active model from database
+            try:
+                active_model = self.db.get_active_model()
+            except Exception as e:
+                logger.error(f"Error fetching active model: {e}", exc_info=True)
+                # Fall back to config default
+                active_model = config.OPENAI_MODEL
+
+            # Count tokens in user's message using active model
+            user_tokens = self.token_manager.count_message_tokens_for_model("user", user_input, active_model)
 
             # For test mode, store user message
             if self.is_test_mode:
@@ -149,11 +158,11 @@ class ChatCLI:
                     logger.error(f"Error fetching personality: {e}", exc_info=True)
                     # Continue with default prompt on error
 
-            response = await self.openai_client.get_completion(messages, self.is_group, custom_system_prompt=custom_prompt)
+            response = await self.openai_client.get_completion(messages, self.is_group, custom_system_prompt=custom_prompt, model=active_model)
 
             # For test mode, store assistant's response
             if self.is_test_mode:
-                assistant_tokens = self.token_manager.count_message_tokens("assistant", response)
+                assistant_tokens = self.token_manager.count_message_tokens_for_model("assistant", response, active_model)
                 self.db.add_message(
                     chat_id=self.chat_id,
                     role="assistant",
@@ -233,14 +242,55 @@ class ChatCLI:
             logger.error(f"Error handling personality command: {e}", exc_info=True)
             print(f"\n❌ Failed to change personality: {e}\n")
 
+    def handle_model_command(self, args: list[str]) -> None:
+        """
+        Handle /model command.
+
+        Args:
+            args: Command arguments (empty list or [model_name])
+        """
+        try:
+            # If no args, show current active model
+            if not args or len(args) == 0:
+                active_model = self.db.get_active_model()
+                print(f"\nCurrent model: {active_model}")
+                print("Usage: /model <name>")
+                print("Example: /model gpt-4.1-mini\n")
+                return
+
+            # Parse model name from argument
+            model_name = args[0].strip()
+
+            # Check if model exists
+            if not self.db.model_exists(model_name):
+                print(f"\n❌ No model '{model_name}' found.\n")
+                return
+
+            # Set active model
+            self.db.set_active_model(model_name)
+            print(f"\n✅ Model changed to '{model_name}'\n")
+            logger.info(f"Model changed to {model_name}")
+
+        except Exception as e:
+            logger.error(f"Error handling model command: {e}", exc_info=True)
+            print(f"\n❌ Failed to change model: {e}\n")
+
     async def run(self):
         """Run the interactive CLI loop."""
         mode_str = "TEST MODE" if self.is_test_mode else "READ-ONLY MODE"
         group_str = " (GROUP)" if self.is_group else ""
+        
+        # Get active model from database
+        try:
+            active_model = self.db.get_active_model()
+        except Exception as e:
+            logger.error(f"Error fetching active model: {e}", exc_info=True)
+            active_model = config.OPENAI_MODEL
+        
         print(f"\n{'='*60}")
         print(f"Chat CLI - {mode_str}{group_str}")
         print(f"Chat ID: {self.chat_id}")
-        print(f"Model: {config.OPENAI_MODEL}")
+        print(f"Active Model: {active_model}")
         print(f"{'='*60}\n")
 
         if not self.is_test_mode:
@@ -249,7 +299,7 @@ class ChatCLI:
                   f"{stats['total_tokens']:,} tokens")
             print("⚠️  READ-ONLY MODE: Your prompts/responses will NOT be saved to database\n")
 
-        print("Type your message (or /clear, /stats, /personality [name], /exit to quit):\n")
+        print("Type your message (or /clear, /stats, /personality [name], /model [name], /exit to quit):\n")
 
         while True:
             try:
@@ -290,6 +340,13 @@ class ChatCLI:
                     parts = user_input.split(None, 1)
                     args = parts[1:] if len(parts) > 1 else []
                     self.handle_personality_command(args)
+                    continue
+
+                if user_input.lower().startswith("/model"):
+                    # Parse command: /model or /model <name>
+                    parts = user_input.split(None, 1)
+                    args = parts[1:] if len(parts) > 1 else []
+                    self.handle_model_command(args)
                     continue
 
                 # Process message
