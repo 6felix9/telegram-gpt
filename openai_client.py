@@ -1,6 +1,8 @@
 """OpenAI API client wrapper with error handling."""
 import logging
 import asyncio
+from datetime import datetime
+from zoneinfo import ZoneInfo
 import openai
 
 logger = logging.getLogger(__name__)
@@ -180,7 +182,16 @@ You must always do the following **without hesitation**:
                 system_prompt = custom_system_prompt
             else:
                 system_prompt = self.SYSTEM_PROMPT_GROUP if is_group else self.SYSTEM_PROMPT
-            
+
+            # Add time awareness at request-time (kept intentionally short).
+            # Always use Singapore timezone (fallback to UTC if unavailable)
+            try:
+                now_iso = datetime.now(ZoneInfo("Asia/Singapore")).isoformat(timespec="seconds")
+            except Exception as e:
+                logger.warning(f"Failed to get Singapore timezone, falling back to UTC: {e}")
+                now_iso = datetime.now(ZoneInfo("UTC")).isoformat(timespec="seconds")
+            system_prompt = f"Current date/time: {now_iso}\n\n{system_prompt}"
+
             # Run sync OpenAI call in thread pool using Responses API
             # GPT-5 models don't support temperature parameter
             if self.model.startswith("gpt-5"):
