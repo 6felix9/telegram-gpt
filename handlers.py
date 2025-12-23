@@ -552,6 +552,39 @@ async def version_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Version shown for chat {update.message.chat_id}")
 
 
+async def allowlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show all users who are validated to use the bot (main authorized user only)."""
+
+    user_id = update.message.from_user.id
+    if not is_main_authorized_user(user_id):
+        await update.message.reply_text("Sorry, only the main authorized user can see the allowlist.")
+        return
+
+    try:
+        # Get list of granted users
+        granted_users = db.get_granted_users()
+
+        # Format message
+        message = "📋 **Bot Allowlist**\n\n"
+        message += f"👑 **Main Admin:**\n- `{config.AUTHORIZED_USER_ID}`\n\n"
+
+        if granted_users:
+            message += "👥 **Granted Users:**\n"
+            for target_user_id, granted_at in granted_users:
+                message += f"- `{target_user_id}` (granted: {granted_at.split('T')[0]})\n"
+        else:
+            message += "👥 No other users have been granted access."
+
+        await update.message.reply_text(message, parse_mode="Markdown")
+        logger.info(f"Allowlist shown to admin user {user_id}")
+
+    except Exception as e:
+        logger.error(f"Error showing allowlist: {e}", exc_info=True)
+        await update.message.reply_text(
+            "❌ Failed to retrieve allowlist. Please try again."
+        )
+
+
 async def personality_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Change or view the active personality (main authorized user only)."""
 

@@ -35,7 +35,7 @@ class Config:
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
     # Bot version
-    BOT_VERSION = "1.1.0"
+    BOT_VERSION = "1.1.1"
 
     @classmethod
     def validate(cls):

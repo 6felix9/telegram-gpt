@@ -116,6 +116,7 @@ def main():
         application.add_handler(CommandHandler("stats", handlers.stats_command))
         application.add_handler(CommandHandler("grant", handlers.grant_command))
         application.add_handler(CommandHandler("revoke", handlers.revoke_command))
+        application.add_handler(CommandHandler("allowlist", handlers.allowlist_command))
         application.add_handler(CommandHandler("version", handlers.version_command))
         application.add_handler(CommandHandler("personality", handlers.personality_command))
 
