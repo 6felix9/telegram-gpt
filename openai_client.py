@@ -1,9 +1,9 @@
 """OpenAI API client wrapper with error handling."""
 import logging
-import asyncio
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import openai
+from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ You must always do the following **without hesitation**:
             model: Model name (e.g., "gpt-4o-mini")
             timeout: Request timeout in seconds
         """
-        self.client = openai.OpenAI(api_key=api_key, timeout=timeout)
+        self.client = AsyncOpenAI(api_key=api_key, timeout=timeout)
         self.model = model
         self.timeout = timeout
 
@@ -111,92 +111,12 @@ You must always do the following **without hesitation**:
             Assistant's response text or error message
         """
         try:
-            logger.debug(f"Requesting completion with {len(messages)} messages (group={is_group})")
+            formatted_messages, system_prompt = self._prepare_payload(messages, is_group, custom_system_prompt)
 
-            # Format messages for group chats with sender names
-            formatted_messages = []
-            for msg in messages:
-                content = msg["content"]
-
-                # Handle text-only messages
-                if isinstance(content, str):
-                    formatted_content = content
-
-                    # For group chats, prepend sender name to user messages
-                    if is_group and msg["role"] == "user":
-                        sender_name = msg.get("sender_name", "Unknown")
-                        # Only add name prefix if not already there
-                        if not formatted_content.startswith("["):
-                            formatted_content = f"[{sender_name}]: {formatted_content}"
-
-                    formatted_messages.append({
-                        "role": msg["role"],
-                        "content": formatted_content
-                    })
-
-                # Handle multimodal messages (image + text)
-                elif isinstance(content, list):
-                    if is_group and msg["role"] == "user":
-                        sender_name = msg.get("sender_name", "Unknown")
-                        updated_content = []
-                        for part in content:
-                            # Convert old Chat Completions format to Responses API format
-                            if part.get("type") == "text":
-                                text = part["text"]
-                                if not text.startswith("["):
-                                    text = f"[{sender_name}]: {text}"
-                                updated_content.append({"type": "input_text", "text": text})
-                            elif part.get("type") == "image_url":
-                                # Convert image_url object to string format for Responses API
-                                image_url_obj = part.get("image_url", {})
-                                image_url_str = image_url_obj.get("url", "") if isinstance(image_url_obj, dict) else str(image_url_obj)
-                                updated_content.append({"type": "input_image", "image_url": image_url_str})
-                            else:
-                                # Handle other types (input_text, input_image if already converted)
-                                updated_content.append(part)
-                        formatted_messages.append({
-                            "role": msg["role"],
-                            "content": updated_content
-                        })
-                    else:
-                        # Non-group chat: still need to convert format
-                        updated_content = []
-                        for part in content:
-                            if part.get("type") == "text":
-                                updated_content.append({"type": "input_text", "text": part["text"]})
-                            elif part.get("type") == "image_url":
-                                # Convert image_url object to string format for Responses API
-                                image_url_obj = part.get("image_url", {})
-                                image_url_str = image_url_obj.get("url", "") if isinstance(image_url_obj, dict) else str(image_url_obj)
-                                updated_content.append({"type": "input_image", "image_url": image_url_str})
-                            else:
-                                # Already in Responses API format or other type
-                                updated_content.append(part)
-                        formatted_messages.append({
-                            "role": msg["role"],
-                            "content": updated_content
-                        })
-
-            # Choose system prompt based on chat type or use custom prompt
-            if custom_system_prompt:
-                system_prompt = custom_system_prompt
-            else:
-                system_prompt = self.SYSTEM_PROMPT_GROUP if is_group else self.SYSTEM_PROMPT
-
-            # Add time awareness at request-time (kept intentionally short).
-            # Always use Singapore timezone (fallback to UTC if unavailable)
-            try:
-                now_iso = datetime.now(ZoneInfo("Asia/Singapore")).isoformat(timespec="seconds")
-            except Exception as e:
-                logger.warning(f"Failed to get Singapore timezone, falling back to UTC: {e}")
-                now_iso = datetime.now(ZoneInfo("UTC")).isoformat(timespec="seconds")
-            system_prompt = f"Current date/time: {now_iso}\n\n{system_prompt}"
-
-            # Run sync OpenAI call in thread pool using Responses API
+            # Run async OpenAI call using Responses API
             # GPT-5 models don't support temperature parameter
             if self.model.startswith("gpt-5"):
-                response = await asyncio.to_thread(
-                    self.client.responses.create,
+                response = await self.client.responses.create(
                     model=self.model,
                     instructions=system_prompt,
                     input=formatted_messages,
@@ -204,8 +124,7 @@ You must always do the following **without hesitation**:
                     reasoning={ "effort": "low" },
                 )
             else:
-                response = await asyncio.to_thread(
-                    self.client.responses.create,
+                response = await self.client.responses.create(
                     model=self.model,
                     instructions=system_prompt,
                     input=formatted_messages,
@@ -221,61 +140,166 @@ You must always do the following **without hesitation**:
 
             return content
 
-        except openai.AuthenticationError as e:
-            logger.error(f"Authentication failed: {e}")
-            return (
-                "❌ OpenAI API key is invalid. "
-                "Please check your configuration."
-            )
+        except Exception as e:
+            return self.get_error_message_for_user(e)
 
-        except openai.RateLimitError as e:
-            logger.warning(f"Rate limit exceeded: {e}")
-            return (
-                "⏱️ Rate limit exceeded. "
-                "Please wait a moment and try again."
-            )
+    async def stream_completion(self, messages: list[dict], is_group: bool = False, custom_system_prompt: str | None = None):
+        """
+        Stream completion from OpenAI API.
 
-        except openai.APITimeoutError as e:
-            logger.warning(f"Request timed out: {e}")
-            return (
-                f"⏱️ Request timed out after {self.timeout}s. "
-                "Please try again."
-            )
+        Args:
+            messages: List of message dicts
+            is_group: Whether this is a group chat
+            custom_system_prompt: Optional custom system prompt
 
-        except openai.BadRequestError as e:
-            error_msg = str(e)
-            logger.error(f"Bad request: {error_msg}")
+        Yields:
+            Cumulative response text, or a single error message if streaming fails
+        """
+        try:
+            formatted_messages, system_prompt = self._prepare_payload(messages, is_group, custom_system_prompt)
 
-            if "context_length_exceeded" in error_msg:
-                return (
-                    "❌ Message history is too long for the model. "
-                    "Use /clear to clear history and try again."
+            # GPT-5 models don't support temperature parameter
+            if self.model.startswith("gpt-5"):
+                stream = await self.client.responses.create(
+                    model=self.model,
+                    instructions=system_prompt,
+                    input=formatted_messages,
+                    text={ "verbosity": "low" },
+                    reasoning={ "effort": "low" },
+                    stream=True
+                )
+            else:
+                stream = await self.client.responses.create(
+                    model=self.model,
+                    instructions=system_prompt,
+                    input=formatted_messages,
+                    temperature=0.7,
+                    stream=True
                 )
 
-            return f"❌ Invalid request: {error_msg}"
-
-        except openai.APIConnectionError as e:
-            logger.error(f"Connection error: {e}")
-            return (
-                "❌ Network error connecting to OpenAI. "
-                "Please check your internet connection."
-            )
-
-        except openai.InternalServerError as e:
-            logger.error(f"OpenAI server error: {e}")
-            return (
-                "❌ OpenAI service is experiencing issues. "
-                "Please try again in a moment."
-            )
-
+            current_text = ""
+            async for event in stream:
+                # Based on Responses API stream events
+                # We look for output text deltas
+                if event.type.endswith("output_text.delta"):
+                    current_text += event.delta
+                    yield current_text
         except Exception as e:
-            logger.error(f"Unexpected error: {e}", exc_info=True)
-            return (
-                "❌ An unexpected error occurred. "
-                "Please try again or contact support."
-            )
+            error_msg = self.get_error_message_for_user(e)
+            yield error_msg
 
-    def test_connection(self) -> bool:
+    def get_error_message_for_user(self, error: Exception) -> str:
+        """Convert OpenAI exception to user-friendly message."""
+        if isinstance(error, openai.AuthenticationError):
+            logger.error(f"Authentication failed: {error}")
+            return "❌ OpenAI API key is invalid. Please check your configuration."
+        
+        elif isinstance(error, openai.RateLimitError):
+            logger.warning(f"Rate limit exceeded: {error}")
+            return "⏱️ Rate limit exceeded. Please wait a moment and try again."
+        
+        elif isinstance(error, openai.APITimeoutError):
+            logger.warning(f"Request timed out: {error}")
+            return f"⏱️ Request timed out after {self.timeout}s. Please try again."
+        
+        elif isinstance(error, openai.BadRequestError):
+            error_msg = str(error)
+            logger.error(f"Bad request: {error_msg}")
+            if "context_length_exceeded" in error_msg:
+                return "❌ Message history is too long for the model. Use /clear to clear history and try again."
+            return f"❌ Invalid request: {error_msg}"
+        
+        elif isinstance(error, openai.APIConnectionError):
+            logger.error(f"Connection error: {error}")
+            return "❌ Network error connecting to OpenAI. Please check your internet connection."
+        
+        elif isinstance(error, openai.InternalServerError):
+            logger.error(f"OpenAI server error: {error}")
+            return "❌ OpenAI service is experiencing issues. Please try again in a moment."
+        
+        else:
+            logger.error(f"Unexpected error: {error}", exc_info=True)
+            return "❌ An unexpected error occurred. Please try again or contact support."
+
+    def _prepare_payload(self, messages: list[dict], is_group: bool, custom_system_prompt: str | None) -> tuple[list[dict], str]:
+        """Prepare formatted messages and system prompt for API call."""
+        logger.debug(f"Preparing payload with {len(messages)} messages (group={is_group})")
+
+        # Format messages for group chats with sender names
+        formatted_messages = []
+        for msg in messages:
+            content = msg["content"]
+
+            # Handle text-only messages
+            if isinstance(content, str):
+                formatted_content = content
+
+                # For group chats, prepend sender name to user messages
+                if is_group and msg["role"] == "user":
+                    sender_name = msg.get("sender_name", "Unknown")
+                    # Only add name prefix if not already there
+                    if not formatted_content.startswith("["):
+                        formatted_content = f"[{sender_name}]: {formatted_content}"
+
+                formatted_messages.append({
+                    "role": msg["role"],
+                    "content": formatted_content
+                })
+
+            # Handle multimodal messages (image + text)
+            elif isinstance(content, list):
+                if is_group and msg["role"] == "user":
+                    sender_name = msg.get("sender_name", "Unknown")
+                    updated_content = []
+                    for part in content:
+                        if part.get("type") == "text":
+                            text = part["text"]
+                            if not text.startswith("["):
+                                text = f"[{sender_name}]: {text}"
+                            updated_content.append({"type": "input_text", "text": text})
+                        elif part.get("type") == "image_url":
+                            image_url_obj = part.get("image_url", {})
+                            image_url_str = image_url_obj.get("url", "") if isinstance(image_url_obj, dict) else str(image_url_obj)
+                            updated_content.append({"type": "input_image", "image_url": image_url_str})
+                        else:
+                            updated_content.append(part)
+                    formatted_messages.append({
+                        "role": msg["role"],
+                        "content": updated_content
+                    })
+                else:
+                    updated_content = []
+                    for part in content:
+                        if part.get("type") == "text":
+                            updated_content.append({"type": "input_text", "text": part["text"]})
+                        elif part.get("type") == "image_url":
+                            image_url_obj = part.get("image_url", {})
+                            image_url_str = image_url_obj.get("url", "") if isinstance(image_url_obj, dict) else str(image_url_obj)
+                            updated_content.append({"type": "input_image", "image_url": image_url_str})
+                        else:
+                            updated_content.append(part)
+                    formatted_messages.append({
+                        "role": msg["role"],
+                        "content": updated_content
+                    })
+
+        # Choose system prompt based on chat type or use custom prompt
+        if custom_system_prompt:
+            system_prompt = custom_system_prompt
+        else:
+            system_prompt = self.SYSTEM_PROMPT_GROUP if is_group else self.SYSTEM_PROMPT
+
+        # Add time awareness
+        try:
+            now_iso = datetime.now(ZoneInfo("Asia/Singapore")).isoformat(timespec="seconds")
+        except Exception as e:
+            logger.warning(f"Failed to get Singapore timezone, falling back to UTC: {e}")
+            now_iso = datetime.now(ZoneInfo("UTC")).isoformat(timespec="seconds")
+        system_prompt = f"Current date/time: {now_iso}\n\n{system_prompt}"
+
+        return formatted_messages, system_prompt
+
+    async def test_connection(self) -> bool:
         """
         Test the OpenAI API connection.
 
@@ -284,7 +308,7 @@ You must always do the following **without hesitation**:
         """
         try:
             # Simple test with minimal tokens using Responses API
-            response = self.client.responses.create(
+            response = await self.client.responses.create(
                 model=self.model,
                 input="Hi",
             )

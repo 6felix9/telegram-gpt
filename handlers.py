@@ -2,8 +2,12 @@
 import logging
 import re
 import random
+import asyncio
+import time
 from telegram import Update
 from telegram.ext import ContextTypes
+from telegram.constants import ChatAction
+from telegram.error import BadRequest, RetryAfter
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +16,43 @@ config = None
 db = None
 token_manager = None
 openai_client = None
+
+
+async def typing_heartbeat(context: ContextTypes.DEFAULT_TYPE, chat_id: str, stop_event: asyncio.Event):
+    """Periodically send typing indicator to Telegram."""
+    try:
+        while not stop_event.is_set():
+            await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+            # Typing action expires after ~5s, so send every 4s
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=4.0)
+            except asyncio.TimeoutError:
+                pass
+    except Exception as e:
+        logger.warning(f"Typing heartbeat failed: {e}")
+
+
+async def safe_edit_message(message, text: str):
+    """
+    Safely edit a message with error handling for common Telegram errors.
+    
+    Returns:
+        (success, error_type)
+    """
+    try:
+        await message.edit_text(text)
+        return True, None
+    except RetryAfter as e:
+        # Rate limited by Telegram
+        return False, f"retry_{e.retry_after}"
+    except BadRequest as e:
+        if "Message is not modified" in str(e):
+            return True, "not_modified"
+        if "Message is too long" in str(e):
+            return False, "too_long"
+        return False, str(e)
+    except Exception as e:
+        return False, str(e)
 
 
 def init_handlers(cfg, database, token_mgr, openai_cl):
@@ -60,6 +101,97 @@ def extract_keyword(text: str) -> tuple[bool, str]:
     prompt = cleaned.strip()
 
     return True, prompt
+
+
+async def stream_response_to_user(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    messages: list[dict],
+    is_group: bool,
+    custom_prompt: str | None,
+    chat_id: str
+) -> str:
+    """
+    Stream OpenAI response to Telegram, editing a single message.
+    
+    Returns:
+        Final response text or error message
+    """
+    message = update.message
+    bot_msg = await message.reply_text("...")
+    
+    stop_typing = asyncio.Event()
+    typing_task = asyncio.create_task(typing_heartbeat(context, chat_id, stop_typing))
+    
+    current_text = ""
+    last_edit_time = 0
+    last_edit_text = "..."
+    
+    try:
+        try:
+            async for streamed_text in openai_client.stream_completion(messages, is_group, custom_system_prompt=custom_prompt):
+                if not streamed_text:
+                    continue
+
+                current_text = streamed_text
+
+                # Check if this is an error message from the stream
+                if current_text.startswith(("❌", "⏱️")):
+                    logger.warning(f"Error message received from stream: {current_text[:100]}")
+                    break
+
+                # Throttle edits: max once every 0.8 seconds AND at least 20 new characters
+                now = time.time()
+                time_delta = now - last_edit_time
+                char_delta = len(current_text) - len(last_edit_text)
+                if time_delta > 0.8 and char_delta > 20 and current_text != last_edit_text:
+                    success, error = await safe_edit_message(bot_msg, current_text)
+                    last_edit_time = now  # Always advance time to preserve throttling
+                    
+                    if success:
+                        last_edit_text = current_text
+                    elif error and error.startswith("retry_"):
+                        try:
+                            retry_after = float(error.split("_")[1])
+                            last_edit_time = now + retry_after
+                            logger.warning(f"Rate limited during stream for chat {chat_id}, backing off for {retry_after}s")
+                        except (IndexError, ValueError):
+                            pass
+                    elif error == "too_long":
+                        logger.warning(f"Response too long for chat {chat_id}, truncating")
+                        current_text = current_text[:4000] + "\n\n(truncated...)"
+                        await safe_edit_message(bot_msg, current_text)
+                        break
+                    elif error != "not_modified":
+                        logger.warning(f"Failed to edit message for chat {chat_id}: {error}")
+            
+            # Final edit if we have content
+            if current_text and current_text != last_edit_text:
+                await safe_edit_message(bot_msg, current_text)
+
+            # If streaming returned an error message, return it (caller will check for error prefix)
+            if current_text.startswith(("❌", "⏱️")):
+                return current_text
+
+            return current_text
+
+        except Exception as stream_err:
+            error_msg = openai_client.get_error_message_for_user(stream_err)
+            success, error = await safe_edit_message(bot_msg, error_msg)
+            if not success:
+                logger.error(f"Failed to show error message for chat {chat_id} ({error}): {error_msg[:100]}")
+            return error_msg
+
+    finally:
+        stop_typing.set()
+        try:
+            if not typing_task.done():
+                typing_task.cancel()
+            await asyncio.wait_for(typing_task, timeout=2.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+        except Exception as e:
+            logger.warning(f"Error cleaning up typing task for chat {chat_id}: {e}")
 
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -122,12 +254,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # 5. Process request
-    await process_request(message, prompt, user_id, sender_name, sender_username, is_group)
+    await process_request(update, context, prompt, user_id, sender_name, sender_username, is_group)
 
 
-async def process_request(message, prompt: str, user_id: int, sender_name: str, sender_username: str, is_group: bool):
+async def process_request(update: Update, context: ContextTypes.DEFAULT_TYPE, prompt: str, user_id: int, sender_name: str, sender_username: str, is_group: bool):
     """Process GPT request with context management."""
 
+    message = update.message
     chat_id = str(message.chat_id)
     message_id = message.message_id
 
@@ -166,42 +299,37 @@ async def process_request(message, prompt: str, user_id: int, sender_name: str, 
         if is_group:
             try:
                 active_personality = db.get_active_personality()
-                # If personality is "normal", use default SYSTEM_PROMPT_GROUP
-                # Otherwise fetch custom prompt from database
                 if active_personality != "normal":
                     custom_prompt = db.get_personality_prompt(active_personality)
-                    # If custom prompt not found, fall back to default
-                    if not custom_prompt:
-                        logger.warning(f"Personality '{active_personality}' not found in database, using default")
             except Exception as e:
-                logger.error(f"Error fetching personality: {e}", exc_info=True)
-                # Continue with default prompt on error
+                logger.error(f"Error fetching personality: {e}")
 
-        response = await openai_client.get_completion(messages, is_group, custom_system_prompt=custom_prompt)
-
-        # 6. Count and store assistant's response
-        assistant_tokens = token_manager.count_message_tokens("assistant", response)
-        db.add_message(
-            chat_id=chat_id,
-            role="assistant",
-            content=response,
-            token_count=assistant_tokens,
-            is_group_chat=is_group,
+        # Use the streaming helper
+        response = await stream_response_to_user(
+            update, context, messages, is_group, custom_prompt, chat_id
         )
 
-        # 7. Send response to user
-        await message.reply_text(response)
+        # 6. Count and store assistant's response (only if successful)
+        if response and not response.startswith(("❌", "⏱️")):
+            assistant_tokens = token_manager.count_message_tokens("assistant", response)
+            db.add_message(
+                chat_id=chat_id,
+                role="assistant",
+                content=response,
+                token_count=assistant_tokens,
+                is_group_chat=is_group,
+            )
 
-        logger.info(
-            f"Response sent for chat {chat_id}: {assistant_tokens} tokens"
-        )
+            logger.info(
+                f"Response sent and stored for chat {chat_id}: {assistant_tokens} tokens"
+            )
 
     except Exception as e:
         logger.error(f"Error processing request: {e}", exc_info=True)
-        await message.reply_text(
-            "Sorry, I encountered an error processing your request. "
-            "Please try again."
-        )
+        # Error message is already handled by stream_response_to_user or process_request
+        # if it's a non-API error, we might need a general fallback
+        if not str(e).startswith(("❌", "⏱️")):
+            await message.reply_text("Sorry, I encountered an error processing your request.")
 
 
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -239,12 +367,13 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 4. Process image request
     await process_image_request(
-        message, prompt, user_id, sender_name, sender_username, is_group
+        update, context, prompt, user_id, sender_name, sender_username, is_group
     )
 
 
 async def process_image_request(
-    message,
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
     prompt: str,
     user_id: int,
     sender_name: str,
@@ -253,6 +382,7 @@ async def process_image_request(
 ):
     """Process image request with vision model - split storage approach."""
 
+    message = update.message
     chat_id = str(message.chat_id)
     message_id = message.message_id
 
@@ -322,48 +452,41 @@ async def process_image_request(
             f"{len(messages)} messages in context, caption={caption_tokens} tokens"
         )
 
-        # 9. Call OpenAI with vision support
+        # 9. Call OpenAI with vision support and streaming
         # For group chats, fetch active personality and use custom prompt if available
         custom_prompt = None
         if is_group:
             try:
                 active_personality = db.get_active_personality()
-                # If personality is "normal", use default SYSTEM_PROMPT_GROUP
-                # Otherwise fetch custom prompt from database
                 if active_personality != "normal":
                     custom_prompt = db.get_personality_prompt(active_personality)
-                    # If custom prompt not found, fall back to default
-                    if not custom_prompt:
-                        logger.warning(f"Personality '{active_personality}' not found in database, using default")
             except Exception as e:
-                logger.error(f"Error fetching personality: {e}", exc_info=True)
-                # Continue with default prompt on error
+                logger.error(f"Error fetching personality: {e}")
 
-        response_text = await openai_client.get_completion(messages, is_group, custom_system_prompt=custom_prompt)
-
-        # 10. Store assistant response with tiktoken-counted tokens
-        response_tokens = token_manager.count_message_tokens("assistant", response_text)
-        db.add_message(
-            chat_id=chat_id,
-            role="assistant",
-            content=response_text,
-            token_count=response_tokens,
-            is_group_chat=is_group,
+        # Use the streaming helper
+        response = await stream_response_to_user(
+            update, context, messages, is_group, custom_prompt, chat_id
         )
 
-        # 11. Send response to user
-        await message.reply_text(response_text)
+        # 10. Store assistant response (only if successful)
+        if response and not response.startswith(("❌", "⏱️")):
+            response_tokens = token_manager.count_message_tokens("assistant", response)
+            db.add_message(
+                chat_id=chat_id,
+                role="assistant",
+                content=response,
+                token_count=response_tokens,
+                is_group_chat=is_group,
+            )
 
-        logger.info(
-            f"Image processed for chat {chat_id}: caption={caption_tokens} tokens"
-        )
+            logger.info(
+                f"Image response processed and stored for chat {chat_id}: {response_tokens} tokens"
+            )
 
     except Exception as e:
-        logger.error(f"Error processing image: {e}", exc_info=True)
-        await message.reply_text(
-            "Sorry, I encountered an error processing your image. "
-            "Please try again."
-        )
+        logger.error(f"Error processing image request: {e}", exc_info=True)
+        if not str(e).startswith(("❌", "⏱️")):
+            await message.reply_text("Sorry, I encountered an error processing your image.")
 
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):

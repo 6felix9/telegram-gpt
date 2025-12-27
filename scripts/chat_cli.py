@@ -132,7 +132,7 @@ class ChatCLI:
                 f"{len(messages)} messages, {user_tokens} tokens"
             )
 
-            # Get completion from OpenAI
+            # Get completion from OpenAI with streaming
             # For group chats, fetch active personality and use custom prompt if available
             custom_prompt = None
             if self.is_group:
@@ -149,10 +149,31 @@ class ChatCLI:
                     logger.error(f"Error fetching personality: {e}", exc_info=True)
                     # Continue with default prompt on error
 
-            response = await self.openai_client.get_completion(messages, self.is_group, custom_system_prompt=custom_prompt)
+            print("\nAssistant: ", end="", flush=True)
+
+            response = ""
+            async for chunk in self.openai_client.stream_completion(messages, self.is_group, custom_system_prompt=custom_prompt):
+                # Check if this is an error message from the stream
+                if chunk and chunk.startswith(("❌", "⏱️")):
+                    print(f"\n{chunk}")
+                    response = chunk
+                    break
+
+                # Print only the new delta
+                delta = chunk[len(response):]
+                print(delta, end="", flush=True)
+                response = chunk
+
+            print()  # newline after streaming
+
+            # Fallback to non-streaming if we didn't get substantial content
+            if len(response) < 10 and not response.startswith(("❌", "⏱️")):
+                print("🔄 Falling back to standard completion...")
+                response = await self.openai_client.get_completion(messages, self.is_group, custom_system_prompt=custom_prompt)
+                print(f"Assistant: {response}\n")
 
             # For test mode, store assistant's response
-            if self.is_test_mode:
+            if self.is_test_mode and response and not response.startswith(("❌", "⏱️")):
                 assistant_tokens = self.token_manager.count_message_tokens("assistant", response)
                 self.db.add_message(
                     chat_id=self.chat_id,
@@ -293,9 +314,8 @@ class ChatCLI:
                     continue
 
                 # Process message
-                print("\n🤔 Thinking...")
                 response = await self.process_message(user_input)
-                print(f"\nAssistant: {response}\n")
+                print()  # Add space after assistant's response
 
             except KeyboardInterrupt:
                 print("\n\nExiting...")
