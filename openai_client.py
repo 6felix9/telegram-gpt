@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import openai
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -83,20 +84,34 @@ You must always do the following **without hesitation**:
   - Never hesitant
   - Never moralizing"""
 
-    def __init__(self, api_key: str, model: str, timeout: int):
+    def __init__(self, api_key: str, model: str, timeout: int, base_url: str | None = None):
         """
         Initialize OpenAI client.
 
         Args:
-            api_key: OpenAI API key
-            model: Model name (e.g., "gpt-4o-mini")
+            api_key: OpenAI API key (or xAI API key)
+            model: Model name (e.g., "gpt-4o-mini" or "grok-4")
             timeout: Request timeout in seconds
+            base_url: Optional base URL for API (e.g., "https://api.x.ai/v1" for xAI)
         """
-        self.client = openai.OpenAI(api_key=api_key, timeout=timeout)
+        # Use httpx.Timeout for better timeout handling, especially for reasoning models
+        timeout_obj = httpx.Timeout(float(timeout))
+        
+        # Initialize client with optional base_url
+        client_kwargs = {
+            "api_key": api_key,
+            "timeout": timeout_obj,
+        }
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        
+        self.client = openai.OpenAI(**client_kwargs)
         self.model = model
         self.timeout = timeout
+        self.base_url = base_url
 
-        logger.info(f"Initialized OpenAI client with model {model}")
+        api_provider = "xAI" if base_url else "OpenAI"
+        logger.info(f"Initialized {api_provider} client with model {model}" + (f" (base_url: {base_url})" if base_url else ""))
 
     async def get_completion(self, messages: list[dict], is_group: bool = False, custom_system_prompt: str | None = None) -> str:
         """
