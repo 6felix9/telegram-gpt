@@ -20,6 +20,7 @@ class Config:
     # OpenAI Configuration
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "")  # Empty = default OpenAI API
     OPENAI_TIMEOUT = int(os.getenv("OPENAI_TIMEOUT", "60"))
     MAX_CONTEXT_TOKENS = int(os.getenv("MAX_CONTEXT_TOKENS", "16000"))
 
@@ -77,7 +78,19 @@ class Config:
             errors.append("MAX_CONTEXT_TOKENS must be positive")
 
         # Validate model is known
-        known_models = ["gpt-5-mini", "gpt-4.1-mini", "gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo", "gpt-4-turbo", "gpt-4"]
+        known_models = [
+            "gpt-5-mini", 
+            "gpt-4.1-mini", 
+            "gpt-4o-mini", 
+            "gpt-4o", 
+            "gpt-3.5-turbo", 
+            "gpt-4-turbo", 
+            "gpt-4", 
+            "grok-4", 
+            "grok-beta", 
+            "grok-4-1-fast-non-reasoning", 
+            "grok-4-1-fast-reasoning"
+        ]
         if cls.OPENAI_MODEL not in known_models:
             logger.warning(
                 f"Unknown model '{cls.OPENAI_MODEL}'. "
@@ -104,6 +117,10 @@ class Config:
             "gpt-3.5-turbo": 16384,
             "gpt-4-turbo": 128000,
             "gpt-4": 8192,
+            "grok-4": 128000,  # xAI Grok models typically support large contexts
+            "grok-beta": 128000,
+            "grok-4-1-fast-non-reasoning": 128000,
+            "grok-4-1-fast-reasoning": 128000,
         }
         return LIMITS.get(model, 16384)  # Conservative default
 

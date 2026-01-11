@@ -75,11 +75,15 @@ def main():
 
         # 4. Initialize OpenAI client
         logger.info("Initializing OpenAI client...")
-        openai_client = OpenAIClient(
-            api_key=config.OPENAI_API_KEY,
-            model=config.OPENAI_MODEL,
-            timeout=config.OPENAI_TIMEOUT,
-        )
+        client_kwargs = {
+            "api_key": config.OPENAI_API_KEY,
+            "model": config.OPENAI_MODEL,
+            "timeout": config.OPENAI_TIMEOUT,
+        }
+        # Add base_url if configured (for xAI or other OpenAI-compatible APIs)
+        if config.OPENAI_BASE_URL:
+            client_kwargs["base_url"] = config.OPENAI_BASE_URL
+        openai_client = OpenAIClient(**client_kwargs)
 
         # 5. Build Telegram application
         logger.info("Building Telegram application...")
