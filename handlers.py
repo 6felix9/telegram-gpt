@@ -12,15 +12,17 @@ config = None
 db = None
 token_manager = None
 openai_client = None
+bot_username = None
 
 
-def init_handlers(cfg, database, token_mgr, openai_cl):
+def init_handlers(cfg, database, token_mgr, openai_cl, username=None):
     """Initialize handler dependencies."""
-    global config, db, token_manager, openai_client
+    global config, db, token_manager, openai_client, bot_username
     config = cfg
     db = database
     token_manager = token_mgr
     openai_client = openai_cl
+    bot_username = username
 
 
 def is_authorized(user_id: int) -> bool:
@@ -38,28 +40,43 @@ def is_main_authorized_user(user_id: int) -> bool:
     return str(user_id) == config.AUTHORIZED_USER_ID
 
 
-def extract_keyword(text: str) -> tuple[bool, str]:
+def extract_keyword(text: str, bot_username: str = None) -> tuple[bool, str]:
     """
-    Check for activation keyword and extract prompt.
+    Check for activation keyword or @mention and extract prompt.
 
     Args:
         text: Message text
+        bot_username: Bot's username (without @) for mention detection
 
     Returns:
         Tuple of (has_keyword, prompt_without_keyword)
     """
-    text_lower = text.lower()
-
-    # Check if "chatgpt" keyword is present (case-insensitive)
-    if "chatgpt" not in text_lower:
+    if not text:
         return False, ""
 
-    # Remove keyword from message (preserve case of rest)
-    # Use word boundary to avoid matching "chatgpt123" etc.
-    cleaned = re.sub(r'\bchatgpt\b', '', text, flags=re.IGNORECASE)
+    text_lower = text.lower()
+    has_activation = False
+    cleaned = text
+
+    # Check for "chatgpt" keyword
+    if "chatgpt" in text_lower:
+        has_activation = True
+        # Remove keyword from message (preserve case of rest)
+        # Use word boundary to avoid matching "chatgpt123" etc.
+        cleaned = re.sub(r'\bchatgpt\b', '', cleaned, flags=re.IGNORECASE)
+
+    # Check for @mention if bot_username provided
+    if bot_username:
+        mention = f"@{bot_username}"
+        if mention.lower() in text_lower:
+            has_activation = True
+            # Remove @mention from message (case-insensitive)
+            cleaned = re.sub(rf'@{re.escape(bot_username)}', '', cleaned, flags=re.IGNORECASE)
+
+    # Clean up extra whitespace
     prompt = cleaned.strip()
 
-    return True, prompt
+    return has_activation, prompt
 
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -79,7 +96,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sender_username = message.from_user.username
 
     # 2. Check for activation keyword
-    has_keyword, prompt = extract_keyword(message.text)
+    has_keyword, prompt = extract_keyword(message.text, bot_username)
 
     # In group chats, store ALL messages for context (even without keyword)
     if is_group and not has_keyword:
@@ -222,7 +239,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 2. Check for activation keyword in caption
     caption = message.caption or ""
-    has_keyword, prompt = extract_keyword(caption) if caption else (False, "")
+    has_keyword, prompt = extract_keyword(caption, bot_username) if caption else (False, "")
 
     # In group chats without keyword, ignore
     if is_group and not has_keyword:
