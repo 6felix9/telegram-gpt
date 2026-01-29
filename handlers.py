@@ -79,6 +79,37 @@ def extract_keyword(text: str, bot_username: str = None) -> tuple[bool, str]:
     return has_activation, prompt
 
 
+def extract_reply_context(message) -> str:
+    """
+    Extracts context from the message being replied to.
+    Returns a formatted string or empty string if no reply/content.
+    
+    Args:
+        message: Telegram message object
+    
+    Returns:
+        Formatted context string or empty string
+    """
+    # Check if this is a reply
+    if not message.reply_to_message:
+        return ""
+        
+    reply = message.reply_to_message
+    
+    # Extract content (prioritize text, then caption for media)
+    content = reply.text or reply.caption or ""
+    
+    # If no text content, ignore
+    if not content:
+        return ""
+        
+    # Get sender name
+    sender = reply.from_user.first_name if reply.from_user else "Unknown"
+    
+    # Format the context
+    return f"[Context - Replying to {sender}]: \"{content}\""
+
+
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Main message handler for all text messages."""
 
@@ -133,12 +164,18 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("Sorry, you have no access to me.")
         return
 
-    # 4. Handle empty prompt
+    # 4. Extract reply context if it exists
+    reply_context = extract_reply_context(message)
+    if reply_context:
+        # Prepend context to the prompt
+        prompt = f"{reply_context}\n\n{prompt}".strip()
+    
+    # 5. Handle empty prompt
     if not prompt:
         await message.reply_text("Yes, what's your request?")
         return
 
-    # 5. Process request
+    # 6. Process request
     await process_request(message, prompt, user_id, sender_name, sender_username, is_group)
 
 
