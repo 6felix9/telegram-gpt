@@ -1,381 +1,486 @@
-# Code Review Issues - Personality Feature
+# Code Review Issues
 
-**Date**: 2025-12-07
-**Branch**: feat/Personality
-**Reviewer**: Code Review Agent
-
-## Summary
-
-The personality feature implementation has several critical issues that must be addressed before merging. While the code demonstrates good engineering practices (security, error handling, database patterns), it is fundamentally incomplete and has a major design flaw with global state.
-
-**Verdict**: DO NOT MERGE until critical issues are resolved.
+**Last Updated**: 2026-02-02
+**Status**: Active issues tracked
 
 ---
 
-## CRITICAL Issues 🔴
+## CRITICAL Architectural Issues 🔴
 
-### 1. Incomplete Feature - No Method to Add Personalities
+### 1. Confusing OpenAI API Branching Logic
 
 **Priority**: CRITICAL
-**Location**: `database.py`, `handlers.py`
-**Type**: Missing Functionality
+**Location**: `openai_client.py:142-158`
+**Type**: Code Clarity / Maintainability
 
 **Problem**:
-- The `personality` table is created but there's no method to populate it
-- Missing commands: `/add_personality`, `/list_personalities`, `/delete_personality`
-- Feature cannot be used without manual SQL intervention
-- Poor user experience - users will get "personality not found" errors with no way to create personalities
-
-**Solution**:
-Add database methods to `database.py`:
+The code has confusing if-else branching based on model name prefix:
 ```python
-def add_personality(self, personality: str, prompt: str) -> bool:
-    """Add or update a personality."""
-    # Implementation with INSERT ... ON CONFLICT DO UPDATE
-
-def delete_personality(self, personality: str) -> bool:
-    """Delete a personality (prevent deleting if active)."""
-    # Implementation with safety checks
-
-def list_personalities(self) -> list[tuple[str, str]]:
-    """List all available personalities."""
-    # Return list of (name, prompt) tuples
-```
-
-Add handler commands to `handlers.py`:
-- `/add_personality <name> <prompt>` - Add a new personality
-- `/list_personalities` - List all available personalities
-- `/delete_personality <name>` - Delete a personality
-
----
-
-### 2. "normal" Personality Inconsistency
-
-**Priority**: CRITICAL
-**Location**: `database.py:101-105`, `handlers.py:171, 333`
-**Type**: Logic Error
-
-**Problem**:
-- "normal" is used as the default active personality
-- Code checks `if active_personality != "normal"` expecting it to be a special value
-- But "normal" is never inserted into the `personality` table
-- If user tries `/personality normal`, it will fail with "No personality 'normal' found"
-
-**Solution**:
-Either:
-1. Insert "normal" personality during database initialization with default prompts, OR
-2. Treat "normal" as a reserved keyword in `personality_exists()` that always returns True
-
-**Recommended approach**:
-```python
-def personality_exists(self, personality: str) -> bool:
-    """Check if a personality exists in the database."""
-    # "normal" is a special reserved personality
-    if personality == "normal":
-        return True
-
-    with self._get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT 1 FROM personality WHERE personality = %s",
-            (personality,)
-        )
-        return cursor.fetchone() is not None
-```
-
----
-
-## HIGH Priority Issues 🟡
-
-### 4. No Input Validation on Personality Name
-
-**Priority**: HIGH
-**Location**: `handlers.py:581`
-**Type**: Security/Correctness
-
-**Problem**:
-- Personality name from user input (`context.args[0].strip()`) is not validated
-- No checks for:
-  - Empty strings after `.strip()`
-  - Length limits
-  - Character restrictions
-  - Special characters that could cause display issues
-
-**Solution**:
-Add validation after line 581:
-```python
-personality_name = context.args[0].strip()
-
-# Validate personality name
-import re
-if not re.match(r'^[a-zA-Z0-9_-]{1,50}$', personality_name):
-    await update.message.reply_text(
-        "❌ Invalid personality name. Use only letters, numbers, underscores, and hyphens (max 50 characters)."
+if self.model.startswith("gpt-5"):
+    response = await asyncio.to_thread(
+        self.client.responses.create,
+        model=self.model,
+        instructions=system_prompt,
+        input=formatted_messages,
+        text={ "verbosity": "low" },
+        reasoning={ "effort": "low" },
     )
-    return
-```
-
----
-
-### 5. Code Duplication - Personality Fetch Logic
-
-**Priority**: HIGH
-**Location**: `handlers.py:164-180` and `handlers.py:326-342`
-**Type**: Code Quality
-
-**Problem**:
-- Identical personality-fetching logic appears twice in the codebase
-- Violates DRY (Don't Repeat Yourself) principle
-- Creates maintenance burden - changes must be made in multiple places
-
-**Solution**:
-Extract to helper function:
-```python
-def get_custom_personality_prompt(chat_id: str, is_group: bool) -> str | None:
-    """
-    Fetch custom personality prompt for group chats.
-
-    Returns custom prompt if available, None to use default prompt.
-    """
-    if not is_group:
-        return None
-
-    try:
-        active_personality = db.get_active_personality(chat_id)
-        if active_personality != "normal":
-            custom_prompt = db.get_personality_prompt(active_personality)
-            if not custom_prompt:
-                logger.warning(
-                    f"Personality '{active_personality}' not found in database, using default"
-                )
-            return custom_prompt
-    except Exception as e:
-        logger.error(f"Error fetching personality: {e}", exc_info=True)
-
-    return None
-```
-
-Then replace both occurrences with:
-```python
-custom_prompt = get_custom_personality_prompt(chat_id, is_group)
-```
-
----
-
-### 6. No Chat Type Validation in /personality Command
-
-**Priority**: HIGH
-**Location**: `handlers.py:555-603`
-**Type**: UX Issue
-
-**Problem**:
-- `/personality` command can be executed in private chats
-- But personalities only affect group chats (checked with `if is_group`)
-- User could change personality in private chat thinking it works, but see no effect
-- Confusing user experience
-
-**Solution**:
-Add validation at beginning of `personality_command`:
-```python
-async def personality_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle the /personality command."""
-
-    # Only works in group chats
-    if update.message.chat.type not in ["group", "supergroup"]:
-        await update.message.reply_text(
-            "❌ This command only works in group chats."
-        )
-        return
-
-    # Rest of implementation...
-```
-
----
-
-### 7. Performance Impact - Extra Database Queries
-
-**Priority**: HIGH
-**Location**: `handlers.py:164-180`, `handlers.py:326-342`
-**Type**: Performance
-
-**Problem**:
-- Two database queries are made on EVERY message in group chats:
-  1. `get_active_personality()`
-  2. `get_personality_prompt()` (if not "normal")
-- Adds latency to every group message
-- Unnecessary database round-trips
-
-**Solution Options**:
-
-**Option 1**: Single JOIN query
-```python
-def get_active_personality_with_prompt(self, chat_id: str) -> tuple[str, str | None]:
-    """Get active personality name and prompt in one query."""
-    with self._get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT ap.personality, p.prompt
-            FROM active_personality ap
-            LEFT JOIN personality p ON ap.personality = p.personality
-            WHERE ap.chat_id = %s
-        """, (chat_id,))
-        row = cursor.fetchone()
-        if row:
-            return row["personality"], row.get("prompt")
-        return "normal", None
-```
-
-**Option 2**: In-memory caching
-- Cache active personality per chat with TTL
-- Invalidate on `/personality` command
-- Reduces database load significantly
-
----
-
-## MEDIUM Priority Issues 🟢
-
-### 8. No Logging When Custom Personality Is Used
-
-**Priority**: MEDIUM
-**Location**: `handlers.py:180`, `handlers.py:342`
-**Type**: Observability
-
-**Problem**:
-- Hard to debug which personality is being used in production
-- No visibility into personality usage patterns
-- Difficult to troubleshoot personality-related issues
-
-**Solution**:
-Add info-level logging:
-```python
-if custom_prompt:
-    logger.info(
-        f"Using custom personality '{active_personality}' for group chat {chat_id}"
+else:
+    response = await asyncio.to_thread(
+        self.client.responses.create,
+        model=self.model,
+        instructions=system_prompt,
+        input=formatted_messages,
+        temperature=0.7,
     )
 ```
 
----
-
-### 9. No Validation for Empty Prompts
-
-**Priority**: MEDIUM
-**Location**: `database.py:530`
-**Type**: Edge Case
-
-**Problem**:
-- `get_personality_prompt()` could return empty string if prompt field is empty
-- Empty prompts would cause API errors or unexpected behavior
+**Issues**:
+- Different parameters for GPT-5 vs other models (temperature vs verbosity/reasoning)
+- Hard to add new models (must update if-else logic)
+- Code clarity suffers from conditional API calls
+- Fragile string prefix checking (`startswith("gpt-5")`)
 
 **Solution**:
+Create a model capability registry for clean parameter selection:
+
 ```python
-if row and row["prompt"] and row["prompt"].strip():
-    return row["prompt"]
-return None
-```
+# openai_client.py
+class ModelCapabilities:
+    """Registry of model-specific capabilities and parameters."""
 
----
+    MODELS = {
+        "gpt-5-mini": {
+            "supports_temperature": False,
+            "supports_reasoning": True,
+            "default_params": {
+                "text": {"verbosity": "low"},
+                "reasoning": {"effort": "low"}
+            }
+        },
+        "gpt-4o-mini": {
+            "supports_temperature": True,
+            "supports_reasoning": False,
+            "default_params": {
+                "temperature": 0.7
+            }
+        },
+        "gpt-4o": {
+            "supports_temperature": True,
+            "supports_reasoning": False,
+            "default_params": {
+                "temperature": 0.7
+            }
+        },
+    }
 
-### 10. Missing Help Text for Available Personalities
+    @classmethod
+    def get_params(cls, model: str) -> dict:
+        """Get API parameters for model."""
+        config = cls.MODELS.get(model)
+        if not config:
+            # Default fallback for unknown models
+            logger.warning(f"Unknown model {model}, using default params")
+            return {"temperature": 0.7}
+        return config["default_params"]
 
-**Priority**: MEDIUM
-**Location**: `handlers.py:567-572`
-**Type**: UX
-
-**Problem**:
-- When user runs `/personality` without args, only shows current personality
-- Doesn't show what personalities are available
-- User has to guess or ask admin what personalities exist
-
-**Solution**:
-```python
-personalities = db.list_personalities()
-personality_names = ", ".join([p[0] for p in personalities])
-await update.message.reply_text(
-    f"Current personality: **{active_personality}**\n\n"
-    f"Available personalities: {personality_names}\n\n"
-    f"Usage: `/personality <name>`",
-    parse_mode="Markdown"
+# Usage:
+params = ModelCapabilities.get_params(self.model)
+response = await asyncio.to_thread(
+    self.client.responses.create,
+    model=self.model,
+    instructions=system_prompt,
+    input=formatted_messages,
+    **params  # Unpack model-specific params
 )
 ```
 
+**Benefits**:
+- Single code path for all models
+- Easy to add new models (just update registry)
+- Clear, self-documenting capabilities
+- No more fragile string checking
+
 ---
 
-## LOW Priority Issues 🔵
+### 2. Scattered Prompt Construction Logic
 
-### 11. No Tests for New Functionality
-
-**Priority**: LOW
-**Type**: Testing
+**Priority**: CRITICAL
+**Location**: `openai_client.py`, `handlers.py`, `database.py`
+**Type**: Code Organization / Maintainability
 
 **Problem**:
-- No unit tests for database methods
-- No integration tests for command handler
-- Risk of regressions
+Prompt construction logic is scattered across multiple files and functions:
+
+1. **Time awareness** - `openai_client.py:131-138`:
+   ```python
+   now_iso = datetime.now(ZoneInfo("Asia/Singapore")).isoformat(timespec="seconds")
+   system_prompt = f"Current date/time: {now_iso}\n\n{system_prompt}"
+   ```
+
+2. **Personality fetching** - `handlers.py:184-195`:
+   ```python
+   active_personality = db.get_active_personality()
+   if active_personality != "normal":
+       custom_prompt = db.get_personality_prompt(active_personality)
+   ```
+
+3. **System prompts** - `openai_client.py:14-29`:
+   ```python
+   SYSTEM_PROMPT = """You are Tze Foong's Assistant..."""
+   SYSTEM_PROMPT_GROUP = """You are Tze Foong's Assistant in group chats..."""
+   ```
+
+4. **Group chat formatting** - `openai_client.py:70-75`:
+   ```python
+   if is_group and msg["role"] == "user":
+       sender_name = msg.get("sender_name", "Unknown")
+       formatted_content = f"[{sender_name}]: {formatted_content}"
+   ```
+
+5. **Custom prompt override** - `openai_client.py:126-129`:
+   ```python
+   if custom_system_prompt:
+       system_prompt = custom_system_prompt
+   else:
+       system_prompt = self.SYSTEM_PROMPT_GROUP if is_group else self.SYSTEM_PROMPT
+   ```
+
+**Issues**:
+- Hard to understand the complete prompt being sent to API
+- Difficult to debug prompt-related issues
+- Can't easily see what context the model receives
+- Changes require editing multiple files
+- No single source of truth for prompt structure
 
 **Solution**:
-Add test file `tests/test_personality.py`:
-- Test `add_personality()`, `get_personality_prompt()`, `personality_exists()`
-- Test `/personality` command with mocked database
-- Test edge cases (empty personality table, invalid names, etc.)
+Create a centralized `PromptBuilder` class:
+
+```python
+# prompt_builder.py
+from datetime import datetime
+from zoneinfo import ZoneInfo
+import logging
+
+logger = logging.getLogger(__name__)
+
+class PromptBuilder:
+    """Centralized prompt construction with clear structure."""
+
+    SYSTEM_PROMPT_PRIVATE = """You are Tze Foong's Assistant, an AI helper in Telegram.
+
+Key behaviors:
+- Be direct and concise - no unnecessary preambles
+- Provide clear, helpful responses
+- Never claim to be OpenAI or reference being a language model
+- Respond naturally as a personal assistant"""
+
+    SYSTEM_PROMPT_GROUP = """You are Tze Foong's Assistant, an AI helper in Telegram group chats.
+
+Key behaviors:
+- Be direct and concise - no unnecessary preambles
+- Provide clear, helpful responses
+- Never claim to be OpenAI or reference being a language model
+- Track conversation context from multiple participants
+- Messages are formatted as [Name]: content - reply naturally without mimicking this format"""
+
+    def __init__(self, db=None):
+        self.db = db
+
+    def build_system_prompt(
+        self,
+        is_group: bool = False,
+        chat_id: str = None,
+        include_time: bool = True
+    ) -> str:
+        """
+        Build complete system prompt with all components.
+
+        Returns final prompt ready for API.
+        """
+        components = []
+
+        # 1. Time awareness (if enabled)
+        if include_time:
+            time_context = self._build_time_context()
+            components.append(time_context)
+
+        # 2. Core system prompt (personality or default)
+        core_prompt = self._get_core_prompt(is_group, chat_id)
+        components.append(core_prompt)
+
+        # Join with double newline
+        return "\n\n".join(components)
+
+    def _build_time_context(self) -> str:
+        """Build time awareness component."""
+        try:
+            now_iso = datetime.now(ZoneInfo("Asia/Singapore")).isoformat(timespec="seconds")
+        except Exception as e:
+            logger.warning(f"Failed to get Singapore timezone: {e}")
+            now_iso = datetime.now(ZoneInfo("UTC")).isoformat(timespec="seconds")
+
+        return f"Current date/time: {now_iso}"
+
+    def _get_core_prompt(self, is_group: bool, chat_id: str = None) -> str:
+        """Get core system prompt (personality or default)."""
+        # For group chats, try to fetch personality
+        if is_group and chat_id and self.db:
+            try:
+                active_personality = self.db.get_active_personality()
+                if active_personality != "normal":
+                    custom_prompt = self.db.get_personality_prompt(active_personality)
+                    if custom_prompt:
+                        logger.info(f"Using personality '{active_personality}' for chat {chat_id}")
+                        return custom_prompt
+            except Exception as e:
+                logger.error(f"Error fetching personality: {e}")
+
+        # Fallback to default
+        return self.SYSTEM_PROMPT_GROUP if is_group else self.SYSTEM_PROMPT_PRIVATE
+
+    def format_message(
+        self,
+        message: dict,
+        is_group: bool = False
+    ) -> dict:
+        """
+        Format a single message for API (add sender names for groups).
+
+        Returns formatted message dict.
+        """
+        content = message["content"]
+
+        # Handle text-only messages
+        if isinstance(content, str):
+            if is_group and message["role"] == "user":
+                sender_name = message.get("sender_name", "Unknown")
+                if not content.startswith("["):
+                    content = f"[{sender_name}]: {content}"
+
+            return {
+                "role": message["role"],
+                "content": content
+            }
+
+        # Handle multimodal (images)
+        elif isinstance(content, list):
+            formatted_content = []
+            for part in content:
+                if part.get("type") == "text" and is_group and message["role"] == "user":
+                    text = part["text"]
+                    sender_name = message.get("sender_name", "Unknown")
+                    if not text.startswith("["):
+                        text = f"[{sender_name}]: {text}"
+                    formatted_content.append({"type": "input_text", "text": text})
+                elif part.get("type") == "image_url":
+                    image_url_obj = part.get("image_url", {})
+                    image_url_str = image_url_obj.get("url", "") if isinstance(image_url_obj, dict) else str(image_url_obj)
+                    formatted_content.append({"type": "input_image", "image_url": image_url_str})
+                else:
+                    formatted_content.append(part)
+
+            return {
+                "role": message["role"],
+                "content": formatted_content
+            }
+
+        return message
+
+
+# Usage in openai_client.py:
+class OpenAIClient:
+    def __init__(self, api_key: str, model: str, timeout: int, db=None):
+        self.client = openai.OpenAI(api_key=api_key, timeout=timeout)
+        self.model = model
+        self.timeout = timeout
+        self.prompt_builder = PromptBuilder(db=db)
+
+    async def get_completion(self, messages: list[dict], is_group: bool = False, chat_id: str = None) -> str:
+        # Build system prompt
+        system_prompt = self.prompt_builder.build_system_prompt(
+            is_group=is_group,
+            chat_id=chat_id,
+            include_time=True
+        )
+
+        # Format messages
+        formatted_messages = [
+            self.prompt_builder.format_message(msg, is_group)
+            for msg in messages
+        ]
+
+        # ... rest of API call
+```
+
+**Benefits**:
+- Single source of truth for prompt construction
+- Clear, readable prompt assembly
+- Easy to debug (can log complete prompt)
+- Easy to add new prompt components
+- Testable in isolation
 
 ---
 
-## Positive Observations ✅
+### 3. Overcomplicated Token Counting Configuration
 
-The implementation demonstrates several good practices:
+**Priority**: CRITICAL
+**Location**: `config.py`, `token_manager.py`, `handlers.py`
+**Type**: Configuration Complexity / Developer Experience
 
-1. **Security-Conscious**: All SQL queries use parameterized statements preventing SQL injection
-2. **Proper Authorization**: Command correctly restricted to main authorized user
-3. **Consistent Patterns**: Follows existing codebase architecture and conventions
-4. **Graceful Degradation**: Falls back to default prompts when personality lookup fails
-5. **Thread-Safe**: Uses connection pooling and context managers properly
-6. **Error Handling**: Comprehensive try-except blocks with appropriate logging
-7. **Idempotent Migration**: Safe table creation with `IF NOT EXISTS`
-8. **Good Logging**: Appropriate log levels throughout
+**Problem**:
+Token counting involves too many variables and validation logic:
 
----
+1. **Config.py has model limits** (lines 97-108):
+   ```python
+   LIMITS = {
+       "gpt-5-mini": 128000,
+       "gpt-4.1-mini": 128000,
+       "gpt-4o-mini": 128000,
+       # ... 7 different models
+   }
+   ```
 
-## Recommended Action Plan
+2. **Config validates known models** (lines 80-85):
+   ```python
+   known_models = ["gpt-5-mini", "gpt-4.1-mini", "gpt-4o-mini", ...]
+   if cls.OPENAI_MODEL not in known_models:
+       logger.warning(...)
+   ```
 
-### Phase 1 - Critical Fixes (Required before merge)
-1. Fix global personality design - make it per-chat
-2. Add personality management database methods
-3. Add personality management commands
-4. Handle "normal" personality properly
-5. Add input validation
+3. **MAX_CONTEXT_TOKENS in .env**:
+   ```
+   MAX_CONTEXT_TOKENS=16000
+   ```
 
-### Phase 2 - High Priority (Should fix before merge)
-1. Extract duplicate personality fetch logic
-2. Add chat type validation
-3. Optimize database queries (JOIN or caching)
+4. **TokenManager has max_tokens**:
+   ```python
+   TokenManager(model, max_tokens)
+   ```
 
-### Phase 3 - Polish (Can be done post-merge)
-1. Add logging for personality usage
-2. Add validation for empty prompts
-3. Improve help text
-4. Add tests
+5. **Reserve tokens hardcoded** (handlers.py):
+   ```python
+   messages = token_manager.trim_to_fit(messages, reserve_tokens=1000)  # Line 173
+   messages = token_manager.trim_to_fit(messages, reserve_tokens=3000)  # Line 316
+   ```
 
----
+6. **MAX_GROUP_CONTEXT_MESSAGES** (different metric):
+   ```python
+   MAX_GROUP_CONTEXT_MESSAGES=100
+   ```
 
-## Summary Table
+**Issues**:
+- Adding a new model requires editing multiple files
+- Unclear which limit applies when
+- Hard to tune token usage
+- Magic numbers (1000, 3000) not explained
+- Model validation separate from model limits
+- Confusing overlap between MAX_CONTEXT_TOKENS and model limits
 
-| Priority | Issue | Location | Type | Effort |
-|----------|-------|----------|------|--------|
-| CRITICAL | No method to add personalities | database.py | Missing Functionality | Medium |
-| CRITICAL | "normal" personality inconsistency | database.py, handlers.py | Logic Error | Low |
-| HIGH | No input validation | handlers.py:581 | Security/Correctness | Low |
-| HIGH | Code duplication | handlers.py:164-180, 326-342 | Code Quality | Low |
-| HIGH | No chat type validation | handlers.py:555-603 | UX Issue | Low |
-| HIGH | Performance impact | handlers.py | Performance | Medium |
-| MEDIUM | No logging for personality usage | handlers.py:180, 342 | Observability | Low |
-| MEDIUM | No empty prompt validation | database.py:530 | Edge Case | Low |
-| MEDIUM | Missing help text | handlers.py:567-572 | UX | Low |
-| LOW | No tests | N/A | Testing | High |
+**Solution**:
+Simplify to single source of truth with clear .env variables:
 
----
+```python
+# .env.example
+# Token Management (single source of truth)
+# Set this to ~70-80% of your model's context window
+# This leaves room for response and safety margin
+MAX_CONTEXT_TOKENS=16000
 
-**Last Updated**: 2025-12-07
-**Status**: Issues documented, awaiting fixes
+# Reserve tokens for model response
+# Text responses: ~200-300 words
+RESERVE_TOKENS_TEXT=1000
+# Image responses: ~500-700 words with detailed descriptions
+RESERVE_TOKENS_IMAGE=3000
+
+# Group chat message limit (prevents unbounded growth)
+MAX_GROUP_CONTEXT_MESSAGES=300
+```
+
+```python
+# config.py - SIMPLIFIED
+class Config:
+    """Centralized configuration - single source of truth."""
+
+    # Token budgets (user-controlled)
+    MAX_CONTEXT_TOKENS = int(os.getenv("MAX_CONTEXT_TOKENS", "16000"))
+    RESERVE_TOKENS_TEXT = int(os.getenv("RESERVE_TOKENS_TEXT", "1000"))
+    RESERVE_TOKENS_IMAGE = int(os.getenv("RESERVE_TOKENS_IMAGE", "3000"))
+    MAX_GROUP_CONTEXT_MESSAGES = int(os.getenv("MAX_GROUP_CONTEXT_MESSAGES", "300"))
+
+    # OpenAI Configuration
+    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+
+    @classmethod
+    def validate(cls):
+        """Simplified validation - trust user to set correct values."""
+        errors = []
+
+        # Only validate required fields
+        if not cls.OPENAI_API_KEY:
+            errors.append("OPENAI_API_KEY is required")
+
+        if not cls.TELEGRAM_BOT_TOKEN:
+            errors.append("TELEGRAM_BOT_TOKEN is required")
+
+        # Validate numeric ranges
+        if cls.MAX_CONTEXT_TOKENS <= 0:
+            errors.append("MAX_CONTEXT_TOKENS must be positive")
+
+        if errors:
+            logger.error("Configuration validation failed:")
+            for error in errors:
+                logger.error(f"  - {error}")
+            sys.exit(1)
+
+        # Warn if context tokens seem high (but don't fail)
+        if cls.MAX_CONTEXT_TOKENS > 100000:
+            logger.warning(
+                f"MAX_CONTEXT_TOKENS is very high ({cls.MAX_CONTEXT_TOKENS}). "
+                "Make sure your model supports this context length."
+            )
+
+        logger.info(f"Configuration validated - using model {cls.OPENAI_MODEL}")
+
+
+# handlers.py - SIMPLIFIED
+async def message_handler(...):
+    # Use config constants instead of magic numbers
+    messages = token_manager.trim_to_fit(
+        messages,
+        reserve_tokens=config.RESERVE_TOKENS_TEXT
+    )
+
+async def photo_handler(...):
+    messages = token_manager.trim_to_fit(
+        messages,
+        reserve_tokens=config.RESERVE_TOKENS_IMAGE
+    )
+```
+
+**Remove from codebase**:
+- `Config.get_model_context_limit()` - not needed
+- `known_models` list - not needed
+- Model-specific logic in config - trust user
+
+**Benefits**:
+- Single .env file controls all token budgets
+- No more hardcoded model limits
+- Easy to add new models (just use them, no code changes)
+- Clear documentation in .env.example
+- Users can tune for their specific use case
+- Less code to maintain
+
+**Migration Guide**:
+```bash
+# Old way - required code changes for new models
+# Edit config.py, add to known_models, add to LIMITS dict
+
+# New way - just set .env and go
+OPENAI_MODEL=gpt-4.5-turbo-preview
+MAX_CONTEXT_TOKENS=100000  # 80% of 128k limit
+```
 
 ---
 
