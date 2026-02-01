@@ -305,7 +305,6 @@ async def process_image_request(
             sender_name=sender_name,
             sender_username=sender_username,
             is_group_chat=is_group,
-            has_image=False,  # This is the text part, will be included in context
         )
 
         # 5. Get conversation history (now includes caption from step 4)
