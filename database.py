@@ -60,9 +60,7 @@ class Database:
                             token_count INTEGER DEFAULT 0,
                             sender_name TEXT,
                             sender_username TEXT,
-                            is_group_chat BOOLEAN DEFAULT FALSE,
-                            has_image BOOLEAN DEFAULT FALSE,
-                            image_metadata TEXT
+                            is_group_chat BOOLEAN DEFAULT FALSE
                         )
                     """)
 
@@ -162,8 +160,6 @@ class Database:
         sender_name: str = None,
         sender_username: str = None,
         is_group_chat: bool = False,
-        has_image: bool = False,
-        image_metadata: str = None,
     ) -> int:
         """Add a message to the database with atomic transaction."""
         try:
@@ -177,18 +173,18 @@ class Database:
                         """
                         INSERT INTO messages
                         (chat_id, role, content, timestamp, user_id, message_id, token_count,
-                         sender_name, sender_username, is_group_chat, has_image, image_metadata)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         sender_name, sender_username, is_group_chat)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         RETURNING id
                         """,
                         (chat_id, role, content, timestamp, user_id, message_id, token_count,
-                         sender_name, sender_username, is_group_chat, has_image, image_metadata),
+                         sender_name, sender_username, is_group_chat),
                     )
                     msg_id = cur.fetchone()[0]
 
             logger.debug(
                 f"Added message {msg_id} for chat {chat_id}: "
-                f"{role} ({token_count} tokens){'[with image]' if has_image else ''}"
+                f"{role} ({token_count} tokens)"
             )
             return msg_id
 
@@ -196,14 +192,13 @@ class Database:
             logger.error(f"Failed to add message: {e}", exc_info=True)
             raise
 
-    def get_messages_by_tokens(self, chat_id: str, max_tokens: int, exclude_images: bool = False) -> list:
+    def get_messages_by_tokens(self, chat_id: str, max_tokens: int) -> list:
         """
         Retrieve recent messages within token budget.
 
         Args:
             chat_id: Chat ID to retrieve messages from
             max_tokens: Maximum token budget
-            exclude_images: If True, exclude messages with images
 
         Returns messages in chronological order (oldest first).
         For group chats, includes sender information in the format [Name]: message
@@ -220,11 +215,8 @@ class Database:
                         SELECT role, content, token_count, sender_name, sender_username, is_group_chat
                         FROM messages
                         WHERE chat_id = %s
+                        ORDER BY timestamp DESC LIMIT 500
                     """
-                    if exclude_images:
-                        query += " AND has_image = FALSE"
-                    # Fetch a bounded set of recent messages to avoid large loads
-                    query += " ORDER BY timestamp DESC LIMIT 500"
 
                     cur.execute(query, (chat_id,))
 
@@ -251,7 +243,7 @@ class Database:
 
             logger.debug(
                 f"Retrieved {len(messages)} messages for chat {chat_id} "
-                f"({total_tokens} tokens){' [excluding images]' if exclude_images else ''}"
+                f"({total_tokens} tokens)"
             )
             return messages
 
