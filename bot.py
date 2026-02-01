@@ -91,23 +91,11 @@ def main():
             .build()
         )
 
-        # 6. Get bot username for @mention activation
-        bot_username = "tzefoong_gpt_bot"
-        try:
-            # Try to get the actual username from Telegram API if possible
-            api_username = application.bot.username
-            if api_username:
-                bot_username = api_username
-                logger.info(f"Bot username: @{bot_username}")
-            else:
-                logger.info(f"Using provided bot username: @{bot_username}")
-        except Exception as e:
-            logger.warning(f"Failed to get bot username from API, using fallback: {e}")
-
-        # 7. Initialize handlers with dependencies
+        # 6. Initialize handlers with dependencies
+        bot_username = config.BOT_USERNAME.lstrip("@")
         handlers.init_handlers(config, db, token_manager, openai_client, bot_username)
 
-        # 8. Register handlers
+        # 7. Register handlers
         # Message handler (non-command text messages)
         application.add_handler(
             MessageHandler(
@@ -136,11 +124,11 @@ def main():
         # Error handler
         application.add_error_handler(handlers.error_handler)
 
-        # 9. Setup signal handlers for graceful shutdown
+        # 8. Setup signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
 
-        # 10. Start bot polling
+        # 9. Start bot polling
         logger.info("Starting bot polling...")
         application.run_polling(
             allowed_updates=Update.ALL_TYPES,

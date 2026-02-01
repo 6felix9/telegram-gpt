@@ -15,6 +15,7 @@ class Config:
 
     # Telegram Configuration
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    BOT_USERNAME = os.getenv("BOT_USERNAME", "")
 
     # OpenAI Configuration
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -47,6 +48,11 @@ class Config:
             errors.append("TELEGRAM_BOT_TOKEN is required")
         elif not cls.TELEGRAM_BOT_TOKEN.strip():
             errors.append("TELEGRAM_BOT_TOKEN cannot be empty")
+
+        if not cls.BOT_USERNAME:
+            errors.append("BOT_USERNAME is required")
+        elif not cls.BOT_USERNAME.strip():
+            errors.append("BOT_USERNAME cannot be empty")
 
         if not cls.OPENAI_API_KEY:
             errors.append("OPENAI_API_KEY is required")
