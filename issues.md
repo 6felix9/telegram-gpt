@@ -49,44 +49,7 @@ Add handler commands to `handlers.py`:
 
 ---
 
-### 2. Design Flaw - Global Personality State
-
-**Priority**: CRITICAL
-**Location**: `database.py:92-98`
-**Type**: Design Issue
-
-**Problem**:
-- The `active_personality` table uses `CHECK (id = 1)` constraint to create a singleton
-- This means **all group chats share the same personality**
-- When one group changes personality, it affects ALL groups simultaneously
-- This is likely unintended behavior and creates confusing user experience
-
-**Current Schema**:
-```sql
-CREATE TABLE IF NOT EXISTS active_personality (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    personality TEXT NOT NULL DEFAULT 'normal',
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-)
-```
-
-**Solution**:
-Make personality chat-specific:
-```sql
-CREATE TABLE IF NOT EXISTS active_personality (
-    chat_id TEXT PRIMARY KEY,
-    personality TEXT NOT NULL DEFAULT 'normal',
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-)
-```
-
-Update all related methods to accept `chat_id` parameter:
-- `get_active_personality(chat_id: str)`
-- `set_active_personality(chat_id: str, personality: str)`
-
----
-
-### 3. "normal" Personality Inconsistency
+### 2. "normal" Personality Inconsistency
 
 **Priority**: CRITICAL
 **Location**: `database.py:101-105`, `handlers.py:171, 333`
@@ -399,7 +362,6 @@ The implementation demonstrates several good practices:
 | Priority | Issue | Location | Type | Effort |
 |----------|-------|----------|------|--------|
 | CRITICAL | No method to add personalities | database.py | Missing Functionality | Medium |
-| CRITICAL | Global personality state | database.py:92-98 | Design Issue | High |
 | CRITICAL | "normal" personality inconsistency | database.py, handlers.py | Logic Error | Low |
 | HIGH | No input validation | handlers.py:581 | Security/Correctness | Low |
 | HIGH | Code duplication | handlers.py:164-180, 326-342 | Code Quality | Low |
