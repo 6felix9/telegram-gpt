@@ -233,6 +233,28 @@ class ChatCLI:
             logger.error(f"Error handling personality command: {e}", exc_info=True)
             print(f"\n❌ Failed to change personality: {e}\n")
 
+    def handle_list_personality_command(self) -> None:
+        """Handle /list_personality command."""
+        try:
+            personalities = self.db.list_personalities()
+            active = self.db.get_active_personality()
+            
+            if not personalities:
+                print("\nNo custom personalities available.")
+                print(f"Currently using: {active} (default)\n")
+                return
+            
+            print(f"\n**Available Personalities:**")
+            print(f"Currently active: {active}\n")
+            
+            for name, prompt_preview in personalities:
+                marker = "✓" if name == active else "-"
+                print(f"{marker} {name}")
+                print(f"  {prompt_preview}\n")
+        except Exception as e:
+            logger.error(f"Error listing personalities: {e}", exc_info=True)
+            print(f"\n❌ Failed to list personalities: {e}\n")
+
     async def run(self):
         """Run the interactive CLI loop."""
         mode_str = "TEST MODE" if self.is_test_mode else "READ-ONLY MODE"
@@ -249,7 +271,7 @@ class ChatCLI:
                   f"{stats['total_tokens']:,} tokens")
             print("⚠️  READ-ONLY MODE: Your prompts/responses will NOT be saved to database\n")
 
-        print("Type your message (or /clear, /stats, /personality [name], /exit to quit):\n")
+        print("Type your message (or /clear, /stats, /personality [name], /list_personality, /exit to quit):\n")
 
         while True:
             try:
@@ -290,6 +312,10 @@ class ChatCLI:
                     parts = user_input.split(None, 1)
                     args = parts[1:] if len(parts) > 1 else []
                     self.handle_personality_command(args)
+                    continue
+
+                if user_input.lower().startswith("/list_personality"):
+                    self.handle_list_personality_command()
                     continue
 
                 # Process message

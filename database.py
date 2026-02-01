@@ -600,3 +600,26 @@ class Database:
         except Exception as e:
             logger.error(f"Failed to check personality existence: {e}", exc_info=True)
             return False
+
+    def list_personalities(self) -> list[tuple[str, str]]:
+        """
+        Get list of all available personalities.
+
+        Returns:
+            List of tuples (personality_name, prompt_preview)
+            where prompt_preview is first 100 chars of the prompt
+        """
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(
+                        "SELECT personality, prompt FROM personality ORDER BY personality"
+                    )
+                    personalities = [
+                        (row["personality"], row["prompt"][:100] + "..." if len(row["prompt"]) > 100 else row["prompt"])
+                        for row in cur.fetchall()
+                    ]
+            return personalities
+        except Exception as e:
+            logger.error(f"Failed to list personalities: {e}", exc_info=True)
+            return []

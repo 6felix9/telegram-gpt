@@ -688,6 +688,44 @@ async def personality_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
 
 
+async def list_personality_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List all available personalities."""
+    
+    user_id = update.message.from_user.id
+    if not is_authorized(user_id):
+        await update.message.reply_text("Sorry, you have no access to me.")
+        return
+    
+    try:
+        personalities = db.list_personalities()
+        active = db.get_active_personality()
+        
+        if not personalities:
+            await update.message.reply_text(
+                "No custom personalities available.\n"
+                "Currently using: normal (default)"
+            )
+            return
+        
+        # Build message
+        message = f"**Available Personalities:**\n"
+        message += f"Currently active: **{active}**\n\n"
+        
+        for name, prompt_preview in personalities:
+            marker = "✓" if name == active else "-"
+            message += f"{marker} `{name}`\n"
+            message += f"  _{prompt_preview}_\n\n"
+        
+        await update.message.reply_text(message, parse_mode="Markdown")
+        logger.info(f"Listed personalities for user {user_id}")
+        
+    except Exception as e:
+        logger.error(f"Error listing personalities: {e}", exc_info=True)
+        await update.message.reply_text(
+            "❌ Failed to list personalities. Please try again."
+        )
+
+
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Global error handler for unhandled exceptions."""
 
