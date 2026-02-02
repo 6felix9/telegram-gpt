@@ -207,7 +207,7 @@ async def process_request(message, prompt: str, user_id: int, sender_name: str, 
         messages = db.get_messages_by_tokens(chat_id, max_tokens)
 
         # 4. Final trim to ensure we fit (accounting for response)
-        messages = token_manager.trim_to_fit(messages, reserve_tokens=1000)
+        messages = token_manager.trim_to_fit(messages, reserve_tokens=config.RESERVE_TOKENS_TEXT)
 
         logger.info(
             f"Processing request for chat {chat_id}: "
@@ -349,7 +349,7 @@ async def process_image_request(
         messages = db.get_messages_by_tokens(chat_id, max_tokens)
 
         # 7. Trim text history conservatively (reserve more for image)
-        messages = token_manager.trim_to_fit(messages, reserve_tokens=3000)
+        messages = token_manager.trim_to_fit(messages, reserve_tokens=config.RESERVE_TOKENS_IMAGE)
 
         # 8. Build multimodal message array for OpenAI
         # Use the original content_text (without [image] prefix) for API call

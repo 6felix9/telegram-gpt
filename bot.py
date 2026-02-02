@@ -69,9 +69,7 @@ def main():
 
         # 3. Initialize token manager
         logger.info("Initializing token manager...")
-        model_limit = config.get_model_context_limit(config.OPENAI_MODEL)
-        max_tokens = min(config.MAX_CONTEXT_TOKENS, model_limit - 2000)
-        token_manager = TokenManager(config.OPENAI_MODEL, max_tokens)
+        token_manager = TokenManager(config.OPENAI_MODEL, config.MAX_CONTEXT_TOKENS)
 
         # 4. Initialize OpenAI client
         logger.info("Initializing OpenAI client...")
