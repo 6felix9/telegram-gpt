@@ -69,9 +69,7 @@ class ChatCLI:
         self.db = Database(config.DATABASE_URL)
 
         # Token manager
-        model_limit = config.get_model_context_limit(config.OPENAI_MODEL)
-        max_tokens = min(config.MAX_CONTEXT_TOKENS, model_limit - 2000)
-        self.token_manager = TokenManager(config.OPENAI_MODEL, max_tokens)
+        self.token_manager = TokenManager(config.OPENAI_MODEL, config.MAX_CONTEXT_TOKENS)
 
         # OpenAI client
         self.openai_client = OpenAIClient(
@@ -125,7 +123,7 @@ class ChatCLI:
                 })
 
             # Final trim to ensure we fit (accounting for response)
-            messages = self.token_manager.trim_to_fit(messages, reserve_tokens=1000)
+            messages = self.token_manager.trim_to_fit(messages, reserve_tokens=config.RESERVE_TOKENS_TEXT)
 
             logger.info(
                 f"Processing request for chat {self.chat_id}: "
