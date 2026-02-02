@@ -154,164 +154,7 @@ Prompt construction logic is scattered across multiple files and functions:
 - No single source of truth for prompt structure
 
 **Solution**:
-Create a centralized `PromptBuilder` class:
-
-```python
-# prompt_builder.py
-from datetime import datetime
-from zoneinfo import ZoneInfo
-import logging
-
-logger = logging.getLogger(__name__)
-
-class PromptBuilder:
-    """Centralized prompt construction with clear structure."""
-
-    SYSTEM_PROMPT_PRIVATE = """You are Tze Foong's Assistant, an AI helper in Telegram.
-
-Key behaviors:
-- Be direct and concise - no unnecessary preambles
-- Provide clear, helpful responses
-- Never claim to be OpenAI or reference being a language model
-- Respond naturally as a personal assistant"""
-
-    SYSTEM_PROMPT_GROUP = """You are Tze Foong's Assistant, an AI helper in Telegram group chats.
-
-Key behaviors:
-- Be direct and concise - no unnecessary preambles
-- Provide clear, helpful responses
-- Never claim to be OpenAI or reference being a language model
-- Track conversation context from multiple participants
-- Messages are formatted as [Name]: content - reply naturally without mimicking this format"""
-
-    def __init__(self, db=None):
-        self.db = db
-
-    def build_system_prompt(
-        self,
-        is_group: bool = False,
-        chat_id: str = None,
-        include_time: bool = True
-    ) -> str:
-        """
-        Build complete system prompt with all components.
-
-        Returns final prompt ready for API.
-        """
-        components = []
-
-        # 1. Time awareness (if enabled)
-        if include_time:
-            time_context = self._build_time_context()
-            components.append(time_context)
-
-        # 2. Core system prompt (personality or default)
-        core_prompt = self._get_core_prompt(is_group, chat_id)
-        components.append(core_prompt)
-
-        # Join with double newline
-        return "\n\n".join(components)
-
-    def _build_time_context(self) -> str:
-        """Build time awareness component."""
-        try:
-            now_iso = datetime.now(ZoneInfo("Asia/Singapore")).isoformat(timespec="seconds")
-        except Exception as e:
-            logger.warning(f"Failed to get Singapore timezone: {e}")
-            now_iso = datetime.now(ZoneInfo("UTC")).isoformat(timespec="seconds")
-
-        return f"Current date/time: {now_iso}"
-
-    def _get_core_prompt(self, is_group: bool, chat_id: str = None) -> str:
-        """Get core system prompt (personality or default)."""
-        # For group chats, try to fetch personality
-        if is_group and chat_id and self.db:
-            try:
-                active_personality = self.db.get_active_personality()
-                if active_personality != "normal":
-                    custom_prompt = self.db.get_personality_prompt(active_personality)
-                    if custom_prompt:
-                        logger.info(f"Using personality '{active_personality}' for chat {chat_id}")
-                        return custom_prompt
-            except Exception as e:
-                logger.error(f"Error fetching personality: {e}")
-
-        # Fallback to default
-        return self.SYSTEM_PROMPT_GROUP if is_group else self.SYSTEM_PROMPT_PRIVATE
-
-    def format_message(
-        self,
-        message: dict,
-        is_group: bool = False
-    ) -> dict:
-        """
-        Format a single message for API (add sender names for groups).
-
-        Returns formatted message dict.
-        """
-        content = message["content"]
-
-        # Handle text-only messages
-        if isinstance(content, str):
-            if is_group and message["role"] == "user":
-                sender_name = message.get("sender_name", "Unknown")
-                if not content.startswith("["):
-                    content = f"[{sender_name}]: {content}"
-
-            return {
-                "role": message["role"],
-                "content": content
-            }
-
-        # Handle multimodal (images)
-        elif isinstance(content, list):
-            formatted_content = []
-            for part in content:
-                if part.get("type") == "text" and is_group and message["role"] == "user":
-                    text = part["text"]
-                    sender_name = message.get("sender_name", "Unknown")
-                    if not text.startswith("["):
-                        text = f"[{sender_name}]: {text}"
-                    formatted_content.append({"type": "input_text", "text": text})
-                elif part.get("type") == "image_url":
-                    image_url_obj = part.get("image_url", {})
-                    image_url_str = image_url_obj.get("url", "") if isinstance(image_url_obj, dict) else str(image_url_obj)
-                    formatted_content.append({"type": "input_image", "image_url": image_url_str})
-                else:
-                    formatted_content.append(part)
-
-            return {
-                "role": message["role"],
-                "content": formatted_content
-            }
-
-        return message
-
-
-# Usage in openai_client.py:
-class OpenAIClient:
-    def __init__(self, api_key: str, model: str, timeout: int, db=None):
-        self.client = openai.OpenAI(api_key=api_key, timeout=timeout)
-        self.model = model
-        self.timeout = timeout
-        self.prompt_builder = PromptBuilder(db=db)
-
-    async def get_completion(self, messages: list[dict], is_group: bool = False, chat_id: str = None) -> str:
-        # Build system prompt
-        system_prompt = self.prompt_builder.build_system_prompt(
-            is_group=is_group,
-            chat_id=chat_id,
-            include_time=True
-        )
-
-        # Format messages
-        formatted_messages = [
-            self.prompt_builder.format_message(msg, is_group)
-            for msg in messages
-        ]
-
-        # ... rest of API call
-```
+Create a centralized `PromptBuilder` class that handles all prompt construction in one place.
 
 **Benefits**:
 - Single source of truth for prompt construction
@@ -319,182 +162,6 @@ class OpenAIClient:
 - Easy to debug (can log complete prompt)
 - Easy to add new prompt components
 - Testable in isolation
-
----
-
-### 3. Overcomplicated Token Counting Configuration
-
-**Priority**: CRITICAL
-**Location**: `config.py`, `token_manager.py`, `handlers.py`
-**Type**: Configuration Complexity / Developer Experience
-
-**Problem**:
-Token counting involves too many variables and validation logic:
-
-1. **Config.py has model limits** (lines 97-108):
-   ```python
-   LIMITS = {
-       "gpt-5-mini": 128000,
-       "gpt-4.1-mini": 128000,
-       "gpt-4o-mini": 128000,
-       # ... 7 different models
-   }
-   ```
-
-2. **Config validates known models** (lines 80-85):
-   ```python
-   known_models = ["gpt-5-mini", "gpt-4.1-mini", "gpt-4o-mini", ...]
-   if cls.OPENAI_MODEL not in known_models:
-       logger.warning(...)
-   ```
-
-3. **MAX_CONTEXT_TOKENS in .env**:
-   ```
-   MAX_CONTEXT_TOKENS=16000
-   ```
-
-4. **TokenManager has max_tokens**:
-   ```python
-   TokenManager(model, max_tokens)
-   ```
-
-5. **Reserve tokens hardcoded** (handlers.py):
-   ```python
-   messages = token_manager.trim_to_fit(messages, reserve_tokens=1000)  # Line 173
-   messages = token_manager.trim_to_fit(messages, reserve_tokens=3000)  # Line 316
-   ```
-
-6. **MAX_GROUP_CONTEXT_MESSAGES** (different metric):
-   ```python
-   MAX_GROUP_CONTEXT_MESSAGES=100
-   ```
-
-**Issues**:
-- Adding a new model requires editing multiple files
-- Unclear which limit applies when
-- Hard to tune token usage
-- Magic numbers (1000, 3000) not explained
-- Model validation separate from model limits
-- Confusing overlap between MAX_CONTEXT_TOKENS and model limits
-
-**Solution**:
-Simplify to single source of truth with clear .env variables:
-
-```python
-# .env.example
-# Token Management (single source of truth)
-# Set this to ~70-80% of your model's context window
-# This leaves room for response and safety margin
-MAX_CONTEXT_TOKENS=16000
-
-# Reserve tokens for model response
-# Text responses: ~200-300 words
-RESERVE_TOKENS_TEXT=1000
-# Image responses: ~500-700 words with detailed descriptions
-RESERVE_TOKENS_IMAGE=3000
-
-# Group chat message limit (prevents unbounded growth)
-MAX_GROUP_CONTEXT_MESSAGES=300
-```
-
-```python
-# config.py - SIMPLIFIED
-class Config:
-    """Centralized configuration - single source of truth."""
-
-    # Token budgets (user-controlled)
-    MAX_CONTEXT_TOKENS = int(os.getenv("MAX_CONTEXT_TOKENS", "16000"))
-    RESERVE_TOKENS_TEXT = int(os.getenv("RESERVE_TOKENS_TEXT", "1000"))
-    RESERVE_TOKENS_IMAGE = int(os.getenv("RESERVE_TOKENS_IMAGE", "3000"))
-    MAX_GROUP_CONTEXT_MESSAGES = int(os.getenv("MAX_GROUP_CONTEXT_MESSAGES", "300"))
-
-    # OpenAI Configuration
-    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-
-    @classmethod
-    def validate(cls):
-        """Simplified validation - trust user to set correct values."""
-        errors = []
-
-        # Only validate required fields
-        if not cls.OPENAI_API_KEY:
-            errors.append("OPENAI_API_KEY is required")
-
-        if not cls.TELEGRAM_BOT_TOKEN:
-            errors.append("TELEGRAM_BOT_TOKEN is required")
-
-        # Validate numeric ranges
-        if cls.MAX_CONTEXT_TOKENS <= 0:
-            errors.append("MAX_CONTEXT_TOKENS must be positive")
-
-        if errors:
-            logger.error("Configuration validation failed:")
-            for error in errors:
-                logger.error(f"  - {error}")
-            sys.exit(1)
-
-        # Warn if context tokens seem high (but don't fail)
-        if cls.MAX_CONTEXT_TOKENS > 100000:
-            logger.warning(
-                f"MAX_CONTEXT_TOKENS is very high ({cls.MAX_CONTEXT_TOKENS}). "
-                "Make sure your model supports this context length."
-            )
-
-        logger.info(f"Configuration validated - using model {cls.OPENAI_MODEL}")
-
-
-# handlers.py - SIMPLIFIED
-async def message_handler(...):
-    # Use config constants instead of magic numbers
-    messages = token_manager.trim_to_fit(
-        messages,
-        reserve_tokens=config.RESERVE_TOKENS_TEXT
-    )
-
-async def photo_handler(...):
-    messages = token_manager.trim_to_fit(
-        messages,
-        reserve_tokens=config.RESERVE_TOKENS_IMAGE
-    )
-```
-
-**Remove from codebase**:
-- `Config.get_model_context_limit()` - not needed
-- `known_models` list - not needed
-- Model-specific logic in config - trust user
-
-**Benefits**:
-- Single .env file controls all token budgets
-- No more hardcoded model limits
-- Easy to add new models (just use them, no code changes)
-- Clear documentation in .env.example
-- Users can tune for their specific use case
-- Less code to maintain
-
-**Migration Guide**:
-```bash
-# Old way - required code changes for new models
-# Edit config.py, add to known_models, add to LIMITS dict
-
-# New way - just set .env and go
-OPENAI_MODEL=gpt-4.5-turbo-preview
-MAX_CONTEXT_TOKENS=100000  # 80% of 128k limit
-```
-
----
-
-# Comprehensive Codebase Analysis - Additional Issues
-
-**Date**: 2026-02-02
-**Scope**: Full codebase review
-**Reviewer**: Deep Analysis
-
-## Summary
-
-Beyond the personality feature issues, a comprehensive analysis revealed critical architectural, performance, and intelligence limitations. While the bot has solid engineering fundamentals (security, error handling, modularity), it needs significant improvements in context understanding, memory retention, and performance optimization.
-
-**Overall Grade**: B- (Functional but needs improvements)
 
 ---
 
@@ -526,32 +193,6 @@ elif part.get("type") == "image_url":
 - Test image processing thoroughly with latest OpenAI Responses API
 - Verify format matches current API specification
 - Add error handling for API format mismatches
-
----
-
-### 13. Bot Username Initialization Bug
-
-**Priority**: CRITICAL
-**Location**: `bot.py:98-109`
-**Type**: Initialization Bug
-
-**Problem**:
-- Bot username is fetched before application starts polling
-- `application.bot.username` may not be populated yet
-- Will likely always fall back to hardcoded "tzefoong_gpt_bot"
-- @mention activation might not work correctly
-
-**Current Code**:
-```python
-try:
-    # Try to get the actual username from Telegram API if possible
-    api_username = application.bot.username  # Bot not initialized yet!
-    if api_username:
-        bot_username = api_username
-```
-
-**Solution**:
-Move username fetch to `post_init()` callback or use async getter after polling starts
 
 ---
 
@@ -809,41 +450,6 @@ def make_message_handler(ctx: HandlerContext):
 
 ---
 
-### 21. Magic Numbers Throughout Codebase
-
-**Priority**: HIGH
-**Location**: Multiple files
-**Type**: Code Quality/Maintainability
-
-**Problem**:
-Hardcoded values without explanation:
-- `reserve_tokens=1000` - Why 1000?
-- `reserve_tokens=3000` - Why 3000 for images?
-- `random.random() < 0.1` - Why 10% cleanup probability?
-- `LIMIT 500` - Why 500 messages?
-- `MAX_GROUP_CONTEXT_MESSAGES=100` - Why 100?
-
-**Impact**:
-Hard to tune, unclear reasoning, difficult to maintain
-
-**Solution**:
-Move to config with documentation:
-```python
-# config.py
-class Config:
-    # Token reservation for model response generation
-    # Text: Reserve for ~200-300 word responses
-    TEXT_RESPONSE_RESERVE_TOKENS = int(os.getenv("TEXT_RESPONSE_RESERVE_TOKENS", "1000"))
-
-    # Images: Reserve more for detailed descriptions
-    IMAGE_RESPONSE_RESERVE_TOKENS = int(os.getenv("IMAGE_RESPONSE_RESERVE_TOKENS", "3000"))
-
-    # Probability of cleanup (0.0-1.0)
-    GROUP_CLEANUP_PROBABILITY = float(os.getenv("GROUP_CLEANUP_PROBABILITY", "0.1"))
-```
-
----
-
 ## MEDIUM Priority Issues 🟢
 
 ### 22. No Content Filtering
@@ -1019,34 +625,31 @@ Extract and persist user facts:
 ## Recommended Action Plan
 
 ### Phase 1: Critical Fixes (Week 1)
-1. ✅ Fix personality feature (per-chat state)
-2. ✅ Add input validation (message/image size)
-3. ✅ Implement rate limiting
-4. ✅ Fix bot username initialization
-5. ✅ Verify Responses API compatibility
+1. Fix model branching logic (Issue #1)
+2. Add input validation (Issue #15)
+3. Implement rate limiting (Issue #14)
+4. Centralize prompt construction (Issue #2)
+5. Verify Responses API compatibility (Issue #12)
 
 ### Phase 2: Performance (Week 2)
-1. ✅ Add query result caching
-2. ✅ Remove unnecessary health checks
-3. ✅ Optimize token management
-4. ✅ Add database indexes
-5. ✅ Extract global state
+1. Add query result caching (Issue #19)
+2. Remove unnecessary health checks (Issue #18)
+3. Extract global state (Issue #20)
+4. Add database indexes
 
 ### Phase 3: Intelligence Upgrade (Week 3-4)
-1. ✅ Install pgvector extension
-2. ✅ Implement semantic search
-3. ✅ Add fact extraction system
-4. ✅ Build conversation summarization
-5. ✅ Create user profile storage
+1. Install pgvector extension (Issue #27)
+2. Implement semantic search
+3. Add conversation summarization (Issue #28)
+4. Build user profile storage (Issue #29)
 
 ### Phase 4: Polish (Ongoing)
-1. ✅ Improve error handling consistency
-2. ✅ Add content filtering
-3. ✅ Optimize image processing
-4. ✅ Add monitoring/metrics
-5. ✅ Write comprehensive tests
+1. Improve error handling consistency (Issue #23)
+2. Add content filtering (Issue #22)
+3. Optimize image processing (Issue #26)
+4. Add monitoring/metrics (Issue #25)
 
 ---
 
 **Last Updated**: 2026-02-02
-**Status**: Analysis complete, prioritized improvements identified
+**Status**: Active issues - monitoring fixes and improvements
