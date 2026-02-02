@@ -692,8 +692,8 @@ async def list_personality_command(update: Update, context: ContextTypes.DEFAULT
     """List all available personalities."""
     
     user_id = update.message.from_user.id
-    if not is_authorized(user_id):
-        await update.message.reply_text("Sorry, you have no access to me.")
+    if not is_main_authorized_user(user_id):
+        await update.message.reply_text("Sorry, only the main authorized user can view personalities.")
         return
     
     try:
