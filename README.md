@@ -98,6 +98,60 @@ An AI-powered Telegram bot using OpenAI's GPT models with persistent conversatio
      felixlmao/telegram-gpt:latest
    ```
 
+### GitHub Actions Auto-Deploy to EC2 (CI/CD)
+
+This repo includes a GitHub Actions workflow at `.github/workflows/deploy-ec2.yml` that:
+1) builds and pushes a Docker image to Docker Hub, then
+2) SSHes into your EC2 instance and restarts the container with the new image.
+
+#### 1) Prepare your EC2 instance (one-time)
+
+On the EC2 box, install Docker and make sure your SSH user can run `docker` without a password prompt.
+
+Create an app directory and put your `.env` there:
+```bash
+sudo mkdir -p /opt/telegram-gpt/data
+sudo nano /opt/telegram-gpt/.env
+```
+
+Make the directory writable by the container user (UID 1000 in the Dockerfile):
+```bash
+sudo chown -R 1000:1000 /opt/telegram-gpt
+```
+
+#### 2) Create an SSH key for GitHub Actions (one-time)
+
+Generate a dedicated deploy key on your local machine:
+```bash
+ssh-keygen -t ed25519 -C "github-actions-ec2" -f ./ec2_deploy_key
+```
+
+Add `ec2_deploy_key.pub` to your EC2 user’s `~/.ssh/authorized_keys`.
+
+#### 3) Add GitHub repository secrets (one-time)
+
+In GitHub → your repo → Settings → Secrets and variables → Actions, add:
+
+- `DOCKERHUB_USERNAME`: your Docker Hub username
+- `DOCKERHUB_TOKEN`: a Docker Hub access token (recommended) or password
+- `DOCKERHUB_REPO`: the Docker Hub repo name (e.g. `telegram-gpt`)
+- `EC2_HOST`: EC2 public DNS or IP
+- `EC2_USER`: SSH username on the EC2 box (e.g. `ubuntu`)
+- `EC2_SSH_KEY`: contents of `ec2_deploy_key` (the private key)
+- `EC2_APP_DIR` (optional): defaults to `/opt/telegram-gpt`
+
+#### 4) Deploy
+
+Push to the `main` branch (or run the workflow manually via the Actions tab). The workflow will:
+- push the image tags `sha-<commit>` and `latest`
+- redeploy the container named `telegram-gpt-bot` on your EC2 instance
+
+Check status/logs:
+```bash
+docker ps
+docker logs -f telegram-gpt-bot
+```
+
 ## Getting Credentials
 
 ### Telegram Bot Token

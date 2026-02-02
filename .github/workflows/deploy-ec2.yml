@@ -1,0 +1,93 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ec2-deploy
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ secrets.DOCKERHUB_REPO }}:sha-${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ secrets.DOCKERHUB_REPO }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+
+      - name: Trust EC2 host key
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Deploy on EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_APP_DIR: ${{ secrets.EC2_APP_DIR }}
+          IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/${{ secrets.DOCKERHUB_REPO }}:sha-${{ github.sha }}
+        run: |
+          ssh "${EC2_USER}@${EC2_HOST}" "APP_DIR='${EC2_APP_DIR:-/opt/telegram-gpt}' IMAGE='${IMAGE}' bash -s" <<'EOF'
+          set -euo pipefail
+
+          APP_DIR="${APP_DIR:-/opt/telegram-gpt}"
+          IMAGE="${IMAGE:?}"
+          ENV_FILE="$APP_DIR/.env"
+          DATA_DIR="$APP_DIR/data"
+
+          if [ ! -f "$ENV_FILE" ]; then
+            echo "Missing $ENV_FILE on server. Create it first."
+            exit 1
+          fi
+
+          mkdir -p "$DATA_DIR"
+
+          docker pull "$IMAGE"
+
+          docker stop telegram-gpt-bot >/dev/null 2>&1 || true
+          docker rm telegram-gpt-bot >/dev/null 2>&1 || true
+
+          docker run -d \
+            --name telegram-gpt-bot \
+            --restart unless-stopped \
+            --env-file "$ENV_FILE" \
+            -v "$DATA_DIR:/app/data" \
+            "$IMAGE"
+
+          docker image prune -f >/dev/null 2>&1 || true
+          docker ps --filter "name=telegram-gpt-bot"
+          EOF
