@@ -29,6 +29,22 @@ Key behaviors:
 - Track conversation context from multiple participants
 - Messages are formatted as [Name]: content - reply naturally without mimicking this format"""
 
+    def _build_system_prompt(self, is_group: bool, custom_system_prompt: str | None = None) -> str:
+        """Build one final system prompt string for the API call."""
+        # Always use Singapore timezone (fallback to UTC if unavailable)
+        try:
+            now_iso = datetime.now(ZoneInfo("Asia/Singapore")).isoformat(timespec="seconds")
+        except Exception as e:
+            logger.warning(f"Failed to get Singapore timezone, falling back to UTC: {e}")
+            now_iso = datetime.now(ZoneInfo("UTC")).isoformat(timespec="seconds")
+
+        personality_prompt = (
+            custom_system_prompt
+            if custom_system_prompt
+            else (self.SYSTEM_PROMPT_GROUP if is_group else self.SYSTEM_PROMPT)
+        )
+        return f'Current date/time: {now_iso}\n\n"{personality_prompt}"'
+
     def __init__(self, api_key: str, model: str, timeout: int, base_url: str | None = None):
         """
         Initialize OpenAI client.
@@ -96,61 +112,34 @@ Key behaviors:
 
                 # Handle multimodal messages (image + text)
                 elif isinstance(content, list):
-                    if is_group and msg["role"] == "user":
-                        sender_name = msg.get("sender_name", "Unknown")
-                        updated_content = []
-                        for part in content:
-                            # Convert old Chat Completions format to Responses API format
-                            if part.get("type") == "text":
-                                text = part["text"]
+                    updated_content = []
+                    for part in content:
+                        if part.get("type") == "text":
+                            text = part["text"]
+                            # Add sender name for group chats
+                            if is_group and msg["role"] == "user":
+                                sender_name = msg.get("sender_name", "Unknown")
                                 if not text.startswith("["):
                                     text = f"[{sender_name}]: {text}"
-                                updated_content.append({"type": "input_text", "text": text})
-                            elif part.get("type") == "image_url":
-                                # Convert image_url object to string format for Responses API
-                                image_url_obj = part.get("image_url", {})
-                                image_url_str = image_url_obj.get("url", "") if isinstance(image_url_obj, dict) else str(image_url_obj)
-                                updated_content.append({"type": "input_image", "image_url": image_url_str})
-                            else:
-                                # Handle other types (input_text, input_image if already converted)
-                                updated_content.append(part)
-                        formatted_messages.append({
-                            "role": msg["role"],
-                            "content": updated_content
-                        })
-                    else:
-                        # Non-group chat: still need to convert format
-                        updated_content = []
-                        for part in content:
-                            if part.get("type") == "text":
-                                updated_content.append({"type": "input_text", "text": part["text"]})
-                            elif part.get("type") == "image_url":
-                                # Convert image_url object to string format for Responses API
-                                image_url_obj = part.get("image_url", {})
-                                image_url_str = image_url_obj.get("url", "") if isinstance(image_url_obj, dict) else str(image_url_obj)
-                                updated_content.append({"type": "input_image", "image_url": image_url_str})
-                            else:
-                                # Already in Responses API format or other type
-                                updated_content.append(part)
-                        formatted_messages.append({
-                            "role": msg["role"],
-                            "content": updated_content
-                        })
+                            
+                            updated_content.append({"type": "input_text", "text": text})
+                            
+                        elif part.get("type") == "image_url":
+                            # Extract URL string from image_url object
+                            image_url_obj = part.get("image_url", {})
+                            url = image_url_obj.get("url", "") if isinstance(image_url_obj, dict) else str(image_url_obj)
+                            
+                            updated_content.append({"type": "input_image", "image_url": url})
+                            
+                    formatted_messages.append({
+                        "role": msg["role"],
+                        "content": updated_content
+                    })
 
-            # Choose system prompt based on chat type or use custom prompt
-            if custom_system_prompt:
-                system_prompt = custom_system_prompt
-            else:
-                system_prompt = self.SYSTEM_PROMPT_GROUP if is_group else self.SYSTEM_PROMPT
-
-            # Add time awareness at request-time (kept intentionally short).
-            # Always use Singapore timezone (fallback to UTC if unavailable)
-            try:
-                now_iso = datetime.now(ZoneInfo("Asia/Singapore")).isoformat(timespec="seconds")
-            except Exception as e:
-                logger.warning(f"Failed to get Singapore timezone, falling back to UTC: {e}")
-                now_iso = datetime.now(ZoneInfo("UTC")).isoformat(timespec="seconds")
-            system_prompt = f"Current date/time: {now_iso}\n\n{system_prompt}"
+            system_prompt = self._build_system_prompt(
+                is_group=is_group,
+                custom_system_prompt=custom_system_prompt,
+            )
 
             # Run sync OpenAI call in thread pool using Responses API
             # GPT-5 models don't support temperature parameter
