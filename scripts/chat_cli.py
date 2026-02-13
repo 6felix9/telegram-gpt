@@ -37,6 +37,7 @@ from config import config
 from database import Database
 from token_manager import TokenManager
 from openai_client import OpenAIClient
+from prompt_builder import PromptBuilder
 
 # Configure logging
 logging.basicConfig(
@@ -69,15 +70,20 @@ class ChatCLI:
         self.db = Database(config.DATABASE_URL)
 
         # Token manager
-        model_limit = config.get_model_context_limit(config.OPENAI_MODEL)
-        max_tokens = min(config.MAX_CONTEXT_TOKENS, model_limit - 2000)
-        self.token_manager = TokenManager(config.OPENAI_MODEL, max_tokens)
+        self.token_manager = TokenManager(config.OPENAI_MODEL, config.MAX_CONTEXT_TOKENS)
 
         # OpenAI client
+        prompt_builder = PromptBuilder(
+            default_private_prompt=OpenAIClient.SYSTEM_PROMPT,
+            default_group_prompt=OpenAIClient.SYSTEM_PROMPT_GROUP,
+            get_active_personality=self.db.get_active_personality,
+            get_personality_prompt=self.db.get_personality_prompt,
+        )
         self.openai_client = OpenAIClient(
             api_key=config.OPENAI_API_KEY,
             model=config.OPENAI_MODEL,
             timeout=config.OPENAI_TIMEOUT,
+            prompt_builder=prompt_builder,
         )
 
         logger.info(f"CLI initialized for chat_id={self.chat_id}, group={is_group}, test_mode={self.is_test_mode}")
@@ -125,7 +131,7 @@ class ChatCLI:
                 })
 
             # Final trim to ensure we fit (accounting for response)
-            messages = self.token_manager.trim_to_fit(messages, reserve_tokens=1000)
+            messages = self.token_manager.trim_to_fit(messages, reserve_tokens=config.RESERVE_TOKENS_TEXT)
 
             logger.info(
                 f"Processing request for chat {self.chat_id}: "
@@ -133,23 +139,7 @@ class ChatCLI:
             )
 
             # Get completion from OpenAI
-            # For group chats, fetch active personality and use custom prompt if available
-            custom_prompt = None
-            if self.is_group:
-                try:
-                    active_personality = self.db.get_active_personality()
-                    # If personality is "normal", use default SYSTEM_PROMPT_GROUP
-                    # Otherwise fetch custom prompt from database
-                    if active_personality != "normal":
-                        custom_prompt = self.db.get_personality_prompt(active_personality)
-                        # If custom prompt not found, fall back to default
-                        if not custom_prompt:
-                            logger.warning(f"Personality '{active_personality}' not found in database, using default")
-                except Exception as e:
-                    logger.error(f"Error fetching personality: {e}", exc_info=True)
-                    # Continue with default prompt on error
-
-            response = await self.openai_client.get_completion(messages, self.is_group, custom_system_prompt=custom_prompt)
+            response = await self.openai_client.get_completion(messages, self.is_group)
 
             # For test mode, store assistant's response
             if self.is_test_mode:
@@ -233,6 +223,28 @@ class ChatCLI:
             logger.error(f"Error handling personality command: {e}", exc_info=True)
             print(f"\n❌ Failed to change personality: {e}\n")
 
+    def handle_list_personality_command(self) -> None:
+        """Handle /list_personality command."""
+        try:
+            personalities = self.db.list_personalities()
+            active = self.db.get_active_personality()
+            
+            if not personalities:
+                print("\nNo custom personalities available.")
+                print(f"Currently using: {active} (default)\n")
+                return
+            
+            print(f"\n**Available Personalities:**")
+            print(f"Currently active: {active}\n")
+            
+            for name, prompt_preview in personalities:
+                marker = "✓" if name == active else "-"
+                print(f"{marker} {name}")
+                print(f"  {prompt_preview}\n")
+        except Exception as e:
+            logger.error(f"Error listing personalities: {e}", exc_info=True)
+            print(f"\n❌ Failed to list personalities: {e}\n")
+
     async def run(self):
         """Run the interactive CLI loop."""
         mode_str = "TEST MODE" if self.is_test_mode else "READ-ONLY MODE"
@@ -249,7 +261,7 @@ class ChatCLI:
                   f"{stats['total_tokens']:,} tokens")
             print("⚠️  READ-ONLY MODE: Your prompts/responses will NOT be saved to database\n")
 
-        print("Type your message (or /clear, /stats, /personality [name], /exit to quit):\n")
+        print("Type your message (or /clear, /stats, /personality [name], /list_personality, /exit to quit):\n")
 
         while True:
             try:
@@ -290,6 +302,10 @@ class ChatCLI:
                     parts = user_input.split(None, 1)
                     args = parts[1:] if len(parts) > 1 else []
                     self.handle_personality_command(args)
+                    continue
+
+                if user_input.lower().startswith("/list_personality"):
+                    self.handle_list_personality_command()
                     continue
 
                 # Process message

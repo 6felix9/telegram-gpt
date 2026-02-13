@@ -25,8 +25,6 @@
 | sender_name     | text                     | yes      | —                 |
 | sender_username | text                     | yes      | —                 |
 | is_group_chat   | boolean                  | yes      | false             |
-| has_image       | boolean                  | yes      | false             |
-| image_metadata  | text                     | yes      | —                 |
 
 - **Primary key:** `id`
 - **Index:** `idx_chat_timestamp` on `(chat_id, timestamp DESC)`
@@ -44,29 +42,7 @@
 
 ---
 
-### 3. `model` (16 kB total)
-
-| Column     | Type | Nullable | Default |
-|------------|------|----------|---------|
-| model_name | text | NOT NULL | —       |
-
-- **Primary key:** `model_name`
-
----
-
-### 4. `active_model` (32 kB total)
-
-| Column | Type    | Nullable | Default      |
-|--------|---------|----------|--------------|
-| id     | integer | NOT NULL | 1            |
-| model  | text    | NOT NULL | 'gpt-4o-mini' |
-
-- **Primary key:** `id`
-- **Check:** `id = 1` (single-row config)
-
----
-
-### 5. `personality` (80 kB total)
+### 3. `personality` (80 kB total)
 
 | Column      | Type | Nullable | Default |
 |-------------|------|----------|---------|
@@ -77,7 +53,7 @@
 
 ---
 
-### 6. `active_personality` (32 kB total)
+### 4. `active_personality` (32 kB total)
 
 | Column      | Type                     | Nullable | Default           |
 |-------------|--------------------------|----------|-------------------|
@@ -92,9 +68,8 @@
 
 ## Summary
 
-- **messages** – Conversation history with token counts, group/vision metadata
+- **messages** – Conversation history with token counts and group chat metadata
 - **granted_users** – Users granted bot access
-- **model** / **active_model** – Available models and current default
 - **personality** / **active_personality** – System prompts / personalities and current default
 
 *Last updated from Neon MCP – Feb 2, 2026*
