@@ -10,6 +10,7 @@ from config import config
 from database import Database
 from token_manager import TokenManager
 from openai_client import OpenAIClient
+from prompt_builder import PromptBuilder
 import handlers
 
 # Configure logging
@@ -77,6 +78,12 @@ def main():
             "api_key": config.OPENAI_API_KEY,
             "model": config.OPENAI_MODEL,
             "timeout": config.OPENAI_TIMEOUT,
+            "prompt_builder": PromptBuilder(
+                default_private_prompt=OpenAIClient.SYSTEM_PROMPT,
+                default_group_prompt=OpenAIClient.SYSTEM_PROMPT_GROUP,
+                get_active_personality=db.get_active_personality,
+                get_personality_prompt=db.get_personality_prompt,
+            ),
         }
         # Add base_url if configured (for xAI or other OpenAI-compatible APIs)
         if config.OPENAI_BASE_URL:

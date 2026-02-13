@@ -215,23 +215,7 @@ async def process_request(message, prompt: str, user_id: int, sender_name: str, 
         )
 
         # 5. Get completion from OpenAI
-        # For group chats, fetch active personality and use custom prompt if available
-        custom_prompt = None
-        if is_group:
-            try:
-                active_personality = db.get_active_personality()
-                # If personality is "normal", use default SYSTEM_PROMPT_GROUP
-                # Otherwise fetch custom prompt from database
-                if active_personality != "normal":
-                    custom_prompt = db.get_personality_prompt(active_personality)
-                    # If custom prompt not found, fall back to default
-                    if not custom_prompt:
-                        logger.warning(f"Personality '{active_personality}' not found in database, using default")
-            except Exception as e:
-                logger.error(f"Error fetching personality: {e}", exc_info=True)
-                # Continue with default prompt on error
-
-        response = await openai_client.get_completion(messages, is_group, custom_system_prompt=custom_prompt)
+        response = await openai_client.get_completion(messages, is_group)
 
         # 6. Count and store assistant's response
         assistant_tokens = token_manager.count_message_tokens("assistant", response)
@@ -376,23 +360,7 @@ async def process_image_request(
         )
 
         # 9. Call OpenAI with vision support
-        # For group chats, fetch active personality and use custom prompt if available
-        custom_prompt = None
-        if is_group:
-            try:
-                active_personality = db.get_active_personality()
-                # If personality is "normal", use default SYSTEM_PROMPT_GROUP
-                # Otherwise fetch custom prompt from database
-                if active_personality != "normal":
-                    custom_prompt = db.get_personality_prompt(active_personality)
-                    # If custom prompt not found, fall back to default
-                    if not custom_prompt:
-                        logger.warning(f"Personality '{active_personality}' not found in database, using default")
-            except Exception as e:
-                logger.error(f"Error fetching personality: {e}", exc_info=True)
-                # Continue with default prompt on error
-
-        response_text = await openai_client.get_completion(messages, is_group, custom_system_prompt=custom_prompt)
+        response_text = await openai_client.get_completion(messages, is_group)
 
         # 10. Store assistant response with tiktoken-counted tokens
         response_tokens = token_manager.count_message_tokens("assistant", response_text)
