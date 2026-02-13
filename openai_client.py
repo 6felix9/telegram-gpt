@@ -69,7 +69,13 @@ Key behaviors:
         api_provider = "xAI" if base_url else "OpenAI"
         logger.info(f"Initialized {api_provider} client with model {model}" + (f" (base_url: {base_url})" if base_url else ""))
 
-    async def get_completion(self, messages: list[dict], is_group: bool = False, custom_system_prompt: str | None = None) -> str:
+    async def get_completion(
+        self,
+        messages: list[dict],
+        is_group: bool = False,
+        custom_system_prompt: str | None = None,
+        reply_context: tuple[str, str] | None = None,
+    ) -> str:
         """
         Get completion from OpenAI API.
 
@@ -77,6 +83,7 @@ Key behaviors:
             messages: List of message dicts with 'role', 'content', and optionally sender info
             is_group: Whether this is a group chat (affects formatting and system prompt)
             custom_system_prompt: Optional custom system prompt to use instead of default
+            reply_context: Optional tuple of (sender_name, content) being replied to
 
         Returns:
             Assistant's response text or error message
@@ -88,7 +95,12 @@ Key behaviors:
             system_prompt = self.prompt_builder.build_system_prompt(
                 is_group=is_group,
                 custom_system_prompt=custom_system_prompt,
+                reply_context=reply_context,
             )
+
+            # Log system prompt for debugging
+            logger.info(f"System prompt preview: {system_prompt[:150]}...")
+            logger.debug(f"Full system prompt:\n{system_prompt}")
 
             # Run sync OpenAI call in thread pool using Responses API
             # GPT-5 models don't support temperature parameter

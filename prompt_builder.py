@@ -70,8 +70,23 @@ class PromptBuilder:
             logger.error("PromptBuilder: failed to resolve group personality: %s", e, exc_info=True)
             return None
 
-    def build_system_prompt(self, is_group: bool, custom_system_prompt: str | None = None) -> str:
-        """Build final system prompt with time context."""
+    def build_system_prompt(
+        self,
+        is_group: bool,
+        custom_system_prompt: str | None = None,
+        reply_context: tuple[str, str] | None = None,
+    ) -> str:
+        """
+        Build final system prompt with time context and optional reply context.
+
+        Args:
+            is_group: Whether this is a group chat
+            custom_system_prompt: Optional custom system prompt override
+            reply_context: Optional tuple of (sender_name, content) being replied to
+
+        Returns:
+            Complete system prompt string
+        """
         if custom_system_prompt:
             prompt_body = custom_system_prompt
             logger.debug("PromptBuilder: using explicit custom system prompt override")
@@ -84,7 +99,16 @@ class PromptBuilder:
             logger.debug("PromptBuilder: using default private prompt")
 
         now_iso = self._current_time_iso()
-        return f'Current date/time: {now_iso}\n\n"{prompt_body}"'
+        system_parts = [f'Current date/time: {now_iso}\n\n"{prompt_body}"']
+
+        # Add reply context if present
+        if reply_context:
+            sender_name, content = reply_context
+            reply_note = f'\nNote: The user is replying to a previous message from {sender_name}: "{content}"'
+            system_parts.append(reply_note)
+            logger.debug("PromptBuilder: added reply context to system prompt")
+
+        return "".join(system_parts)
 
     @staticmethod
     def _apply_group_sender_prefix(role: str, text: str, sender_name: str) -> str:
@@ -138,32 +162,3 @@ class PromptBuilder:
 
         return formatted_messages
 
-    @staticmethod
-    def format_reply_context(sender_name: str, content: str) -> str:
-        """
-        Format reply context for inclusion in user prompt.
-
-        Args:
-            sender_name: Name of the person being replied to
-            content: Content of the message being replied to
-
-        Returns:
-            Formatted context string
-        """
-        return f'[Context - Replying to {sender_name}]: "{content}"'
-
-    @staticmethod
-    def combine_with_reply_context(prompt: str, reply_context: str) -> str:
-        """
-        Combine a user prompt with reply context.
-
-        Args:
-            prompt: The user's message/prompt
-            reply_context: Formatted reply context from format_reply_context()
-
-        Returns:
-            Combined prompt with reply context prepended
-        """
-        if not reply_context:
-            return prompt
-        return f"{reply_context}\n\n{prompt}".strip()

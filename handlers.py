@@ -164,23 +164,27 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("Sorry, you have no access to me.")
         return
 
-    # 4. Extract and format reply context if it exists
+    # 4. Extract reply context if it exists
     reply_data = extract_reply_data(message)
-    if reply_data:
-        sender_name, content = reply_data
-        reply_context = prompt_builder.format_reply_context(sender_name, content)
-        prompt = prompt_builder.combine_with_reply_context(prompt, reply_context)
-    
+
     # 5. Handle empty prompt
     if not prompt:
         await message.reply_text("Yes, what's your request?")
         return
 
     # 6. Process request
-    await process_request(message, prompt, user_id, sender_name, sender_username, is_group)
+    await process_request(message, prompt, user_id, sender_name, sender_username, is_group, reply_data)
 
 
-async def process_request(message, prompt: str, user_id: int, sender_name: str, sender_username: str, is_group: bool):
+async def process_request(
+    message,
+    prompt: str,
+    user_id: int,
+    sender_name: str,
+    sender_username: str,
+    is_group: bool,
+    reply_context: tuple[str, str] | None = None,
+):
     """Process GPT request with context management."""
 
     chat_id = str(message.chat_id)
@@ -215,8 +219,8 @@ async def process_request(message, prompt: str, user_id: int, sender_name: str, 
             f"{len(messages)} messages, {user_tokens} tokens"
         )
 
-        # 5. Get completion from OpenAI
-        response = await openai_client.get_completion(messages, is_group)
+        # 5. Get completion from OpenAI (with optional reply context)
+        response = await openai_client.get_completion(messages, is_group, reply_context=reply_context)
 
         # 6. Count and store assistant's response
         assistant_tokens = token_manager.count_message_tokens("assistant", response)
@@ -276,9 +280,12 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("Sorry, you have no access to me.")
         return
 
-    # 4. Process image request
+    # 4. Extract reply context if it exists
+    reply_data = extract_reply_data(message)
+
+    # 5. Process image request
     await process_image_request(
-        message, prompt, user_id, sender_name, sender_username, is_group
+        message, prompt, user_id, sender_name, sender_username, is_group, reply_data
     )
 
 
@@ -288,7 +295,8 @@ async def process_image_request(
     user_id: int,
     sender_name: str,
     sender_username: str,
-    is_group: bool
+    is_group: bool,
+    reply_context: tuple[str, str] | None = None,
 ):
     """Process image request with vision model - split storage approach."""
 
@@ -360,8 +368,8 @@ async def process_image_request(
             f"{len(messages)} messages in context, caption={caption_tokens} tokens"
         )
 
-        # 9. Call OpenAI with vision support
-        response_text = await openai_client.get_completion(messages, is_group)
+        # 9. Call OpenAI with vision support (with optional reply context)
+        response_text = await openai_client.get_completion(messages, is_group, reply_context=reply_context)
 
         # 10. Store assistant response with tiktoken-counted tokens
         response_tokens = token_manager.count_message_tokens("assistant", response_text)
