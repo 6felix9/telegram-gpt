@@ -1,10 +1,9 @@
 """OpenAI API client wrapper with error handling."""
 import logging
 import asyncio
-from datetime import datetime
-from zoneinfo import ZoneInfo
 import openai
 import httpx
+from prompt_builder import PromptBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -12,79 +11,31 @@ logger = logging.getLogger(__name__)
 class OpenAIClient:
     """Wrapper for OpenAI API with comprehensive error handling."""
 
-    SYSTEM_PROMPT = """You are Tze Foong's Assistant. This is your name and identity - never say you are OpenAI or an OpenAI language model.
+    SYSTEM_PROMPT = """You are Tze Foong's Assistant, an AI helper in Telegram.
 
-You are an AI assistant operating in Telegram, and your purpose is to assist Tze Foong with their requests.
+Key behaviors:
+- Be direct and concise - no unnecessary preambles
+- Provide clear, helpful responses
+- Never claim to be OpenAI or reference being a language model
+- Respond naturally as a personal assistant"""
 
-Response style: Be direct and concise. Do not include prose, conversational filler, or preambles. Just respond directly to the request."""
+    SYSTEM_PROMPT_GROUP = """You are Tze Foong's Assistant, an AI helper in Telegram group chats.
 
-    SYSTEM_PROMPT_GROUP = """Developer: # Role and Objective
-You are **Tze Foong’s Assistant**, a playful, confident, and highly helpful AI agent built for Telegram **group chats**. Your mission is to understand the full conversation, respond directly, and enhance the experience with clear answers, summaries, opinions, rankings, explanations, and playful banter.
+Key behaviors:
+- Be direct and concise - no unnecessary preambles  
+- Provide clear, helpful responses
+- Never claim to be OpenAI or reference being a language model
+- Track conversation context from multiple participants
+- Messages are formatted as [Name]: content - reply naturally without mimicking this format"""
 
-# Instructions
-- Always be **playful, confident, witty, and bold** in expressing opinions.
-- Never hesitate, avoid topics, or use language such as “I cannot” or “this might be sensitive.”
-- Deliver **clear, concise, and direct responses**—avoid vagueness or ambiguity.
-- Always provide a concrete answer, even for subjective queries (rankings, opinions, guesses).
-- Use **lighthearted humor and context** from the chat for roasts, teases, and jokes.
-- Refrain from moralizing or lecturing users.
-
-## Context Awareness
-- Continuously track conversation state:
-  - Topics discussed
-  - Participants and their comments
-  - Expressed opinions
-  - Notable events (e.g., “Felix fell down earlier”)
-- Reference conversation context occasionally when giving your own opinion, where it makes the response stronger or more relevant (e.g., “Felix said Inter Miami will win and I actually agree because…”). Avoid referencing context in every response.
-- You can disagree with group members and present your unique perspective.
-
-## Understanding Group Chat Format
-- Messages from users are structured as:
-  ```
-  [Felix]: Hello
-  [Beatrice]: Hi Felix
-  [John]: I think Inter Miami will lose
-  ```
-- **Do not** mimic this bracketed format in your replies. Instead, reply naturally, such as:
-  - “Hi Felix and Beatrice!”
-  - “John is dreaming—Inter Miami definitely isn’t losing.”
-
-## Supported Behaviors
-You must always do the following **without hesitation**:
-
-### Summaries
-- When prompted (e.g., "Summarise the last 300 messages." or "Give me a quick update of everything they discussed."), produce a **clean, well-structured, and accurate summary** of recent messages.
-
-### Opinions
-- When asked for your thoughts (e.g., "Hey chatgpt, what do you think?", "Who is right?", "Which team will win?"), give a **direct and confident opinion**, even if it’s speculative. Never offer disclaimers.
-
-### Rankings / Judgments
-- When asked to rank or judge (e.g., “Rank the people in this group.”, “Who is the funniest?”, “Who is the smartest?”), always provide a real ranking with a brief, playful justification. No refusals or ethical hesitation.
-
-### Roasting
-- If prompted to roast (e.g., “Roast him.” or “ChatGPT roast Felix.”), use specific chat context to deliver a playful, non-harmful roast (e.g., “Bro fell down earlier like he was trying to debug gravity.”).
-
-### Conversation Assistance
-- Always respond helpfully to requests, including:
-  - Answering questions
-  - Explaining topics
-  - Translating messages
-  - Generating ideas
-  - Giving advice
-  - Predicting outcomes
-  - Engaging as an active group chat participant
-
-## Tone
-- Maintain these qualities at all times:
-  - Friendly
-  - Funny
-  - Confident
-  - Direct
-  - Never over-apologetic
-  - Never hesitant
-  - Never moralizing"""
-
-    def __init__(self, api_key: str, model: str, timeout: int, base_url: str | None = None):
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        timeout: int,
+        base_url: str | None = None,
+        prompt_builder: PromptBuilder | None = None,
+    ):
         """
         Initialize OpenAI client.
 
@@ -93,6 +44,7 @@ You must always do the following **without hesitation**:
             model: Model name (e.g., "gpt-4o-mini" or "grok-4")
             timeout: Request timeout in seconds
             base_url: Optional base URL for API (e.g., "https://api.x.ai/v1" for xAI)
+            prompt_builder: Shared prompt builder for system/messages assembly
         """
         # Use httpx.Timeout for better timeout handling, especially for reasoning models
         timeout_obj = httpx.Timeout(float(timeout))
@@ -109,11 +61,21 @@ You must always do the following **without hesitation**:
         self.model = model
         self.timeout = timeout
         self.base_url = base_url
+        self.prompt_builder = prompt_builder or PromptBuilder(
+            default_private_prompt=self.SYSTEM_PROMPT,
+            default_group_prompt=self.SYSTEM_PROMPT_GROUP,
+        )
 
         api_provider = "xAI" if base_url else "OpenAI"
         logger.info(f"Initialized {api_provider} client with model {model}" + (f" (base_url: {base_url})" if base_url else ""))
 
-    async def get_completion(self, messages: list[dict], is_group: bool = False, custom_system_prompt: str | None = None) -> str:
+    async def get_completion(
+        self,
+        messages: list[dict],
+        is_group: bool = False,
+        custom_system_prompt: str | None = None,
+        reply_context: tuple[str, str] | None = None,
+    ) -> str:
         """
         Get completion from OpenAI API.
 
@@ -121,6 +83,7 @@ You must always do the following **without hesitation**:
             messages: List of message dicts with 'role', 'content', and optionally sender info
             is_group: Whether this is a group chat (affects formatting and system prompt)
             custom_system_prompt: Optional custom system prompt to use instead of default
+            reply_context: Optional tuple of (sender_name, content) being replied to
 
         Returns:
             Assistant's response text or error message
@@ -128,86 +91,18 @@ You must always do the following **without hesitation**:
         try:
             logger.debug(f"Requesting completion with {len(messages)} messages (group={is_group})")
 
-            # Format messages for group chats with sender names
-            formatted_messages = []
-            for msg in messages:
-                content = msg["content"]
+            formatted_messages = self.prompt_builder.format_messages(messages, is_group)
+            system_prompt = self.prompt_builder.build_system_prompt(
+                is_group=is_group,
+                custom_system_prompt=custom_system_prompt,
+                reply_context=reply_context,
+            )
 
-                # Handle text-only messages
-                if isinstance(content, str):
-                    formatted_content = content
-
-                    # For group chats, prepend sender name to user messages
-                    if is_group and msg["role"] == "user":
-                        sender_name = msg.get("sender_name", "Unknown")
-                        # Only add name prefix if not already there
-                        if not formatted_content.startswith("["):
-                            formatted_content = f"[{sender_name}]: {formatted_content}"
-
-                    formatted_messages.append({
-                        "role": msg["role"],
-                        "content": formatted_content
-                    })
-
-                # Handle multimodal messages (image + text)
-                elif isinstance(content, list):
-                    if is_group and msg["role"] == "user":
-                        sender_name = msg.get("sender_name", "Unknown")
-                        updated_content = []
-                        for part in content:
-                            # Convert old Chat Completions format to Responses API format
-                            if part.get("type") == "text":
-                                text = part["text"]
-                                if not text.startswith("["):
-                                    text = f"[{sender_name}]: {text}"
-                                updated_content.append({"type": "input_text", "text": text})
-                            elif part.get("type") == "image_url":
-                                # Convert image_url object to string format for Responses API
-                                image_url_obj = part.get("image_url", {})
-                                image_url_str = image_url_obj.get("url", "") if isinstance(image_url_obj, dict) else str(image_url_obj)
-                                updated_content.append({"type": "input_image", "image_url": image_url_str})
-                            else:
-                                # Handle other types (input_text, input_image if already converted)
-                                updated_content.append(part)
-                        formatted_messages.append({
-                            "role": msg["role"],
-                            "content": updated_content
-                        })
-                    else:
-                        # Non-group chat: still need to convert format
-                        updated_content = []
-                        for part in content:
-                            if part.get("type") == "text":
-                                updated_content.append({"type": "input_text", "text": part["text"]})
-                            elif part.get("type") == "image_url":
-                                # Convert image_url object to string format for Responses API
-                                image_url_obj = part.get("image_url", {})
-                                image_url_str = image_url_obj.get("url", "") if isinstance(image_url_obj, dict) else str(image_url_obj)
-                                updated_content.append({"type": "input_image", "image_url": image_url_str})
-                            else:
-                                # Already in Responses API format or other type
-                                updated_content.append(part)
-                        formatted_messages.append({
-                            "role": msg["role"],
-                            "content": updated_content
-                        })
-
-            # Choose system prompt based on chat type or use custom prompt
-            if custom_system_prompt:
-                system_prompt = custom_system_prompt
-            else:
-                system_prompt = self.SYSTEM_PROMPT_GROUP if is_group else self.SYSTEM_PROMPT
-
-            # Add time awareness at request-time (kept intentionally short).
-            # Always use Singapore timezone (fallback to UTC if unavailable)
-            try:
-                now_iso = datetime.now(ZoneInfo("Asia/Singapore")).isoformat(timespec="seconds")
-            except Exception as e:
-                logger.warning(f"Failed to get Singapore timezone, falling back to UTC: {e}")
-                now_iso = datetime.now(ZoneInfo("UTC")).isoformat(timespec="seconds")
-            system_prompt = f"Current date/time: {now_iso}\n\n{system_prompt}"
+            # Log system prompt metadata only to avoid leaking sensitive content
+            logger.debug("System prompt generated (length=%d chars)", len(system_prompt))
 
             # Run sync OpenAI call in thread pool using Responses API
+            # GPT-5 models don't support temperature parameter
             # GPT-5 models don't support temperature parameter
             if self.model.startswith("gpt-5"):
                 response = await asyncio.to_thread(

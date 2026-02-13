@@ -12,16 +12,18 @@ config = None
 db = None
 token_manager = None
 openai_client = None
+prompt_builder = None
 bot_username = None
 
 
-def init_handlers(cfg, database, token_mgr, openai_cl, username=None):
+def init_handlers(cfg, database, token_mgr, openai_cl, prompt_bldr, username=None):
     """Initialize handler dependencies."""
-    global config, db, token_manager, openai_client, bot_username
+    global config, db, token_manager, openai_client, prompt_builder, bot_username
     config = cfg
     db = database
     token_manager = token_mgr
     openai_client = openai_cl
+    prompt_builder = prompt_bldr
     bot_username = username
 
 
@@ -79,35 +81,33 @@ def extract_keyword(text: str, bot_username: str = None) -> tuple[bool, str]:
     return has_activation, prompt
 
 
-def extract_reply_context(message) -> str:
+def extract_reply_data(message) -> tuple[str, str] | None:
     """
-    Extracts context from the message being replied to.
-    Returns a formatted string or empty string if no reply/content.
-    
+    Extracts raw data from the message being replied to.
+
     Args:
         message: Telegram message object
-    
+
     Returns:
-        Formatted context string or empty string
+        Tuple of (sender_name, content) or None if no valid reply
     """
     # Check if this is a reply
     if not message.reply_to_message:
-        return ""
-        
+        return None
+
     reply = message.reply_to_message
-    
+
     # Extract content (prioritize text, then caption for media)
     content = reply.text or reply.caption or ""
-    
-    # If no text content, ignore
+
+    # If no text content, return None
     if not content:
-        return ""
-        
+        return None
+
     # Get sender name
     sender = reply.from_user.first_name if reply.from_user else "Unknown"
-    
-    # Format the context
-    return f"[Context - Replying to {sender}]: \"{content}\""
+
+    return (sender, content)
 
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -165,21 +165,26 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # 4. Extract reply context if it exists
-    reply_context = extract_reply_context(message)
-    if reply_context:
-        # Prepend context to the prompt
-        prompt = f"{reply_context}\n\n{prompt}".strip()
-    
+    reply_data = extract_reply_data(message)
+
     # 5. Handle empty prompt
     if not prompt:
         await message.reply_text("Yes, what's your request?")
         return
 
     # 6. Process request
-    await process_request(message, prompt, user_id, sender_name, sender_username, is_group)
+    await process_request(message, prompt, user_id, sender_name, sender_username, is_group, reply_data)
 
 
-async def process_request(message, prompt: str, user_id: int, sender_name: str, sender_username: str, is_group: bool):
+async def process_request(
+    message,
+    prompt: str,
+    user_id: int,
+    sender_name: str,
+    sender_username: str,
+    is_group: bool,
+    reply_context: tuple[str, str] | None = None,
+):
     """Process GPT request with context management."""
 
     chat_id = str(message.chat_id)
@@ -207,31 +212,15 @@ async def process_request(message, prompt: str, user_id: int, sender_name: str, 
         messages = db.get_messages_by_tokens(chat_id, max_tokens)
 
         # 4. Final trim to ensure we fit (accounting for response)
-        messages = token_manager.trim_to_fit(messages, reserve_tokens=1000)
+        messages = token_manager.trim_to_fit(messages, reserve_tokens=config.RESERVE_TOKENS_TEXT)
 
         logger.info(
             f"Processing request for chat {chat_id}: "
             f"{len(messages)} messages, {user_tokens} tokens"
         )
 
-        # 5. Get completion from OpenAI
-        # For group chats, fetch active personality and use custom prompt if available
-        custom_prompt = None
-        if is_group:
-            try:
-                active_personality = db.get_active_personality()
-                # If personality is "normal", use default SYSTEM_PROMPT_GROUP
-                # Otherwise fetch custom prompt from database
-                if active_personality != "normal":
-                    custom_prompt = db.get_personality_prompt(active_personality)
-                    # If custom prompt not found, fall back to default
-                    if not custom_prompt:
-                        logger.warning(f"Personality '{active_personality}' not found in database, using default")
-            except Exception as e:
-                logger.error(f"Error fetching personality: {e}", exc_info=True)
-                # Continue with default prompt on error
-
-        response = await openai_client.get_completion(messages, is_group, custom_system_prompt=custom_prompt)
+        # 5. Get completion from OpenAI (with optional reply context)
+        response = await openai_client.get_completion(messages, is_group, reply_context=reply_context)
 
         # 6. Count and store assistant's response
         assistant_tokens = token_manager.count_message_tokens("assistant", response)
@@ -291,9 +280,12 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("Sorry, you have no access to me.")
         return
 
-    # 4. Process image request
+    # 4. Extract reply context if it exists
+    reply_data = extract_reply_data(message)
+
+    # 5. Process image request
     await process_image_request(
-        message, prompt, user_id, sender_name, sender_username, is_group
+        message, prompt, user_id, sender_name, sender_username, is_group, reply_data
     )
 
 
@@ -303,7 +295,8 @@ async def process_image_request(
     user_id: int,
     sender_name: str,
     sender_username: str,
-    is_group: bool
+    is_group: bool,
+    reply_context: tuple[str, str] | None = None,
 ):
     """Process image request with vision model - split storage approach."""
 
@@ -349,7 +342,7 @@ async def process_image_request(
         messages = db.get_messages_by_tokens(chat_id, max_tokens)
 
         # 7. Trim text history conservatively (reserve more for image)
-        messages = token_manager.trim_to_fit(messages, reserve_tokens=3000)
+        messages = token_manager.trim_to_fit(messages, reserve_tokens=config.RESERVE_TOKENS_IMAGE)
 
         # 8. Build multimodal message array for OpenAI
         # Use the original content_text (without [image] prefix) for API call
@@ -375,24 +368,8 @@ async def process_image_request(
             f"{len(messages)} messages in context, caption={caption_tokens} tokens"
         )
 
-        # 9. Call OpenAI with vision support
-        # For group chats, fetch active personality and use custom prompt if available
-        custom_prompt = None
-        if is_group:
-            try:
-                active_personality = db.get_active_personality()
-                # If personality is "normal", use default SYSTEM_PROMPT_GROUP
-                # Otherwise fetch custom prompt from database
-                if active_personality != "normal":
-                    custom_prompt = db.get_personality_prompt(active_personality)
-                    # If custom prompt not found, fall back to default
-                    if not custom_prompt:
-                        logger.warning(f"Personality '{active_personality}' not found in database, using default")
-            except Exception as e:
-                logger.error(f"Error fetching personality: {e}", exc_info=True)
-                # Continue with default prompt on error
-
-        response_text = await openai_client.get_completion(messages, is_group, custom_system_prompt=custom_prompt)
+        # 9. Call OpenAI with vision support (with optional reply context)
+        response_text = await openai_client.get_completion(messages, is_group, reply_context=reply_context)
 
         # 10. Store assistant response with tiktoken-counted tokens
         response_tokens = token_manager.count_message_tokens("assistant", response_text)
@@ -685,6 +662,44 @@ async def personality_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         logger.error(f"Error changing personality: {e}", exc_info=True)
         await update.message.reply_text(
             "❌ Failed to change personality. Please try again."
+        )
+
+
+async def list_personality_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List all available personalities."""
+    
+    user_id = update.message.from_user.id
+    if not is_main_authorized_user(user_id):
+        await update.message.reply_text("Sorry, only the main authorized user can view personalities.")
+        return
+    
+    try:
+        personalities = db.list_personalities()
+        active = db.get_active_personality()
+        
+        if not personalities:
+            await update.message.reply_text(
+                "No custom personalities available.\n"
+                "Currently using: normal (default)"
+            )
+            return
+        
+        # Build message
+        message = f"**Available Personalities:**\n"
+        message += f"Currently active: **{active}**\n\n"
+        
+        for name, prompt_preview in personalities:
+            marker = "✓" if name == active else "-"
+            message += f"{marker} `{name}`\n"
+            message += f"  _{prompt_preview}_\n\n"
+        
+        await update.message.reply_text(message, parse_mode="Markdown")
+        logger.info(f"Listed personalities for user {user_id}")
+        
+    except Exception as e:
+        logger.error(f"Error listing personalities: {e}", exc_info=True)
+        await update.message.reply_text(
+            "❌ Failed to list personalities. Please try again."
         )
 
 

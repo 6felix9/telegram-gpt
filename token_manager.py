@@ -77,61 +77,46 @@ class TokenManager:
         reserve_tokens: int = 1000
     ) -> list[dict]:
         """
-        Trim messages to fit in context window.
-
-        Args:
-            messages: List of messages in chronological order
-            reserve_tokens: Tokens to reserve for response
-
-        Returns:
-            Trimmed list of messages that fit in context window
+        Trim messages with internal safety checks and a smarter fallback.
         """
         if not messages:
             return []
 
-        # Calculate available tokens
-        available_tokens = self.max_tokens - reserve_tokens
-
-        # Always keep the last message (user's current prompt)
-        if len(messages) == 1:
-            return messages
-
         try:
-            # Start from the end and work backwards
-            current_tokens = 0
-            kept_messages = []
+            available_tokens = self.max_tokens - reserve_tokens
+            
+            # 1. Basic Validation: Ensure the last message (the prompt) always exists
+            # If the last message alone is too big, we still have to send it and 
+            # let the API handle the error, otherwise we send an empty prompt.
+            last_msg = messages[-1]
+            
+            # 2. Start counting tokens for the last message
+            current_tokens = self.count_tokens([last_msg])
+            kept_messages = [last_msg]
 
-            for message in reversed(messages):
-                msg_tokens = self.count_tokens([message])
-
-                if current_tokens + msg_tokens <= available_tokens:
-                    kept_messages.insert(0, message)
-                    current_tokens += msg_tokens
-                elif not kept_messages:
-                    # If even the last message doesn't fit, keep it anyway
-                    kept_messages = [message]
-                    logger.warning(
-                        f"Last message exceeds token budget "
-                        f"({msg_tokens} > {available_tokens})"
-                    )
-                    break
-                else:
-                    # Stop adding messages
-                    break
-
-            trimmed_count = len(messages) - len(kept_messages)
-            if trimmed_count > 0:
-                logger.info(
-                    f"Trimmed {trimmed_count} messages to fit context window "
-                    f"({current_tokens}/{available_tokens} tokens)"
-                )
+            # 3. Iterate backwards through the rest of the history
+            # We use a loop with a try-except to handle individual message corruption
+            for message in reversed(messages[:-1]):
+                try:
+                    msg_tokens = self.count_tokens([message])
+                    
+                    if current_tokens + msg_tokens <= available_tokens:
+                        kept_messages.insert(0, message)
+                        current_tokens += msg_tokens
+                    else:
+                        break # Reached the limit
+                except Exception as msg_err:
+                    logger.error(f"Failed to process a message during trimming: {msg_err}")
+                    continue # Skip the corrupted message and try the next one
 
             return kept_messages
 
         except Exception as e:
-            logger.error(f"Trimming failed: {e}", exc_info=True)
-            # Fallback: keep last N messages
-            return messages[-20:]  # Conservative fallback
+            logger.error(f"Critical failure in trim_to_fit: {e}", exc_info=True)
+            # 4. Ultimate Fallback: Return last 20 messages as conservative fallback.
+            # This preserves conversation context while being unlikely to exceed limits.
+            # Better to fail with context than succeed with no history.
+            return messages[-20:] if messages else []
 
     def _estimate_tokens(self, messages: list[dict]) -> int:
         """Fallback token estimation when tiktoken is unavailable."""
