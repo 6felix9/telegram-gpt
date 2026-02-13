@@ -98,11 +98,11 @@ Key behaviors:
                 reply_context=reply_context,
             )
 
-            # Log system prompt for debugging
-            logger.info(f"System prompt preview: {system_prompt[:150]}...")
-            logger.debug(f"Full system prompt:\n{system_prompt}")
+            # Log system prompt metadata only to avoid leaking sensitive content
+            logger.debug("System prompt generated (length=%d chars)", len(system_prompt))
 
             # Run sync OpenAI call in thread pool using Responses API
+            # GPT-5 models don't support temperature parameter
             # GPT-5 models don't support temperature parameter
             if self.model.startswith("gpt-5"):
                 response = await asyncio.to_thread(
