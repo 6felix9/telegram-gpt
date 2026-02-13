@@ -1,9 +1,8 @@
 # Code Review Issues
 
-**Last Updated**: 2026-02-02
+**Last Updated**: 2026-02-13
 **Status**: Active issues tracked
 
----
 
 ## CRITICAL Architectural Issues 🔴
 
@@ -100,68 +99,6 @@ response = await asyncio.to_thread(
 - Easy to add new models (just update registry)
 - Clear, self-documenting capabilities
 - No more fragile string checking
-
----
-
-### 2. Scattered Prompt Construction Logic
-
-**Priority**: CRITICAL
-**Location**: `openai_client.py`, `handlers.py`, `database.py`
-**Type**: Code Organization / Maintainability
-
-**Problem**:
-Prompt construction logic is scattered across multiple files and functions:
-
-1. **Time awareness** - `openai_client.py:131-138`:
-   ```python
-   now_iso = datetime.now(ZoneInfo("Asia/Singapore")).isoformat(timespec="seconds")
-   system_prompt = f"Current date/time: {now_iso}\n\n{system_prompt}"
-   ```
-
-2. **Personality fetching** - `handlers.py:184-195`:
-   ```python
-   active_personality = db.get_active_personality()
-   if active_personality != "normal":
-       custom_prompt = db.get_personality_prompt(active_personality)
-   ```
-
-3. **System prompts** - `openai_client.py:14-29`:
-   ```python
-   SYSTEM_PROMPT = """You are Tze Foong's Assistant..."""
-   SYSTEM_PROMPT_GROUP = """You are Tze Foong's Assistant in group chats..."""
-   ```
-
-4. **Group chat formatting** - `openai_client.py:70-75`:
-   ```python
-   if is_group and msg["role"] == "user":
-       sender_name = msg.get("sender_name", "Unknown")
-       formatted_content = f"[{sender_name}]: {formatted_content}"
-   ```
-
-5. **Custom prompt override** - `openai_client.py:126-129`:
-   ```python
-   if custom_system_prompt:
-       system_prompt = custom_system_prompt
-   else:
-       system_prompt = self.SYSTEM_PROMPT_GROUP if is_group else self.SYSTEM_PROMPT
-   ```
-
-**Issues**:
-- Hard to understand the complete prompt being sent to API
-- Difficult to debug prompt-related issues
-- Can't easily see what context the model receives
-- Changes require editing multiple files
-- No single source of truth for prompt structure
-
-**Solution**:
-Create a centralized `PromptBuilder` class that handles all prompt construction in one place.
-
-**Benefits**:
-- Single source of truth for prompt construction
-- Clear, readable prompt assembly
-- Easy to debug (can log complete prompt)
-- Easy to add new prompt components
-- Testable in isolation
 
 ---
 
@@ -628,7 +565,7 @@ Extract and persist user facts:
 1. Fix model branching logic (Issue #1)
 2. Add input validation (Issue #15)
 3. Implement rate limiting (Issue #14)
-4. Centralize prompt construction (Issue #2)
+4. ✅ ~~Centralize prompt construction (Issue #2)~~ - **COMPLETED 2026-02-13**
 5. Verify Responses API compatibility (Issue #12)
 
 ### Phase 2: Performance (Week 2)
