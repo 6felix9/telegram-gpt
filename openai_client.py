@@ -1,10 +1,9 @@
 """OpenAI API client wrapper with error handling."""
 import logging
 import asyncio
-from datetime import datetime
-from zoneinfo import ZoneInfo
 import openai
 import httpx
+from prompt_builder import PromptBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -29,23 +28,14 @@ Key behaviors:
 - Track conversation context from multiple participants
 - Messages are formatted as [Name]: content - reply naturally without mimicking this format"""
 
-    def _build_system_prompt(self, is_group: bool, custom_system_prompt: str | None = None) -> str:
-        """Build one final system prompt string for the API call."""
-        # Always use Singapore timezone (fallback to UTC if unavailable)
-        try:
-            now_iso = datetime.now(ZoneInfo("Asia/Singapore")).isoformat(timespec="seconds")
-        except Exception as e:
-            logger.warning(f"Failed to get Singapore timezone, falling back to UTC: {e}")
-            now_iso = datetime.now(ZoneInfo("UTC")).isoformat(timespec="seconds")
-
-        personality_prompt = (
-            custom_system_prompt
-            if custom_system_prompt
-            else (self.SYSTEM_PROMPT_GROUP if is_group else self.SYSTEM_PROMPT)
-        )
-        return f'Current date/time: {now_iso}\n\n"{personality_prompt}"'
-
-    def __init__(self, api_key: str, model: str, timeout: int, base_url: str | None = None):
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        timeout: int,
+        base_url: str | None = None,
+        prompt_builder: PromptBuilder | None = None,
+    ):
         """
         Initialize OpenAI client.
 
@@ -54,6 +44,7 @@ Key behaviors:
             model: Model name (e.g., "gpt-4o-mini" or "grok-4")
             timeout: Request timeout in seconds
             base_url: Optional base URL for API (e.g., "https://api.x.ai/v1" for xAI)
+            prompt_builder: Shared prompt builder for system/messages assembly
         """
         # Use httpx.Timeout for better timeout handling, especially for reasoning models
         timeout_obj = httpx.Timeout(float(timeout))
@@ -70,6 +61,10 @@ Key behaviors:
         self.model = model
         self.timeout = timeout
         self.base_url = base_url
+        self.prompt_builder = prompt_builder or PromptBuilder(
+            default_private_prompt=self.SYSTEM_PROMPT,
+            default_group_prompt=self.SYSTEM_PROMPT_GROUP,
+        )
 
         api_provider = "xAI" if base_url else "OpenAI"
         logger.info(f"Initialized {api_provider} client with model {model}" + (f" (base_url: {base_url})" if base_url else ""))
@@ -89,54 +84,8 @@ Key behaviors:
         try:
             logger.debug(f"Requesting completion with {len(messages)} messages (group={is_group})")
 
-            # Format messages for group chats with sender names
-            formatted_messages = []
-            for msg in messages:
-                content = msg["content"]
-
-                # Handle text-only messages
-                if isinstance(content, str):
-                    formatted_content = content
-
-                    # For group chats, prepend sender name to user messages
-                    if is_group and msg["role"] == "user":
-                        sender_name = msg.get("sender_name", "Unknown")
-                        # Only add name prefix if not already there
-                        if not formatted_content.startswith("["):
-                            formatted_content = f"[{sender_name}]: {formatted_content}"
-
-                    formatted_messages.append({
-                        "role": msg["role"],
-                        "content": formatted_content
-                    })
-
-                # Handle multimodal messages (image + text)
-                elif isinstance(content, list):
-                    updated_content = []
-                    for part in content:
-                        if part.get("type") == "text":
-                            text = part["text"]
-                            # Add sender name for group chats
-                            if is_group and msg["role"] == "user":
-                                sender_name = msg.get("sender_name", "Unknown")
-                                if not text.startswith("["):
-                                    text = f"[{sender_name}]: {text}"
-                            
-                            updated_content.append({"type": "input_text", "text": text})
-                            
-                        elif part.get("type") == "image_url":
-                            # Extract URL string from image_url object
-                            image_url_obj = part.get("image_url", {})
-                            url = image_url_obj.get("url", "") if isinstance(image_url_obj, dict) else str(image_url_obj)
-                            
-                            updated_content.append({"type": "input_image", "image_url": url})
-                            
-                    formatted_messages.append({
-                        "role": msg["role"],
-                        "content": updated_content
-                    })
-
-            system_prompt = self._build_system_prompt(
+            formatted_messages = self.prompt_builder.format_messages(messages, is_group)
+            system_prompt = self.prompt_builder.build_system_prompt(
                 is_group=is_group,
                 custom_system_prompt=custom_system_prompt,
             )

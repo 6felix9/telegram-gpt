@@ -20,6 +20,7 @@ class Config:
     # OpenAI Configuration
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "")  # For xAI or other OpenAI-compatible APIs
     OPENAI_TIMEOUT = int(os.getenv("OPENAI_TIMEOUT", "60"))
     MAX_CONTEXT_TOKENS = int(os.getenv("MAX_CONTEXT_TOKENS", "16000"))
     

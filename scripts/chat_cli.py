@@ -37,6 +37,7 @@ from config import config
 from database import Database
 from token_manager import TokenManager
 from openai_client import OpenAIClient
+from prompt_builder import PromptBuilder
 
 # Configure logging
 logging.basicConfig(
@@ -72,10 +73,17 @@ class ChatCLI:
         self.token_manager = TokenManager(config.OPENAI_MODEL, config.MAX_CONTEXT_TOKENS)
 
         # OpenAI client
+        prompt_builder = PromptBuilder(
+            default_private_prompt=OpenAIClient.SYSTEM_PROMPT,
+            default_group_prompt=OpenAIClient.SYSTEM_PROMPT_GROUP,
+            get_active_personality=self.db.get_active_personality,
+            get_personality_prompt=self.db.get_personality_prompt,
+        )
         self.openai_client = OpenAIClient(
             api_key=config.OPENAI_API_KEY,
             model=config.OPENAI_MODEL,
             timeout=config.OPENAI_TIMEOUT,
+            prompt_builder=prompt_builder,
         )
 
         logger.info(f"CLI initialized for chat_id={self.chat_id}, group={is_group}, test_mode={self.is_test_mode}")
@@ -131,23 +139,7 @@ class ChatCLI:
             )
 
             # Get completion from OpenAI
-            # For group chats, fetch active personality and use custom prompt if available
-            custom_prompt = None
-            if self.is_group:
-                try:
-                    active_personality = self.db.get_active_personality()
-                    # If personality is "normal", use default SYSTEM_PROMPT_GROUP
-                    # Otherwise fetch custom prompt from database
-                    if active_personality != "normal":
-                        custom_prompt = self.db.get_personality_prompt(active_personality)
-                        # If custom prompt not found, fall back to default
-                        if not custom_prompt:
-                            logger.warning(f"Personality '{active_personality}' not found in database, using default")
-                except Exception as e:
-                    logger.error(f"Error fetching personality: {e}", exc_info=True)
-                    # Continue with default prompt on error
-
-            response = await self.openai_client.get_completion(messages, self.is_group, custom_system_prompt=custom_prompt)
+            response = await self.openai_client.get_completion(messages, self.is_group)
 
             # For test mode, store assistant's response
             if self.is_test_mode:
