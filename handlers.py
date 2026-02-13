@@ -12,16 +12,18 @@ config = None
 db = None
 token_manager = None
 openai_client = None
+prompt_builder = None
 bot_username = None
 
 
-def init_handlers(cfg, database, token_mgr, openai_cl, username=None):
+def init_handlers(cfg, database, token_mgr, openai_cl, prompt_bldr, username=None):
     """Initialize handler dependencies."""
-    global config, db, token_manager, openai_client, bot_username
+    global config, db, token_manager, openai_client, prompt_builder, bot_username
     config = cfg
     db = database
     token_manager = token_mgr
     openai_client = openai_cl
+    prompt_builder = prompt_bldr
     bot_username = username
 
 
@@ -79,35 +81,33 @@ def extract_keyword(text: str, bot_username: str = None) -> tuple[bool, str]:
     return has_activation, prompt
 
 
-def extract_reply_context(message) -> str:
+def extract_reply_data(message) -> tuple[str, str] | None:
     """
-    Extracts context from the message being replied to.
-    Returns a formatted string or empty string if no reply/content.
-    
+    Extracts raw data from the message being replied to.
+
     Args:
         message: Telegram message object
-    
+
     Returns:
-        Formatted context string or empty string
+        Tuple of (sender_name, content) or None if no valid reply
     """
     # Check if this is a reply
     if not message.reply_to_message:
-        return ""
-        
+        return None
+
     reply = message.reply_to_message
-    
+
     # Extract content (prioritize text, then caption for media)
     content = reply.text or reply.caption or ""
-    
-    # If no text content, ignore
+
+    # If no text content, return None
     if not content:
-        return ""
-        
+        return None
+
     # Get sender name
     sender = reply.from_user.first_name if reply.from_user else "Unknown"
-    
-    # Format the context
-    return f"[Context - Replying to {sender}]: \"{content}\""
+
+    return (sender, content)
 
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -164,11 +164,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("Sorry, you have no access to me.")
         return
 
-    # 4. Extract reply context if it exists
-    reply_context = extract_reply_context(message)
-    if reply_context:
-        # Prepend context to the prompt
-        prompt = f"{reply_context}\n\n{prompt}".strip()
+    # 4. Extract and format reply context if it exists
+    reply_data = extract_reply_data(message)
+    if reply_data:
+        sender_name, content = reply_data
+        reply_context = prompt_builder.format_reply_context(sender_name, content)
+        prompt = prompt_builder.combine_with_reply_context(prompt, reply_context)
     
     # 5. Handle empty prompt
     if not prompt:

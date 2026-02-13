@@ -72,25 +72,29 @@ def main():
         logger.info("Initializing token manager...")
         token_manager = TokenManager(config.OPENAI_MODEL, config.MAX_CONTEXT_TOKENS)
 
-        # 4. Initialize OpenAI client
+        # 4. Initialize prompt builder (shared between OpenAI client and handlers)
+        logger.info("Initializing prompt builder...")
+        prompt_builder = PromptBuilder(
+            default_private_prompt=OpenAIClient.SYSTEM_PROMPT,
+            default_group_prompt=OpenAIClient.SYSTEM_PROMPT_GROUP,
+            get_active_personality=db.get_active_personality,
+            get_personality_prompt=db.get_personality_prompt,
+        )
+
+        # 5. Initialize OpenAI client
         logger.info("Initializing OpenAI client...")
         client_kwargs = {
             "api_key": config.OPENAI_API_KEY,
             "model": config.OPENAI_MODEL,
             "timeout": config.OPENAI_TIMEOUT,
-            "prompt_builder": PromptBuilder(
-                default_private_prompt=OpenAIClient.SYSTEM_PROMPT,
-                default_group_prompt=OpenAIClient.SYSTEM_PROMPT_GROUP,
-                get_active_personality=db.get_active_personality,
-                get_personality_prompt=db.get_personality_prompt,
-            ),
+            "prompt_builder": prompt_builder,
         }
         # Add base_url if configured (for xAI or other OpenAI-compatible APIs)
         if config.OPENAI_BASE_URL:
             client_kwargs["base_url"] = config.OPENAI_BASE_URL
         openai_client = OpenAIClient(**client_kwargs)
 
-        # 5. Build Telegram application
+        # 6. Build Telegram application
         logger.info("Building Telegram application...")
         application = (
             Application.builder()
@@ -100,9 +104,9 @@ def main():
             .build()
         )
 
-        # 6. Initialize handlers with dependencies
+        # 7. Initialize handlers with dependencies
         bot_username = config.BOT_USERNAME.lstrip("@")
-        handlers.init_handlers(config, db, token_manager, openai_client, bot_username)
+        handlers.init_handlers(config, db, token_manager, openai_client, prompt_builder, bot_username)
 
         # 7. Register handlers
         # Message handler (non-command text messages)
