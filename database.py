@@ -74,7 +74,9 @@ class Database:
                     cur.execute("""
                         CREATE TABLE IF NOT EXISTS granted_users (
                             user_id TEXT PRIMARY KEY,
-                            granted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            granted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                            first_name TEXT,
+                            username TEXT
                         )
                     """)
 
@@ -380,12 +382,14 @@ class Database:
         except Exception as e:
             logger.error(f"Failed to cleanup old messages: {e}", exc_info=True)
 
-    def grant_access(self, user_id: int) -> bool:
+    def grant_access(self, user_id: int, first_name: str = None, username: str = None) -> bool:
         """
         Grant access to a user.
 
         Args:
             user_id: Telegram user ID to grant access to
+            first_name: User's first name (optional)
+            username: User's Telegram username (optional)
 
         Returns:
             True if access was granted, False if user already had access
@@ -407,8 +411,8 @@ class Database:
                         return False
 
                     cur.execute(
-                        "INSERT INTO granted_users (user_id, granted_at) VALUES (%s, %s)",
-                        (user_id_str, timestamp),
+                        "INSERT INTO granted_users (user_id, granted_at, first_name, username) VALUES (%s, %s, %s, %s)",
+                        (user_id_str, timestamp, first_name, username),
                     )
 
             logger.info(f"Granted access to user {user_id}")
@@ -482,16 +486,21 @@ class Database:
         Get list of all users with granted access.
 
         Returns:
-            List of tuples (user_id, granted_at)
+            List of tuples (user_id, granted_at, first_name, username)
         """
         try:
             with self._get_connection() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
                     cur.execute(
-                        "SELECT user_id, granted_at FROM granted_users ORDER BY granted_at DESC"
+                        "SELECT user_id, granted_at, first_name, username FROM granted_users ORDER BY granted_at DESC"
                     )
                     users = [
-                        (row["user_id"], row["granted_at"].isoformat() if row["granted_at"] else "N/A")
+                        (
+                            row["user_id"],
+                            row["granted_at"].isoformat() if row["granted_at"] else "N/A",
+                            row["first_name"],
+                            row["username"],
+                        )
                         for row in cur.fetchall()
                     ]
 

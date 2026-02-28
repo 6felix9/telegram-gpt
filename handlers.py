@@ -4,6 +4,7 @@ import re
 import random
 from telegram import Update
 from telegram.ext import ContextTypes
+from telegram.helpers import escape_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -486,12 +487,25 @@ async def grant_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+        # Try to fetch user info from Telegram
+        first_name = None
+        username = None
+        try:
+            chat = await context.bot.get_chat(target_user_id)
+            first_name = chat.first_name
+            username = chat.username
+        except Exception as e:
+            logger.warning(f"Could not fetch user info for {target_user_id}: {e}")
+
         # Grant access
-        was_granted = db.grant_access(target_user_id)
+        was_granted = db.grant_access(target_user_id, first_name=first_name, username=username)
 
         if was_granted:
+            name_display = first_name or str(target_user_id)
+            if username:
+                name_display += f" (@{username})"
             await update.message.reply_text(
-                f"✅ Access granted to user {target_user_id}.\n"
+                f"✅ Access granted to {name_display}.\n"
                 f"They can now use the bot with 'chatgpt' keyword."
             )
             logger.info(f"User {user_id} granted access to {target_user_id}")
@@ -600,8 +614,17 @@ async def allowlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if granted_users:
             message += "👥 **Granted Users:**\n"
-            for target_user_id, granted_at in granted_users:
-                message += f"- `{target_user_id}` (granted: {granted_at.split('T')[0]})\n"
+            for target_user_id, granted_at, first_name, username in granted_users:
+                parts = [f"`{target_user_id}`"]
+                name_parts = []
+                if first_name:
+                    name_parts.append(escape_markdown(first_name))
+                if username:
+                    name_parts.append(f"@{escape_markdown(username)}")
+                if name_parts:
+                    parts.append(f"({' / '.join(name_parts)})")
+                parts.append(f"(granted: {granted_at.split('T')[0]})")
+                message += f"- {' '.join(parts)}\n"
         else:
             message += "👥 No other users have been granted access."
 
