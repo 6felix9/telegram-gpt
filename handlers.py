@@ -726,6 +726,31 @@ async def list_personality_command(update: Update, context: ContextTypes.DEFAULT
         )
 
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show all available commands (main authorized user only)."""
+
+    user_id = update.message.from_user.id
+    if not is_main_authorized_user(user_id):
+        await update.message.reply_text("Sorry, only the main authorized user can use this command.")
+        return
+
+    help_text = (
+        "📖 **Available Commands:**\n\n"
+        "/help - Show this help message\n"
+        "/clear - Clear conversation history for current chat\n"
+        "/stats - Show message count, token usage, and first message date\n"
+        "/grant <user\\_id> - Grant bot access to a user\n"
+        "/revoke <user\\_id> - Revoke bot access from a user\n"
+        "/allowlist - Show all authorized users\n"
+        "/personality <name> - View or change active personality\n"
+        "/list\\_personality - List all available personalities\n"
+        "/version - Show current bot version"
+    )
+
+    await update.message.reply_text(help_text, parse_mode="Markdown")
+    logger.info(f"Help shown to admin user {user_id}")
+
+
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Global error handler for unhandled exceptions."""
 
