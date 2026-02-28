@@ -1,10 +1,12 @@
 """PostgreSQL database handler for message storage."""
+import time
 import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
 import logging
 from contextlib import contextmanager
 from datetime import datetime
+from cache import TTLCache, MISSING
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +17,8 @@ class Database:
     def __init__(self, db_url: str):
         """Initialize database connection pool with proper settings."""
         self.db_url = db_url
+        self._cache = TTLCache(default_ttl=60.0)
+        self._last_health_check: float = 0.0
         # Initialize connection pool with keepalive settings for Neon
         try:
             self.pool = psycopg2.pool.ThreadedConnectionPool(
@@ -122,16 +126,20 @@ class Database:
                 self.pool.putconn(conn, close=True)
                 conn = self.pool.getconn()
 
-            # Actively probe the connection to avoid yielding a stale one
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT 1")
-            except psycopg2.OperationalError:
-                logger.warning("Connection failed health check, replacing")
-                self.pool.putconn(conn, close=True)
-                conn = self.pool.getconn()
-                with conn.cursor() as cur:
-                    cur.execute("SELECT 1")
+            # Actively probe the connection, but only if >30s since last check
+            now = time.monotonic()
+            if now - self._last_health_check > 30.0:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT 1")
+                    self._last_health_check = now
+                except psycopg2.OperationalError:
+                    logger.warning("Connection failed health check, replacing")
+                    self.pool.putconn(conn, close=True)
+                    conn = self.pool.getconn()
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT 1")
+                    self._last_health_check = time.monotonic()
 
             yield conn
             conn.commit()
@@ -415,6 +423,7 @@ class Database:
                         (user_id_str, timestamp, first_name, username),
                     )
 
+            self._cache.invalidate(f"granted:{user_id}")
             logger.info(f"Granted access to user {user_id}")
             return True
 
@@ -443,6 +452,7 @@ class Database:
                     )
                     deleted_count = cur.rowcount
 
+            self._cache.invalidate(f"granted:{user_id}")
             if deleted_count > 0:
                 logger.info(f"Revoked access from user {user_id}")
                 return True
@@ -464,6 +474,11 @@ class Database:
         Returns:
             True if user has been granted access, False otherwise
         """
+        cache_key = f"granted:{user_id}"
+        cached = self._cache.get(cache_key)
+        if cached is not MISSING:
+            return cached
+
         try:
             user_id_str = str(user_id)
 
@@ -475,7 +490,9 @@ class Database:
                     )
                     result = cur.fetchone()
 
-            return result is not None
+            granted = result is not None
+            self._cache.set(cache_key, granted, ttl=120.0)
+            return granted
 
         except Exception as e:
             logger.error(f"Failed to check granted access: {e}", exc_info=True)
@@ -520,6 +537,11 @@ class Database:
         Returns:
             Prompt text if found, None otherwise
         """
+        cache_key = f"personality_prompt:{personality}"
+        cached = self._cache.get(cache_key)
+        if cached is not MISSING:
+            return cached
+
         try:
             with self._get_connection() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -528,9 +550,10 @@ class Database:
                         (personality,)
                     )
                     row = cur.fetchone()
-                    if row:
-                        return row["prompt"]
-                    return None
+                    result = row["prompt"] if row else None
+
+            self._cache.set(cache_key, result, ttl=300.0)
+            return result
 
         except Exception as e:
             logger.error(f"Failed to get personality prompt: {e}", exc_info=True)
@@ -543,6 +566,11 @@ class Database:
         Returns:
             Active personality name (defaults to 'normal')
         """
+        cache_key = "active_personality"
+        cached = self._cache.get(cache_key)
+        if cached is not MISSING:
+            return cached
+
         try:
             with self._get_connection() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -550,9 +578,10 @@ class Database:
                         "SELECT personality FROM active_personality WHERE id = 1"
                     )
                     row = cur.fetchone()
-                    if row:
-                        return row["personality"]
-                    return "normal"
+                    result = row["personality"] if row else "normal"
+
+            self._cache.set(cache_key, result, ttl=60.0)
+            return result
 
         except Exception as e:
             logger.error(f"Failed to get active personality: {e}", exc_info=True)
@@ -580,6 +609,8 @@ class Database:
                         (personality, timestamp)
                     )
 
+            self._cache.invalidate("active_personality")
+            self._cache.invalidate_prefix("personality_prompt:")
             logger.info(f"Active personality set to: {personality}")
 
         except Exception as e:
