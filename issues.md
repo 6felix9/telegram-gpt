@@ -3,7 +3,6 @@
 **Last Updated**: 2026-02-13
 **Status**: Active issues tracked
 
-
 ## CRITICAL Architectural Issues 🔴
 
 ### 1. Confusing OpenAI API Branching Logic
@@ -14,6 +13,7 @@
 
 **Problem**:
 The code has confusing if-else branching based on model name prefix:
+
 ```python
 if self.model.startswith("gpt-5"):
     response = await asyncio.to_thread(
@@ -35,6 +35,7 @@ else:
 ```
 
 **Issues**:
+
 - Different parameters for GPT-5 vs other models (temperature vs verbosity/reasoning)
 - Hard to add new models (must update if-else logic)
 - Code clarity suffers from conditional API calls
@@ -95,6 +96,7 @@ response = await asyncio.to_thread(
 ```
 
 **Benefits**:
+
 - Single code path for all models
 - Easy to add new models (just update registry)
 - Clear, self-documenting capabilities
@@ -111,12 +113,14 @@ response = await asyncio.to_thread(
 **Type**: API Integration Bug
 
 **Problem**:
+
 - Code attempts to use OpenAI's Responses API but the multimodal message format conversion may be incomplete
 - Conversion from Chat Completions format (`"type": "text"`) to Responses format (`"type": "input_text"`) exists
 - BUT image conversion to `"type": "input_image"` may not match current API specification
 - Could cause API errors with vision requests
 
 **Current Code**:
+
 ```python
 if part.get("type") == "text":
     updated_content.append({"type": "input_text", "text": part["text"]})
@@ -127,6 +131,7 @@ elif part.get("type") == "image_url":
 ```
 
 **Solution**:
+
 - Test image processing thoroughly with latest OpenAI Responses API
 - Verify format matches current API specification
 - Add error handling for API format mismatches
@@ -140,6 +145,7 @@ elif part.get("type") == "image_url":
 **Type**: Security/Cost Issue
 
 **Problem**:
+
 - No per-user rate limits implemented
 - Users could spam the bot causing excessive API costs
 - No cooldown periods or request throttling
@@ -147,6 +153,7 @@ elif part.get("type") == "image_url":
 
 **Solution**:
 Implement rate limiting with sliding window:
+
 ```python
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -179,6 +186,7 @@ def check_rate_limit(user_id: int, max_requests: int = 20, window_minutes: int =
 **Type**: Security/Performance Issue
 
 **Problem**:
+
 - No message length validation before token counting
 - User could send 100,000 character messages
 - No image size validation before downloading
@@ -187,6 +195,7 @@ def check_rate_limit(user_id: int, max_requests: int = 20, window_minutes: int =
 
 **Solution**:
 Add validation:
+
 ```python
 MAX_MESSAGE_LENGTH = 4000  # ~1000 tokens
 MAX_IMAGE_SIZE_MB = 10
@@ -220,6 +229,7 @@ if photo.file_size > MAX_IMAGE_SIZE_MB * 1024 * 1024:
 **Type**: Intelligence/Context Management
 
 **Problem**:
+
 - Messages trimmed purely by age (oldest first)
 - No importance scoring or semantic relevance
 - Important context (user preferences, key facts) may be in older messages
@@ -231,6 +241,7 @@ Bot loses critical information and feels "dumb" as conversations grow
 
 **Solution**:
 Implement multi-tier approach:
+
 1. Importance scoring (extract critical facts, score messages 0-10)
 2. Semantic search (retrieve relevant past messages, not just recent)
 3. Conversation summarization (compress old context instead of dropping)
@@ -246,6 +257,7 @@ Implement multi-tier approach:
 
 **Problem**:
 No persistence of:
+
 - User preferences ("I'm vegetarian")
 - Facts mentioned in conversation
 - Topics discussed
@@ -253,6 +265,7 @@ No persistence of:
 - Conversation goals/objectives
 
 **Example Failure**:
+
 ```
 User: "My favorite color is blue"
 [50 messages later, context trimmed]
@@ -265,6 +278,7 @@ Bot cannot build user profiles or maintain long-term context
 
 **Solution**:
 Implement semantic memory system:
+
 1. Extract facts from messages using GPT
 2. Store in structured format (user_id, fact_type, key, value, confidence)
 3. Inject relevant facts into system prompt
@@ -272,118 +286,30 @@ Implement semantic memory system:
 
 ---
 
-### 18. Excessive Database Connection Overhead
+### 18. ~~Excessive Database Connection Overhead~~ ✅ COMPLETED
 
 **Priority**: HIGH
-**Location**: `database.py:125-134`
+**Location**: `database.py:_get_connection()`
 **Type**: Performance
-
-**Problem**:
-- Connection health check runs on EVERY `_get_connection()` call
-- Executes `SELECT 1` query before every operation
-- Adds ~5-20ms per request
-- With connection pooling, this is mostly unnecessary
-
-**Current Code**:
-```python
-# Actively probe the connection to avoid yielding a stale one
-try:
-    with conn.cursor() as cur:
-        cur.execute("SELECT 1")  # Runs on EVERY request!
-except psycopg2.OperationalError:
-    # ... handle error
-```
-
-**Impact**:
-Unnecessary latency on every database operation
-
-**Solution**:
-- Make health check optional or periodic (not on every connection)
-- Trust connection pool to manage stale connections
-- Only check on pool initialization or connection errors
+**Status**: **COMPLETED 2026-02-28** — Health check throttled to once per 30s via `time.monotonic()`. The free `conn.closed` flag check still runs on every call.
 
 ---
 
-### 19. No Query Result Caching
+### 19. ~~No Query Result Caching~~ ✅ COMPLETED
 
 **Priority**: HIGH
-**Location**: `database.py` (get_active_personality, get_personality_prompt, is_user_granted)
+**Location**: `database.py`, `cache.py`
 **Type**: Performance
-
-**Problem**:
-- Personality queries run on EVERY group message (2 queries)
-- `get_active_personality()` - could cache for 5-60 seconds
-- `get_personality_prompt()` - rarely changes, cache aggressively
-- `is_user_granted()` - cache with invalidation on grant/revoke
-
-**Impact**:
-Unnecessary database load and latency
-
-**Solution**:
-Implement in-memory caching with TTL:
-```python
-from functools import lru_cache
-from datetime import datetime, timedelta
-
-class CachedDatabase(Database):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._personality_cache = {}
-        self._granted_cache = {}
-
-    def get_active_personality(self, chat_id: str) -> str:
-        cache_key = f"personality:{chat_id}"
-        if cache_key in self._personality_cache:
-            cached_value, cached_time = self._personality_cache[cache_key]
-            if datetime.now() - cached_time < timedelta(seconds=60):
-                return cached_value
-
-        # Cache miss - fetch from DB
-        result = super().get_active_personality(chat_id)
-        self._personality_cache[cache_key] = (result, datetime.now())
-        return result
-```
+**Status**: **COMPLETED 2026-02-28** — Added `TTLCache` in `cache.py`. Cached reads: `get_active_personality()` (60s), `get_personality_prompt()` (300s), `is_user_granted()` (120s). Cache invalidation on `set_active_personality()`, `grant_access()`, `revoke_access()`.
 
 ---
 
-### 20. Global State in handlers.py
+### 20. ~~Global State in handlers.py~~ ⏭️ SKIPPED
 
 **Priority**: HIGH
 **Location**: `handlers.py:10-15`
 **Type**: Code Quality/Testing
-
-**Problem**:
-- Module-level global variables used for dependencies
-- Makes testing difficult (need to mock globals)
-- Implicit dependencies not clear
-- Thread-safety concerns (though Python GIL helps)
-
-**Current Code**:
-```python
-config = None
-db = None
-token_manager = None
-openai_client = None
-bot_username = None
-```
-
-**Solution**:
-Use dependency injection with context class:
-```python
-class HandlerContext:
-    def __init__(self, config, db, token_manager, openai_client, bot_username):
-        self.config = config
-        self.db = db
-        self.token_manager = token_manager
-        self.openai_client = openai_client
-        self.bot_username = bot_username
-
-def make_message_handler(ctx: HandlerContext):
-    async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        # Use ctx.db, ctx.config, etc.
-        ...
-    return handler
-```
+**Status**: **SKIPPED 2026-02-28** — Won't fix. The module-level globals pattern is idiomatic for python-telegram-bot. Handler callbacks have fixed signatures `(Update, ContextTypes)` so there is no clean way to inject dependencies. Alternatives (HandlerContext wrapper, `bot_data` dict) add complexity without meaningful benefit.
 
 ---
 
@@ -396,6 +322,7 @@ def make_message_handler(ctx: HandlerContext):
 **Type**: Security/Privacy
 
 **Problem**:
+
 - User input sent directly to OpenAI without filtering
 - No profanity filter
 - No PII (Personal Identifiable Information) detection/redaction
@@ -417,6 +344,7 @@ Add content filtering layer before API calls
 Some exceptions swallowed silently, others show user-friendly errors
 
 **Example 1 - Swallows exception**:
+
 ```python
 except Exception as e:
     logger.error(f"Failed to store group message: {e}")
@@ -425,6 +353,7 @@ return
 ```
 
 **Example 2 - User-friendly error**:
+
 ```python
 except Exception as e:
     logger.error(f"Error processing request: {e}", exc_info=True)
@@ -446,6 +375,7 @@ Create consistent error handling strategy with custom exception class
 
 **Problem**:
 Group chat sender format adds significant overhead:
+
 ```python
 formatted_content = f"[{sender_name}]: {formatted_content}"
 # Every message: "[Felix]: Hello there"
@@ -470,6 +400,7 @@ Use more compact format or move sender info to system message
 **Type**: Operations
 
 **Problem**:
+
 - No metrics collection (token usage, response times, error rates)
 - No alerting on failures
 - No performance tracking
@@ -487,6 +418,7 @@ Add metrics tracking with prometheus/datadog or simple logging
 **Type**: Performance
 
 **Problem**:
+
 - Always uses highest resolution: `photo = message.photo[-1]`
 - No resolution downsampling (OpenAI doesn't need 4K images)
 - No image caching (same image processed twice)
@@ -506,6 +438,7 @@ Add image preprocessing and caching
 
 **Recommendation**:
 Implement pgvector for semantic message retrieval:
+
 - Find relevant messages by meaning, not just recency
 - 10x better context understanding
 - Requires adding `embedding` column to messages table
@@ -521,6 +454,7 @@ Implement pgvector for semantic message retrieval:
 
 **Recommendation**:
 When context exceeds limit, summarize old messages instead of dropping:
+
 - Preserve important information beyond token limits
 - Create hierarchical summaries (Level 1: 50 msgs, Level 2: 500 msgs)
 - Maintain conversation continuity
@@ -536,6 +470,7 @@ When context exceeds limit, summarize old messages instead of dropping:
 
 **Recommendation**:
 Extract and persist user facts:
+
 - Extract entities/facts from messages
 - Store structured knowledge (preferences, characteristics, goals)
 - Build per-user profiles automatically
@@ -547,13 +482,15 @@ Extract and persist user facts:
 
 ## Performance Benchmarks
 
-| Metric | Current | With Optimizations | Improvement |
-|--------|---------|-------------------|-------------|
-| Context retrieval | 200-500ms | 50-100ms | 4-5x faster |
-| Token usage | 12,000/query | 8,000/query | 33% reduction |
-| Memory retention | 50 messages | Unlimited* | ∞ |
-| Context relevance | 60% | 90%+ | 50% better |
-| Cost per 1000 queries | $4.60 | $3.48 | 24% cheaper |
+
+| Metric                | Current      | With Optimizations | Improvement   |
+| --------------------- | ------------ | ------------------ | ------------- |
+| Context retrieval     | 200-500ms    | 50-100ms           | 4-5x faster   |
+| Token usage           | 12,000/query | 8,000/query        | 33% reduction |
+| Memory retention      | 50 messages  | Unlimited*         | ∞             |
+| Context relevance     | 60%          | 90%+               | 50% better    |
+| Cost per 1000 queries | $4.60        | $3.48              | 24% cheaper   |
+
 
 *With progressive summarization
 
@@ -562,6 +499,7 @@ Extract and persist user facts:
 ## Recommended Action Plan
 
 ### Phase 1: Critical Fixes (Week 1)
+
 1. Fix model branching logic (Issue #1)
 2. Add input validation (Issue #15)
 3. Implement rate limiting (Issue #14)
@@ -569,18 +507,21 @@ Extract and persist user facts:
 5. Verify Responses API compatibility (Issue #12)
 
 ### Phase 2: Performance (Week 2)
-1. Add query result caching (Issue #19)
-2. Remove unnecessary health checks (Issue #18)
-3. Extract global state (Issue #20)
+
+1. ✅ ~~Add query result caching (Issue #19)~~ - **COMPLETED 2026-02-28**
+2. ✅ ~~Remove unnecessary health checks (Issue #18)~~ - **COMPLETED 2026-02-28**
+3. ⏭️ ~~Extract global state (Issue #20)~~ - **SKIPPED** (idiomatic pattern, no clean alternative)
 4. Add database indexes
 
 ### Phase 3: Intelligence Upgrade (Week 3-4)
+
 1. Install pgvector extension (Issue #27)
 2. Implement semantic search
 3. Add conversation summarization (Issue #28)
 4. Build user profile storage (Issue #29)
 
 ### Phase 4: Polish (Ongoing)
+
 1. Improve error handling consistency (Issue #23)
 2. Add content filtering (Issue #22)
 3. Optimize image processing (Issue #26)
