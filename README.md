@@ -192,15 +192,25 @@ The keyword is case-insensitive and will be removed from your prompt.
 
 - `/clear` - Clear conversation history for current chat
 - `/stats` - Show chat statistics (message count, tokens used, etc.)
+- `/grant <user_id>` - Admin only, grant bot access to a user
+- `/revoke <user_id>` - Admin only, revoke bot access from a user
+- `/allowlist` - Admin only, show all authorized users
+- `/version` - Show current bot version
+- `/personality <name>` - Admin only, view or change active personality
+- `/list_personality` - Admin only, list all available personalities
 
 ### Authorization
 
-Only the user specified in `AUTHORIZED_USER_ID` can use the bot. Other users will receive "Sorry, you have no access to me."
+Two-tier authorization system:
+- The primary user specified in `AUTHORIZED_USER_ID` has full admin access
+- Additional users can be granted access via `/grant` command
+- Other users will receive "Sorry, you have no access to me."
 
 ### Private Chats vs Groups
 
 The bot works identically in both private chats and group chats:
-- In groups, only messages containing "chatgpt" trigger the bot
+- In groups, only messages containing "chatgpt" or @mentioning the bot trigger a response
+- All group messages are stored for context (even without keyword)
 - Authorization is per-user, not per-chat
 - Each chat maintains its own conversation history
 
@@ -251,21 +261,26 @@ All configuration is done via environment variables in `.env`:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Required | Your bot token from BotFather |
-| `OPENAI_API_KEY` | Required | Your OpenAI API key |
-| `AUTHORIZED_USER_ID` | Required | Telegram user ID allowed to use bot |
-| `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI model to use |
-| `MAX_CONTEXT_TOKENS` | `16000` | Maximum tokens in conversation context |
+| `BOT_USERNAME` | Required | Your bot's Telegram username |
+| `OPENAI_API_KEY` | Required | Your OpenAI API key (or xAI key for Grok) |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Model to use |
+| `OPENAI_BASE_URL` | _(empty)_ | Optional base URL for xAI or other OpenAI-compatible APIs |
 | `OPENAI_TIMEOUT` | `60` | API request timeout in seconds |
+| `MAX_CONTEXT_TOKENS` | `16000` | Maximum tokens in conversation context |
+| `RESERVE_TOKENS_TEXT` | `1000` | Tokens reserved for text response generation |
+| `RESERVE_TOKENS_IMAGE` | `3000` | Tokens reserved for vision response generation |
+| `MAX_GROUP_CONTEXT_MESSAGES` | `100` | Max messages stored per group chat |
+| `AUTHORIZED_USER_ID` | Required | Telegram user ID for admin access |
 | `DATABASE_URL` | Required | PostgreSQL connection string (e.g., Neon DB) |
 | `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 
 ### Model Options
 
-Supported models:
+The bot uses the OpenAI Responses API and supports any model compatible with it:
 - `gpt-4o-mini` (default, recommended for cost/performance)
 - `gpt-4o` (most capable)
-- `gpt-3.5-turbo` (faster, cheaper)
-- `gpt-4-turbo` (previous generation flagship)
+- `gpt-5-mini` (reasoning model, uses verbosity/effort instead of temperature)
+- xAI Grok models via `OPENAI_BASE_URL=https://api.x.ai/v1`
 
 ## Database Setup
 
@@ -287,19 +302,21 @@ This bot uses PostgreSQL (or Neon DB for cloud hosting) for conversation storage
 ## Project Structure
 
 ```
-telegram-gpt-bot/s
+telegram-gpt/
 ├── bot.py              # Main entry point
 ├── config.py           # Configuration management
-├── database.py         # PostgreSQL message storage
+├── database.py         # PostgreSQL message storage (Neon)
 ├── token_manager.py    # Token counting and trimming
-├── openai_client.py    # OpenAI API wrapper
+├── openai_client.py    # OpenAI Responses API wrapper
 ├── handlers.py         # Telegram message handlers
+├── prompt_builder.py   # System prompt construction and message formatting
+├── scripts/
+│   └── chat_cli.py     # CLI chat simulator for testing
 ├── requirements.txt    # Python dependencies
 ├── .env.example        # Environment template
-├── .gitignore         # Git ignore rules
-├── Dockerfile         # Docker image definition
-├── docker-compose.yml # Docker orchestration
-└── .dockerignore      # Docker build exclusions
+├── Dockerfile          # Docker image definition
+├── docker-compose.yml  # Docker orchestration
+└── .dockerignore       # Docker build exclusions
 ```
 
 ## How It Works
@@ -319,8 +336,7 @@ The bot gracefully handles:
 - Network timeouts
 - Rate limits
 - Token limit exceeded
-- Database corruption (with automatic backup)
-- Concurrent access
+- Concurrent database access (via connection pooling)
 - Invalid messages
 - Unauthorized access
 
