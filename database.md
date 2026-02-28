@@ -10,7 +10,7 @@
 
 ## Tables (public schema)
 
-### 1. `messages` (632 kB total)
+### 1. `messages` (800 kB total)
 
 | Column          | Type                     | Nullable | Default           |
 |-----------------|--------------------------|----------|-------------------|
@@ -72,4 +72,4 @@
 - **granted_users** – Users granted bot access
 - **personality** / **active_personality** – System prompts / personalities and current default
 
-*Last updated from Neon MCP – Feb 2, 2026*
+*Last updated from Neon MCP – Feb 28, 2026*

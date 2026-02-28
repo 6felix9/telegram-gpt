@@ -1,19 +1,19 @@
 # Code Review Issues
 
-**Last Updated**: 2026-02-13
+**Last Updated**: 2026-02-28
 **Status**: Active issues tracked
 
 
-## CRITICAL Architectural Issues 🔴
+## MEDIUM Priority Issues 🟡
 
 ### 1. Confusing OpenAI API Branching Logic
 
-**Priority**: CRITICAL
-**Location**: `openai_client.py:142-158`
+**Priority**: MEDIUM
+**Location**: `openai_client.py:107-123`
 **Type**: Code Clarity / Maintainability
 
 **Problem**:
-The code has confusing if-else branching based on model name prefix:
+The code uses `startswith("gpt-5")` to branch between model-specific parameters:
 ```python
 if self.model.startswith("gpt-5"):
     response = await asyncio.to_thread(
@@ -35,558 +35,157 @@ else:
 ```
 
 **Issues**:
-- Different parameters for GPT-5 vs other models (temperature vs verbosity/reasoning)
-- Hard to add new models (must update if-else logic)
-- Code clarity suffers from conditional API calls
 - Fragile string prefix checking (`startswith("gpt-5")`)
+- Adding new model families requires updating if-else logic
+- Different parameter sets (temperature vs verbosity/reasoning) split across branches
 
 **Solution**:
-Create a model capability registry for clean parameter selection:
-
-```python
-# openai_client.py
-class ModelCapabilities:
-    """Registry of model-specific capabilities and parameters."""
-
-    MODELS = {
-        "gpt-5-mini": {
-            "supports_temperature": False,
-            "supports_reasoning": True,
-            "default_params": {
-                "text": {"verbosity": "low"},
-                "reasoning": {"effort": "low"}
-            }
-        },
-        "gpt-4o-mini": {
-            "supports_temperature": True,
-            "supports_reasoning": False,
-            "default_params": {
-                "temperature": 0.7
-            }
-        },
-        "gpt-4o": {
-            "supports_temperature": True,
-            "supports_reasoning": False,
-            "default_params": {
-                "temperature": 0.7
-            }
-        },
-    }
-
-    @classmethod
-    def get_params(cls, model: str) -> dict:
-        """Get API parameters for model."""
-        config = cls.MODELS.get(model)
-        if not config:
-            # Default fallback for unknown models
-            logger.warning(f"Unknown model {model}, using default params")
-            return {"temperature": 0.7}
-        return config["default_params"]
-
-# Usage:
-params = ModelCapabilities.get_params(self.model)
-response = await asyncio.to_thread(
-    self.client.responses.create,
-    model=self.model,
-    instructions=system_prompt,
-    input=formatted_messages,
-    **params  # Unpack model-specific params
-)
-```
-
-**Benefits**:
-- Single code path for all models
-- Easy to add new models (just update registry)
-- Clear, self-documenting capabilities
-- No more fragile string checking
+Create a model parameter registry to cleanly map models to their API parameters, eliminating the branching logic.
 
 ---
 
-## CRITICAL Issues 🔴
-
-### 12. API Format Conversion - Responses API Compatibility
-
-**Priority**: CRITICAL
-**Location**: `openai_client.py:159-193`
-**Type**: API Integration Bug
-
-**Problem**:
-- Code attempts to use OpenAI's Responses API but the multimodal message format conversion may be incomplete
-- Conversion from Chat Completions format (`"type": "text"`) to Responses format (`"type": "input_text"`) exists
-- BUT image conversion to `"type": "input_image"` may not match current API specification
-- Could cause API errors with vision requests
-
-**Current Code**:
-```python
-if part.get("type") == "text":
-    updated_content.append({"type": "input_text", "text": part["text"]})
-elif part.get("type") == "image_url":
-    image_url_obj = part.get("image_url", {})
-    image_url_str = image_url_obj.get("url", "") if isinstance(image_url_obj, dict) else str(image_url_obj)
-    updated_content.append({"type": "input_image", "image_url": image_url_str})
-```
-
-**Solution**:
-- Test image processing thoroughly with latest OpenAI Responses API
-- Verify format matches current API specification
-- Add error handling for API format mismatches
-
----
-
-### 14. No Rate Limiting
-
-**Priority**: CRITICAL
-**Location**: All handlers
-**Type**: Security/Cost Issue
-
-**Problem**:
-- No per-user rate limits implemented
-- Users could spam the bot causing excessive API costs
-- No cooldown periods or request throttling
-- Potential for abuse and financial impact
-
-**Solution**:
-Implement rate limiting with sliding window:
-```python
-from collections import defaultdict
-from datetime import datetime, timedelta
-
-user_request_times = defaultdict(list)
-
-def check_rate_limit(user_id: int, max_requests: int = 20, window_minutes: int = 1) -> bool:
-    now = datetime.now()
-    cutoff = now - timedelta(minutes=window_minutes)
-
-    # Remove old requests
-    user_request_times[user_id] = [
-        t for t in user_request_times[user_id]
-        if t > cutoff
-    ]
-
-    if len(user_request_times[user_id]) >= max_requests:
-        return False  # Rate limited
-
-    user_request_times[user_id].append(now)
-    return True
-```
-
----
-
-### 15. No Input Size Validation
-
-**Priority**: CRITICAL
-**Location**: `handlers.py:153`, `handlers.py:280-282`
-**Type**: Security/Performance Issue
-
-**Problem**:
-- No message length validation before token counting
-- User could send 100,000 character messages
-- No image size validation before downloading
-- Could download 50MB+ images into memory
-- Potential for DoS and memory exhaustion
-
-**Solution**:
-Add validation:
-```python
-MAX_MESSAGE_LENGTH = 4000  # ~1000 tokens
-MAX_IMAGE_SIZE_MB = 10
-
-# For text messages
-if len(prompt) > MAX_MESSAGE_LENGTH:
-    await message.reply_text(
-        f"❌ Message too long ({len(prompt)} chars). "
-        f"Maximum is {MAX_MESSAGE_LENGTH} characters."
-    )
-    return
-
-# For images
-photo = message.photo[-1]
-if photo.file_size > MAX_IMAGE_SIZE_MB * 1024 * 1024:
-    await message.reply_text(
-        f"❌ Image too large ({photo.file_size / 1024 / 1024:.1f}MB). "
-        f"Maximum is {MAX_IMAGE_SIZE_MB}MB."
-    )
-    return
-```
-
----
-
-## HIGH Priority Issues 🟡
-
-### 16. Naive Context Trimming Strategy
-
-**Priority**: HIGH
-**Location**: `token_manager.py:74-134`, `database.py:199-261`
-**Type**: Intelligence/Context Management
-
-**Problem**:
-- Messages trimmed purely by age (oldest first)
-- No importance scoring or semantic relevance
-- Important context (user preferences, key facts) may be in older messages
-- No conversation summarization when context exceeds limit
-- Images not stored in context (only captions)
-
-**Impact**:
-Bot loses critical information and feels "dumb" as conversations grow
-
-**Solution**:
-Implement multi-tier approach:
-1. Importance scoring (extract critical facts, score messages 0-10)
-2. Semantic search (retrieve relevant past messages, not just recent)
-3. Conversation summarization (compress old context instead of dropping)
-4. Store image embeddings for future reference
-
----
-
-### 17. Zero Long-Term Memory
-
-**Priority**: HIGH
-**Location**: Entire codebase
-**Type**: Missing Feature - Intelligence
-
-**Problem**:
-No persistence of:
-- User preferences ("I'm vegetarian")
-- Facts mentioned in conversation
-- Topics discussed
-- Relationships between users
-- Conversation goals/objectives
-
-**Example Failure**:
-```
-User: "My favorite color is blue"
-[50 messages later, context trimmed]
-User: "What's my favorite color?"
-Bot: "I don't have that information" ❌
-```
-
-**Impact**:
-Bot cannot build user profiles or maintain long-term context
-
-**Solution**:
-Implement semantic memory system:
-1. Extract facts from messages using GPT
-2. Store in structured format (user_id, fact_type, key, value, confidence)
-3. Inject relevant facts into system prompt
-4. Build per-user profiles automatically
-
----
-
-### 18. Excessive Database Connection Overhead
-
-**Priority**: HIGH
-**Location**: `database.py:125-134`
-**Type**: Performance
-
-**Problem**:
-- Connection health check runs on EVERY `_get_connection()` call
-- Executes `SELECT 1` query before every operation
-- Adds ~5-20ms per request
-- With connection pooling, this is mostly unnecessary
-
-**Current Code**:
-```python
-# Actively probe the connection to avoid yielding a stale one
-try:
-    with conn.cursor() as cur:
-        cur.execute("SELECT 1")  # Runs on EVERY request!
-except psycopg2.OperationalError:
-    # ... handle error
-```
-
-**Impact**:
-Unnecessary latency on every database operation
-
-**Solution**:
-- Make health check optional or periodic (not on every connection)
-- Trust connection pool to manage stale connections
-- Only check on pool initialization or connection errors
-
----
-
-### 19. No Query Result Caching
-
-**Priority**: HIGH
-**Location**: `database.py` (get_active_personality, get_personality_prompt, is_user_granted)
-**Type**: Performance
-
-**Problem**:
-- Personality queries run on EVERY group message (2 queries)
-- `get_active_personality()` - could cache for 5-60 seconds
-- `get_personality_prompt()` - rarely changes, cache aggressively
-- `is_user_granted()` - cache with invalidation on grant/revoke
-
-**Impact**:
-Unnecessary database load and latency
-
-**Solution**:
-Implement in-memory caching with TTL:
-```python
-from functools import lru_cache
-from datetime import datetime, timedelta
-
-class CachedDatabase(Database):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._personality_cache = {}
-        self._granted_cache = {}
-
-    def get_active_personality(self, chat_id: str) -> str:
-        cache_key = f"personality:{chat_id}"
-        if cache_key in self._personality_cache:
-            cached_value, cached_time = self._personality_cache[cache_key]
-            if datetime.now() - cached_time < timedelta(seconds=60):
-                return cached_value
-
-        # Cache miss - fetch from DB
-        result = super().get_active_personality(chat_id)
-        self._personality_cache[cache_key] = (result, datetime.now())
-        return result
-```
-
----
-
-### 20. Global State in handlers.py
-
-**Priority**: HIGH
-**Location**: `handlers.py:10-15`
-**Type**: Code Quality/Testing
-
-**Problem**:
-- Module-level global variables used for dependencies
-- Makes testing difficult (need to mock globals)
-- Implicit dependencies not clear
-- Thread-safety concerns (though Python GIL helps)
-
-**Current Code**:
-```python
-config = None
-db = None
-token_manager = None
-openai_client = None
-bot_username = None
-```
-
-**Solution**:
-Use dependency injection with context class:
-```python
-class HandlerContext:
-    def __init__(self, config, db, token_manager, openai_client, bot_username):
-        self.config = config
-        self.db = db
-        self.token_manager = token_manager
-        self.openai_client = openai_client
-        self.bot_username = bot_username
-
-def make_message_handler(ctx: HandlerContext):
-    async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        # Use ctx.db, ctx.config, etc.
-        ...
-    return handler
-```
-
----
-
-## MEDIUM Priority Issues 🟢
-
-### 22. No Content Filtering
+### 12. API Format Conversion - Responses API Image Compatibility
 
 **Priority**: MEDIUM
-**Location**: All handlers
-**Type**: Security/Privacy
+**Location**: `prompt_builder.py:139-158`
+**Type**: API Integration
 
 **Problem**:
-- User input sent directly to OpenAI without filtering
-- No profanity filter
-- No PII (Personal Identifiable Information) detection/redaction
-- Could leak sensitive data to OpenAI logs
-- No content moderation
+- Image format conversion from Chat Completions format (`"type": "image_url"`) to Responses API format (`"type": "input_image"`) exists in `prompt_builder.py`
+- The conversion logic looks correct but hasn't been thoroughly tested against the latest API spec
+- Could cause silent failures with vision requests if the API changes
 
 **Solution**:
-Add content filtering layer before API calls
-
----
-
-### 23. Inconsistent Error Handling
-
-**Priority**: MEDIUM
-**Location**: `handlers.py` (multiple locations)
-**Type**: Code Quality
-
-**Problem**:
-Some exceptions swallowed silently, others show user-friendly errors
-
-**Example 1 - Swallows exception**:
-```python
-except Exception as e:
-    logger.error(f"Failed to store group message: {e}")
-    # No re-raise, no user notification
-return
-```
-
-**Example 2 - User-friendly error**:
-```python
-except Exception as e:
-    logger.error(f"Error processing request: {e}", exc_info=True)
-    await message.reply_text(
-        "Sorry, I encountered an error. Please try again."
-    )
-```
-
-**Solution**:
-Create consistent error handling strategy with custom exception class
-
----
-
-### 24. Message Format Token Overhead
-
-**Priority**: MEDIUM
-**Location**: `handlers.py` (group chat formatting)
-**Type**: Performance/Cost
-
-**Problem**:
-Group chat sender format adds significant overhead:
-```python
-formatted_content = f"[{sender_name}]: {formatted_content}"
-# Every message: "[Felix]: Hello there"
-# Costs: ~5-10 tokens per message
-# For 50 messages: 250-500 tokens wasted
-```
-
-**Impact**:
-15-20% token waste in group chats
-
-**Solution**:
-Use more compact format or move sender info to system message
+- Test image processing with the current OpenAI Responses API
+- Add a simple smoke test for image message formatting
 
 ---
 
 ## LOW Priority Issues 🔵
 
-### 25. No Monitoring/Observability
+### 14. No Rate Limiting
 
 **Priority**: LOW
+**Location**: All handlers
+**Type**: Cost Protection
+
+**Problem**:
+- No per-user rate limits implemented
+- A granted user could theoretically spam the bot
+
+**Practical Assessment**:
+Low risk in practice - the bot requires authorization (admin + explicitly granted users only). The attack surface is limited to trusted users. Telegram itself also has rate limits on bot messages.
+
+**Solution** (if needed):
+Simple in-memory sliding window counter in handlers.
+
+---
+
+### 15. No Input Size Validation
+
+**Priority**: LOW
+**Location**: `handlers.py`
+**Type**: Defensive Programming
+
+**Problem**:
+- No explicit message length validation before token counting
+- No image size check before downloading
+
+**Practical Assessment**:
+Telegram enforces its own limits: text messages max ~4096 chars, images max ~20MB. The token manager and OpenAI API will reject oversized inputs. This is defense-in-depth, not a critical gap.
+
+**Solution** (if needed):
+Add simple length check for messages and file_size check for images.
+
+---
+
+### 23. Inconsistent Error Handling
+
+**Priority**: LOW
+**Location**: `handlers.py` (multiple locations)
+**Type**: Code Quality
+
+**Problem**:
+Some exceptions are logged silently (e.g., failed group message storage), while others show user-facing error messages.
+
+**Practical Assessment**:
+The inconsistency is partially intentional - silently failing to store a background group message is reasonable (the user didn't ask for anything). User-facing operations correctly show errors. Could be more consistent but not causing real issues.
+
+---
+
+## Strategic Enhancements 🧠
+
+### 16. Context Trimming Strategy
+
+**Priority**: Strategic
+**Location**: `token_manager.py`, `database.py`
+**Type**: Intelligence Enhancement
+
+Messages are trimmed purely by age (oldest first). No importance scoring, semantic relevance, or summarization. The bot loses information as conversations grow, but this is standard behavior for most chatbots.
+
+**Potential improvements**:
+1. Conversation summarization (compress old context instead of dropping)
+2. Semantic search for relevant past messages (would require pgvector)
+
+---
+
+### 17. Long-Term Memory
+
+**Priority**: Strategic
 **Location**: Entire codebase
-**Type**: Operations
+**Type**: Missing Feature
 
-**Problem**:
-- No metrics collection (token usage, response times, error rates)
-- No alerting on failures
-- No performance tracking
-- Difficult to debug production issues
+No persistence of user preferences, facts, or conversation history beyond the context window. This is the highest-impact enhancement for user experience.
 
-**Solution**:
-Add metrics tracking with prometheus/datadog or simple logging
+**Potential approach**:
+1. Extract facts from messages using GPT
+2. Store in structured format per user
+3. Inject relevant facts into system prompt
 
 ---
 
-### 26. Image Processing Not Optimized
-
-**Priority**: LOW
-**Location**: `handlers.py:280-290`
-**Type**: Performance
-
-**Problem**:
-- Always uses highest resolution: `photo = message.photo[-1]`
-- No resolution downsampling (OpenAI doesn't need 4K images)
-- No image caching (same image processed twice)
-- Could downsample to 2048px max
-
-**Solution**:
-Add image preprocessing and caching
-
----
-
-## Intelligence Enhancement Opportunities 🧠
-
-### 27. No Semantic Search
+### 27. Semantic Search
 
 **Priority**: Strategic
 **Type**: Missing Feature
 
-**Recommendation**:
-Implement pgvector for semantic message retrieval:
-- Find relevant messages by meaning, not just recency
-- 10x better context understanding
-- Requires adding `embedding` column to messages table
-
-**Impact**: Transforms bot from "message relay" to "intelligent assistant"
+Implement pgvector for semantic message retrieval - find relevant messages by meaning, not just recency. Would require adding an `embedding` column to the messages table.
 
 ---
 
-### 28. No Conversation Summarization
+### 28. Conversation Summarization
 
 **Priority**: Strategic
 **Type**: Missing Feature
 
-**Recommendation**:
-When context exceeds limit, summarize old messages instead of dropping:
-- Preserve important information beyond token limits
-- Create hierarchical summaries (Level 1: 50 msgs, Level 2: 500 msgs)
-- Maintain conversation continuity
-
-**Impact**: Never lose important context
+When context exceeds limit, summarize old messages instead of dropping them. Would preserve important information beyond token limits.
 
 ---
 
-### 29. No User Profile Building
+### 29. User Profile Building
 
 **Priority**: Strategic
 **Type**: Missing Feature
 
-**Recommendation**:
-Extract and persist user facts:
-- Extract entities/facts from messages
-- Store structured knowledge (preferences, characteristics, goals)
-- Build per-user profiles automatically
-- Inject relevant facts into context
-
-**Impact**: Personalized, context-aware responses
-
----
-
-## Performance Benchmarks
-
-| Metric | Current | With Optimizations | Improvement |
-|--------|---------|-------------------|-------------|
-| Context retrieval | 200-500ms | 50-100ms | 4-5x faster |
-| Token usage | 12,000/query | 8,000/query | 33% reduction |
-| Memory retention | 50 messages | Unlimited* | ∞ |
-| Context relevance | 60% | 90%+ | 50% better |
-| Cost per 1000 queries | $4.60 | $3.48 | 24% cheaper |
-
-*With progressive summarization
+Extract and persist user facts automatically (preferences, characteristics, goals). Would enable personalized, context-aware responses.
 
 ---
 
 ## Recommended Action Plan
 
-### Phase 1: Critical Fixes (Week 1)
+### Phase 1: Quick Wins
 1. Fix model branching logic (Issue #1)
-2. Add input validation (Issue #15)
-3. Implement rate limiting (Issue #14)
-4. ✅ ~~Centralize prompt construction (Issue #2)~~ - **COMPLETED 2026-02-13**
-5. Verify Responses API compatibility (Issue #12)
+2. ✅ ~~Centralize prompt construction (Issue #2)~~ - **COMPLETED 2026-02-13**
+3. ✅ ~~Query result caching (Issue #19)~~ - **COMPLETED (separate branch)**
+4. Verify Responses API image compatibility (Issue #12)
 
-### Phase 2: Performance (Week 2)
-1. Add query result caching (Issue #19)
-2. Remove unnecessary health checks (Issue #18)
-3. Extract global state (Issue #20)
-4. Add database indexes
-
-### Phase 3: Intelligence Upgrade (Week 3-4)
-1. Install pgvector extension (Issue #27)
-2. Implement semantic search
-3. Add conversation summarization (Issue #28)
-4. Build user profile storage (Issue #29)
-
-### Phase 4: Polish (Ongoing)
-1. Improve error handling consistency (Issue #23)
-2. Add content filtering (Issue #22)
-3. Optimize image processing (Issue #26)
-4. Add monitoring/metrics (Issue #25)
+### Phase 2: Intelligence Upgrade
+1. Implement long-term memory (Issue #17)
+2. Add conversation summarization (Issue #28)
+3. Build user profile storage (Issue #29)
+4. Explore semantic search with pgvector (Issue #27)
 
 ---
 
-**Last Updated**: 2026-02-02
-**Status**: Active issues - monitoring fixes and improvements
+**Last Updated**: 2026-02-28
+**Status**: Active issues - focused on practical improvements
