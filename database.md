@@ -1,75 +1,115 @@
-# Neon DB – Telegram GPT
+# Neon Database Schema
 
-**Project:** Telegram GPT (`fancy-meadow-58588477`)  
-**Region:** aws-ap-southeast-1  
-**PostgreSQL:** 17
+Verified against the live Neon database on 2026-04-05.
 
-**Branches:** `production` (default), `development` (archived)
+This document summarizes the current public schema used by the bot. The live database currently contains these tables:
 
----
+- `messages`
+- `granted_users`
+- `personality`
+- `active_personality`
+- `active_model`
 
-## Tables (public schema)
+## `messages`
 
-### 1. `messages` (800 kB total)
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` | `integer` | No | `nextval('messages_id_seq'::regclass)` |
+| `chat_id` | `text` | No | none |
+| `role` | `text` | No | none |
+| `content` | `text` | No | none |
+| `timestamp` | `timestamp without time zone` | No | `CURRENT_TIMESTAMP` |
+| `user_id` | `bigint` | Yes | none |
+| `message_id` | `bigint` | Yes | none |
+| `token_count` | `integer` | Yes | `0` |
+| `sender_name` | `text` | Yes | none |
+| `sender_username` | `text` | Yes | none |
+| `is_group_chat` | `boolean` | Yes | `false` |
 
-| Column          | Type                     | Nullable | Default           |
-|-----------------|--------------------------|----------|-------------------|
-| id              | integer                  | NOT NULL | nextval(...)      |
-| chat_id         | text                     | NOT NULL | —                 |
-| role            | text                     | NOT NULL | —                 |
-| content         | text                     | NOT NULL | —                 |
-| timestamp       | timestamp without time zone | NOT NULL | CURRENT_TIMESTAMP |
-| user_id         | bigint                   | yes      | —                 |
-| message_id      | bigint                   | yes      | —                 |
-| token_count     | integer                  | yes      | 0                 |
-| sender_name     | text                     | yes      | —                 |
-| sender_username | text                     | yes      | —                 |
-| is_group_chat   | boolean                  | yes      | false             |
+Indexes:
 
-- **Primary key:** `id`
-- **Index:** `idx_chat_timestamp` on `(chat_id, timestamp DESC)`
+- Primary key on `id`
+- `idx_chat_timestamp` on `(chat_id, timestamp DESC)`
 
----
+Purpose:
 
-### 2. `granted_users` (32 kB total)
+- Stores user and assistant message history
+- Tracks token counts for history retrieval by budget
+- Stores sender metadata for group-chat formatting
 
-| Column     | Type                     | Nullable | Default           |
-|------------|--------------------------|----------|-------------------|
-| user_id    | text                     | NOT NULL | —                 |
-| granted_at | timestamp without time zone | NOT NULL | CURRENT_TIMESTAMP |
+## `granted_users`
 
-- **Primary key:** `user_id`
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `user_id` | `text` | No | none |
+| `granted_at` | `timestamp without time zone` | No | `CURRENT_TIMESTAMP` |
+| `first_name` | `text` | Yes | none |
+| `username` | `text` | Yes | none |
 
----
+Indexes:
 
-### 3. `personality` (80 kB total)
+- Primary key on `user_id`
 
-| Column      | Type | Nullable | Default |
-|-------------|------|----------|---------|
-| personality | text | NOT NULL | —       |
-| prompt      | text | NOT NULL | —       |
+Purpose:
 
-- **Primary key:** `personality`
+- Stores non-admin Telegram users who have been granted access
+- Keeps optional Telegram profile metadata for `/allowlist`
 
----
+## `personality`
 
-### 4. `active_personality` (32 kB total)
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `personality` | `text` | No | none |
+| `prompt` | `text` | No | none |
 
-| Column      | Type                     | Nullable | Default           |
-|-------------|--------------------------|----------|-------------------|
-| id          | integer                  | NOT NULL | 1                 |
-| personality | text                     | NOT NULL | 'normal'          |
-| updated_at  | timestamp without time zone | NOT NULL | CURRENT_TIMESTAMP |
+Indexes:
 
-- **Primary key:** `id`
-- **Check:** `id = 1` (single-row config)
+- Primary key on `personality`
 
----
+Purpose:
 
-## Summary
+- Stores named group-chat system prompts
 
-- **messages** – Conversation history with token counts and group chat metadata
-- **granted_users** – Users granted bot access
-- **personality** / **active_personality** – System prompts / personalities and current default
+## `active_personality`
 
-*Last updated from Neon MCP – Feb 28, 2026*
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` | `integer` | No | `1` |
+| `personality` | `text` | No | `'normal'` |
+| `updated_at` | `timestamp without time zone` | No | `CURRENT_TIMESTAMP` |
+
+Indexes:
+
+- Primary key on `id`
+
+Purpose:
+
+- Single-row table tracking the globally active group personality
+
+Note:
+
+- The live database default is currently `'normal'`.
+- `database.py` currently bootstraps fresh tables with `'default'`, so code and live schema are not perfectly aligned here.
+
+## `active_model`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` | `integer` | No | `1` |
+| `model` | `text` | No | `'gpt-4o-mini'` |
+| `updated_at` | `timestamp without time zone` | No | `CURRENT_TIMESTAMP` |
+
+Indexes:
+
+- Primary key on `id`
+
+Purpose:
+
+- Single-row table tracking the globally active model
+- Used by `/model` and loaded on startup before requests are processed
+
+## Operational Notes
+
+- The bot creates missing tables automatically on startup.
+- The live database already includes `active_model`, even though older docs omitted it.
+- `DEFAULT_MODEL` in `.env` is only a seed value for a fresh database; the runtime model is loaded from `active_model`.

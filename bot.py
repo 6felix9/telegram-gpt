@@ -31,7 +31,7 @@ async def post_init(app: Application):
     """Called after bot starts."""
     logger.info("=" * 50)
     logger.info("Bot started successfully!")
-    logger.info(f"Model: {config.OPENAI_MODEL}")
+    logger.info(f"Default model: {config.DEFAULT_MODEL}")
     logger.info(f"Max context tokens: {config.MAX_CONTEXT_TOKENS}")
     logger.info(f"Authorized user: {config.AUTHORIZED_USER_ID}")
     # Hide sensitive connection string details in logs
@@ -68,9 +68,14 @@ def main():
         logger.info("Initializing database...")
         db = Database(config.DATABASE_URL)
 
+        # Seed active_model on first run with env var default, then load persisted value
+        db.init_active_model(config.DEFAULT_MODEL)
+        effective_model = db.get_active_model()
+        logger.info(f"Active model: {effective_model}")
+
         # 3. Initialize token manager
         logger.info("Initializing token manager...")
-        token_manager = TokenManager(config.OPENAI_MODEL, config.MAX_CONTEXT_TOKENS)
+        token_manager = TokenManager(effective_model, config.MAX_CONTEXT_TOKENS)
 
         # 4. Initialize prompt builder (shared between OpenAI client and handlers)
         logger.info("Initializing prompt builder...")
@@ -83,16 +88,14 @@ def main():
 
         # 5. Initialize OpenAI client
         logger.info("Initializing OpenAI client...")
-        client_kwargs = {
-            "api_key": config.OPENAI_API_KEY,
-            "model": config.OPENAI_MODEL,
-            "timeout": config.OPENAI_TIMEOUT,
-            "prompt_builder": prompt_builder,
-        }
-        # Add base_url if configured (for xAI or other OpenAI-compatible APIs)
-        if config.OPENAI_BASE_URL:
-            client_kwargs["base_url"] = config.OPENAI_BASE_URL
-        openai_client = OpenAIClient(**client_kwargs)
+        openai_client = OpenAIClient(
+            openai_api_key=config.OPENAI_API_KEY,
+            xai_api_key=config.XAI_API_KEY,
+            gemini_api_key=config.GEMINI_API_KEY,
+            model=effective_model,
+            timeout=config.OPENAI_TIMEOUT,
+            prompt_builder=prompt_builder,
+        )
 
         # 6. Build Telegram application
         logger.info("Building Telegram application...")
@@ -132,6 +135,7 @@ def main():
         application.add_handler(CommandHandler("revoke", handlers.revoke_command))
         application.add_handler(CommandHandler("allowlist", handlers.allowlist_command))
         application.add_handler(CommandHandler("version", handlers.version_command))
+        application.add_handler(CommandHandler("model", handlers.model_command))
         application.add_handler(CommandHandler("personality", handlers.personality_command))
         application.add_handler(CommandHandler("list_personality", handlers.list_personality_command))
         application.add_handler(CommandHandler("help", handlers.help_command))
