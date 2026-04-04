@@ -173,7 +173,7 @@ python3 scripts/chat_cli.py --chat-id test
 
 **Simulate real group chat (read-only, doesn't write to database):**
 ```bash
-python3 scripts/chat_cli.py --chat-id 123456789 --group
+python3 scripts/chat_cli.py --chat-id -5086459563 --group
 ```
 
 **Test mode with group formatting:**

@@ -49,10 +49,6 @@ class PromptBuilder:
 
         try:
             active_personality = self._get_active_personality()
-            if active_personality == "normal":
-                logger.debug("PromptBuilder: active personality is normal, using default group prompt")
-                return None
-
             custom_prompt = self._get_personality_prompt(active_personality)
             if custom_prompt:
                 logger.debug(
@@ -119,8 +115,14 @@ class PromptBuilder:
             return text
         return f"[{sender_name}]: {text}"
 
-    def format_messages(self, messages: list[dict], is_group: bool) -> list[dict]:
-        """Format messages for Responses API and group context semantics."""
+    def format_messages(self, messages: list[dict], is_group: bool, api_format: str = "responses") -> list[dict]:
+        """Format messages for the target API and group context semantics.
+
+        Args:
+            messages: Raw message dicts from the database
+            is_group: Whether this is a group chat (adds sender name prefixes)
+            api_format: Target API format — "responses" (OpenAI/xAI) or "chat_completions" (Gemini)
+        """
         formatted_messages: list[dict] = []
 
         for msg in messages:
@@ -144,14 +146,20 @@ class PromptBuilder:
                         text = part.get("text", "")
                         if is_group:
                             text = self._apply_group_sender_prefix(role, text, sender_name)
-                        updated_content.append({"type": "input_text", "text": text})
+                        if api_format == "chat_completions":
+                            updated_content.append({"type": "text", "text": text})
+                        else:
+                            updated_content.append({"type": "input_text", "text": text})
                     elif part_type in {"image_url", "input_image"}:
                         if part_type == "image_url":
                             image_url_obj = part.get("image_url", {})
                             url = image_url_obj.get("url", "") if isinstance(image_url_obj, dict) else str(image_url_obj)
                         else:
                             url = part.get("image_url", "")
-                        updated_content.append({"type": "input_image", "image_url": url})
+                        if api_format == "chat_completions":
+                            updated_content.append({"type": "image_url", "image_url": {"url": url}})
+                        else:
+                            updated_content.append({"type": "input_image", "image_url": url})
                     else:
                         logger.debug("PromptBuilder: skipping unsupported part type '%s'", part_type)
 
