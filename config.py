@@ -17,10 +17,14 @@ class Config:
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
     BOT_USERNAME = os.getenv("BOT_USERNAME", "")
 
-    # OpenAI Configuration
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "")  # For xAI or other OpenAI-compatible APIs
+    # AI Provider API Keys
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")    # OpenAI models (gpt-*)
+    XAI_API_KEY = os.getenv("XAI_API_KEY", "")          # xAI Grok models (grok-*)
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")    # Google Gemini models (gemini-*)
+
+    # Default model to use on first startup (persisted in DB after first run)
+    DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gpt-4.1-mini")
+
     OPENAI_TIMEOUT = int(os.getenv("OPENAI_TIMEOUT", "60"))
     MAX_CONTEXT_TOKENS = int(os.getenv("MAX_CONTEXT_TOKENS", "16000"))
     
@@ -59,10 +63,16 @@ class Config:
         elif not cls.BOT_USERNAME.strip():
             errors.append("BOT_USERNAME cannot be empty")
 
-        if not cls.OPENAI_API_KEY:
-            errors.append("OPENAI_API_KEY is required")
-        elif not cls.OPENAI_API_KEY.strip():
-            errors.append("OPENAI_API_KEY cannot be empty")
+        # Validate that the API key for the default model's provider is present
+        if cls.DEFAULT_MODEL.startswith("gemini"):
+            if not cls.GEMINI_API_KEY:
+                errors.append(f"GEMINI_API_KEY is required for DEFAULT_MODEL={cls.DEFAULT_MODEL}")
+        elif cls.DEFAULT_MODEL.startswith("grok"):
+            if not cls.XAI_API_KEY:
+                errors.append(f"XAI_API_KEY is required for DEFAULT_MODEL={cls.DEFAULT_MODEL}")
+        else:
+            if not cls.OPENAI_API_KEY:
+                errors.append(f"OPENAI_API_KEY is required for DEFAULT_MODEL={cls.DEFAULT_MODEL}")
 
         if not cls.AUTHORIZED_USER_ID:
             errors.append("AUTHORIZED_USER_ID is required")

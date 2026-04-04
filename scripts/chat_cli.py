@@ -21,6 +21,7 @@ Usage:
 Commands:
     /clear - Clear conversation history (only works when chat_id="test")
     /stats - Show chat statistics
+    /model [name] - View or change the active AI model
     /personality [name] - View or change active personality (group chats only)
     /exit or /quit - Exit the CLI
 """
@@ -36,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import config
 from database import Database
 from token_manager import TokenManager
-from openai_client import OpenAIClient
+from openai_client import OpenAIClient, MODEL_REGISTRY
 from prompt_builder import PromptBuilder
 
 # Configure logging
@@ -69,8 +70,12 @@ class ChatCLI:
         # Database
         self.db = Database(config.DATABASE_URL)
 
+        # Load persisted active model (seeds from DEFAULT_MODEL on first run)
+        self.db.init_active_model(config.DEFAULT_MODEL)
+        effective_model = self.db.get_active_model()
+
         # Token manager
-        self.token_manager = TokenManager(config.OPENAI_MODEL, config.MAX_CONTEXT_TOKENS)
+        self.token_manager = TokenManager(effective_model, config.MAX_CONTEXT_TOKENS)
 
         # OpenAI client
         prompt_builder = PromptBuilder(
@@ -80,8 +85,10 @@ class ChatCLI:
             get_personality_prompt=self.db.get_personality_prompt,
         )
         self.openai_client = OpenAIClient(
-            api_key=config.OPENAI_API_KEY,
-            model=config.OPENAI_MODEL,
+            openai_api_key=config.OPENAI_API_KEY,
+            xai_api_key=config.XAI_API_KEY,
+            gemini_api_key=config.GEMINI_API_KEY,
+            model=effective_model,
             timeout=config.OPENAI_TIMEOUT,
             prompt_builder=prompt_builder,
         )
@@ -245,6 +252,31 @@ class ChatCLI:
             logger.error(f"Error listing personalities: {e}", exc_info=True)
             print(f"\n❌ Failed to list personalities: {e}\n")
 
+    def handle_model_command(self, args: list[str]) -> None:
+        """Handle /model command."""
+        available = ", ".join(MODEL_REGISTRY.keys())
+        if not args:
+            current = self.db.get_active_model()
+            print(f"\nCurrent model: {current}")
+            print(f"Available: {available}")
+            print("Usage: /model <name>\n")
+            return
+
+        new_model = args[0].strip()
+        if new_model not in MODEL_REGISTRY:
+            print(f"\n❌ Unknown model '{new_model}'.")
+            print(f"Available: {available}\n")
+            return
+
+        try:
+            self.db.set_active_model(new_model)
+            self.openai_client.set_model(new_model)
+            self.token_manager.set_model(new_model)
+            print(f"\n✅ Model switched to '{new_model}'\n")
+        except Exception as e:
+            logger.error(f"Error switching model: {e}", exc_info=True)
+            print(f"\n❌ Failed to switch model: {e}\n")
+
     async def run(self):
         """Run the interactive CLI loop."""
         mode_str = "TEST MODE" if self.is_test_mode else "READ-ONLY MODE"
@@ -252,7 +284,7 @@ class ChatCLI:
         print(f"\n{'='*60}")
         print(f"Chat CLI - {mode_str}{group_str}")
         print(f"Chat ID: {self.chat_id}")
-        print(f"Model: {config.OPENAI_MODEL}")
+        print(f"Model: {self.openai_client.model}")
         print(f"{'='*60}\n")
 
         if not self.is_test_mode:
@@ -261,7 +293,7 @@ class ChatCLI:
                   f"{stats['total_tokens']:,} tokens")
             print("⚠️  READ-ONLY MODE: Your prompts/responses will NOT be saved to database\n")
 
-        print("Type your message (or /clear, /stats, /personality [name], /list_personality, /exit to quit):\n")
+        print("Type your message (or /clear, /stats, /model [name], /personality [name], /list_personality, /exit to quit):\n")
 
         while True:
             try:
@@ -295,6 +327,12 @@ class ChatCLI:
                     print(f"  Messages: {stats['total_messages']}")
                     print(f"  Total tokens: {stats['total_tokens']:,}")
                     print(f"  Since: {first_msg}\n")
+                    continue
+
+                if user_input.lower().startswith("/model"):
+                    parts = user_input.split(None, 1)
+                    args = parts[1:] if len(parts) > 1 else []
+                    self.handle_model_command(args)
                     continue
 
                 if user_input.lower().startswith("/personality"):
