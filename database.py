@@ -96,7 +96,7 @@ class Database:
                     cur.execute("""
                         CREATE TABLE IF NOT EXISTS active_personality (
                             id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-                            personality TEXT NOT NULL DEFAULT 'normal',
+                            personality TEXT NOT NULL DEFAULT 'default',
                             updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                         )
                     """)
@@ -104,8 +104,17 @@ class Database:
                     # Initialize active_personality if empty
                     cur.execute("""
                         INSERT INTO active_personality (id, personality, updated_at)
-                        SELECT 1, 'normal', CURRENT_TIMESTAMP
+                        SELECT 1, 'default', CURRENT_TIMESTAMP
                         WHERE NOT EXISTS (SELECT 1 FROM active_personality WHERE id = 1)
+                    """)
+
+                    # Create active_model table (single row table)
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS active_model (
+                            id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+                            model TEXT NOT NULL DEFAULT 'gpt-4o-mini',
+                            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                        )
                     """)
 
                 logger.info("Database tables initialized successfully")
@@ -578,14 +587,14 @@ class Database:
                         "SELECT personality FROM active_personality WHERE id = 1"
                     )
                     row = cur.fetchone()
-                    result = row["personality"] if row else "normal"
+                    result = row["personality"] if row else "default"
 
             self._cache.set(cache_key, result, ttl=60.0)
             return result
 
         except Exception as e:
             logger.error(f"Failed to get active personality: {e}", exc_info=True)
-            return "normal"
+            return "default"
 
     def set_active_personality(self, personality: str) -> None:
         """
@@ -663,3 +672,60 @@ class Database:
         except Exception as e:
             logger.error(f"Failed to list personalities: {e}", exc_info=True)
             return []
+
+    def init_active_model(self, default_model: str) -> None:
+        """Seed the active_model row on first run (no-op if already set)."""
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO active_model (id, model) VALUES (1, %s) ON CONFLICT DO NOTHING",
+                        (default_model,)
+                    )
+        except Exception as e:
+            logger.error(f"Failed to init active model: {e}", exc_info=True)
+
+    def get_active_model(self) -> str:
+        """Return currently active model name (cached 60s)."""
+        cache_key = "active_model"
+        cached = self._cache.get(cache_key)
+        if cached is not MISSING:
+            return cached
+
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute("SELECT model FROM active_model WHERE id = 1")
+                    row = cur.fetchone()
+                    result = row["model"] if row else "gpt-4o-mini"
+
+            self._cache.set(cache_key, result, ttl=60.0)
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to get active model: {e}", exc_info=True)
+            return "gpt-4o-mini"
+
+    def set_active_model(self, model: str) -> None:
+        """Persist the active model and invalidate cache."""
+        try:
+            timestamp = datetime.utcnow()
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO active_model (id, model, updated_at)
+                        VALUES (1, %s, %s)
+                        ON CONFLICT (id) DO UPDATE
+                        SET model = EXCLUDED.model,
+                            updated_at = EXCLUDED.updated_at
+                        """,
+                        (model, timestamp)
+                    )
+
+            self._cache.invalidate("active_model")
+            logger.info(f"Active model set to: {model}")
+
+        except Exception as e:
+            logger.error(f"Failed to set active model: {e}", exc_info=True)
+            raise

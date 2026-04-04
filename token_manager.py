@@ -140,3 +140,13 @@ class TokenManager:
     def get_model(self) -> str:
         """Return the model name."""
         return self.model
+
+    def set_model(self, model: str) -> None:
+        """Switch to a different model and re-initialize tiktoken encoding."""
+        self.model = model
+        try:
+            self.encoding = tiktoken.encoding_for_model(model)
+            logger.info(f"Token manager switched to model {model}")
+        except KeyError:
+            logger.warning(f"Model {model} not in tiktoken, using cl100k_base fallback")
+            self.encoding = tiktoken.get_encoding("cl100k_base")

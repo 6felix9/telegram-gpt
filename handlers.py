@@ -5,6 +5,7 @@ import random
 from telegram import Update
 from telegram.ext import ContextTypes
 from telegram.helpers import escape_markdown
+from openai_client import MODEL_REGISTRY
 
 logger = logging.getLogger(__name__)
 
@@ -667,7 +668,6 @@ async def personality_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     personality_name = context.args[0].strip()
 
     try:
-        # Check if personality exists
         if not db.personality_exists(personality_name):
             await update.message.reply_text(
                 f"❌ No personality '{personality_name}' found."
@@ -702,15 +702,14 @@ async def list_personality_command(update: Update, context: ContextTypes.DEFAULT
         
         if not personalities:
             await update.message.reply_text(
-                "No custom personalities available.\n"
-                "Currently using: normal (default)"
+                "No personalities found in database."
             )
             return
-        
+
         # Build message
         message = f"**Available Personalities:**\n"
         message += f"Currently active: **{active}**\n\n"
-        
+
         for name, prompt_preview in personalities:
             marker = "✓" if name == active else "-"
             message += f"{marker} `{name}`\n"
@@ -724,6 +723,42 @@ async def list_personality_command(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_text(
             "❌ Failed to list personalities. Please try again."
         )
+
+
+async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """View or change the active model (main authorized user only)."""
+    user_id = update.message.from_user.id
+    if not is_main_authorized_user(user_id):
+        await update.message.reply_text("Sorry, only the main authorized user can change the model.")
+        return
+
+    available = "\n".join(f"  `{m}`" for m in MODEL_REGISTRY)
+
+    if not context.args:
+        current = db.get_active_model()
+        await update.message.reply_text(
+            f"Current model: `{current}`\n\nAvailable models:\n{available}\n\nUsage: `/model <name>`",
+            parse_mode="Markdown"
+        )
+        return
+
+    new_model = context.args[0].strip()
+    if new_model not in MODEL_REGISTRY:
+        await update.message.reply_text(
+            f"❌ Unknown model `{new_model}`.\n\nAvailable models:\n{available}",
+            parse_mode="Markdown"
+        )
+        return
+
+    try:
+        db.set_active_model(new_model)
+        openai_client.set_model(new_model)
+        token_manager.set_model(new_model)
+        await update.message.reply_text(f"✅ Model switched to `{new_model}`", parse_mode="Markdown")
+        logger.info(f"User {user_id} switched model to {new_model}")
+    except Exception as e:
+        logger.error(f"Error switching model: {e}", exc_info=True)
+        await update.message.reply_text("❌ Failed to switch model. Please try again.")
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -742,6 +777,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/grant <user\\_id> - Grant bot access to a user\n"
         "/revoke <user\\_id> - Revoke bot access from a user\n"
         "/allowlist - Show all authorized users\n"
+        "/model - View or change the active AI model\n"
         "/personality <name> - View or change active personality\n"
         "/list\\_personality - List all available personalities\n"
         "/version - Show current bot version"
