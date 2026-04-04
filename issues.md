@@ -1,191 +1,117 @@
 # Code Review Issues
 
-**Last Updated**: 2026-02-28
+**Last Updated**: 2026-04-05  
 **Status**: Active issues tracked
 
+## Medium Priority
 
-## MEDIUM Priority Issues 🟡
+### 1. `active_personality` Bootstrap Drift
 
-### 1. Confusing OpenAI API Branching Logic
-
-**Priority**: MEDIUM
-**Location**: `openai_client.py:107-123`
-**Type**: Code Clarity / Maintainability
+**Location**: `database.py`, live Neon schema  
+**Type**: Schema / behavior consistency
 
 **Problem**:
-The code uses `startswith("gpt-5")` to branch between model-specific parameters:
-```python
-if self.model.startswith("gpt-5"):
-    response = await asyncio.to_thread(
-        self.client.responses.create,
-        model=self.model,
-        instructions=system_prompt,
-        input=formatted_messages,
-        text={ "verbosity": "low" },
-        reasoning={ "effort": "low" },
-    )
-else:
-    response = await asyncio.to_thread(
-        self.client.responses.create,
-        model=self.model,
-        instructions=system_prompt,
-        input=formatted_messages,
-        temperature=0.7,
-    )
-```
 
-**Issues**:
-- Fragile string prefix checking (`startswith("gpt-5")`)
-- Adding new model families requires updating if-else logic
-- Different parameter sets (temperature vs verbosity/reasoning) split across branches
+- The live database currently has `active_personality.personality DEFAULT 'normal'`
+- Fresh bootstrap SQL in `database.py` creates the table with `DEFAULT 'default'`
+- Different environments can therefore start with different sentinel values
 
-**Solution**:
-Create a model parameter registry to cleanly map models to their API parameters, eliminating the branching logic.
+**Impact**:
 
----
+- Existing deployments and fresh databases do not start from exactly the same state
+- Documentation and mental models drift because both `normal` and `default` are in use
 
-### 12. API Format Conversion - Responses API Image Compatibility
+**Suggested fix**:
 
-**Priority**: MEDIUM
-**Location**: `prompt_builder.py:139-158`
-**Type**: API Integration
+- Standardize on one value and migrate the other, or
+- Remove reliance on a sentinel name entirely and fall back whenever the active personality has no matching row
+
+### 2. Responses/Image Formatting Still Needs Explicit Smoke Coverage
+
+**Location**: `prompt_builder.py`, `handlers.py`  
+**Type**: API integration confidence
 
 **Problem**:
-- Image format conversion from Chat Completions format (`"type": "image_url"`) to Responses API format (`"type": "input_image"`) exists in `prompt_builder.py`
-- The conversion logic looks correct but hasn't been thoroughly tested against the latest API spec
-- Could cause silent failures with vision requests if the API changes
 
-**Solution**:
-- Test image processing with the current OpenAI Responses API
-- Add a simple smoke test for image message formatting
+- Vision requests depend on converting internal message parts into provider-specific payloads
+- The current formatting logic looks coherent, but there is still no automated smoke coverage for image requests
 
----
+**Impact**:
 
-## LOW Priority Issues 🔵
+- A future SDK or API-shape change could break image handling quietly
 
-### 14. No Rate Limiting
+**Suggested fix**:
 
-**Priority**: LOW
-**Location**: All handlers
-**Type**: Cost Protection
+- Add a small integration smoke test or local validation script for image request formatting
 
-**Problem**:
-- No per-user rate limits implemented
-- A granted user could theoretically spam the bot
+## Low Priority
 
-**Practical Assessment**:
-Low risk in practice - the bot requires authorization (admin + explicitly granted users only). The attack surface is limited to trusted users. Telegram itself also has rate limits on bot messages.
+### 3. No Per-User Rate Limiting
 
-**Solution** (if needed):
-Simple in-memory sliding window counter in handlers.
-
----
-
-### 15. No Input Size Validation
-
-**Priority**: LOW
-**Location**: `handlers.py`
-**Type**: Defensive Programming
+**Location**: `handlers.py`  
+**Type**: Cost protection
 
 **Problem**:
-- No explicit message length validation before token counting
-- No image size check before downloading
 
-**Practical Assessment**:
-Telegram enforces its own limits: text messages max ~4096 chars, images max ~20MB. The token manager and OpenAI API will reject oversized inputs. This is defense-in-depth, not a critical gap.
+- Authorized users can send requests without any application-level throttle
 
-**Solution** (if needed):
-Add simple length check for messages and file_size check for images.
+**Assessment**:
 
----
+- Low risk because access is restricted to the admin plus explicitly granted users
 
-### 23. Inconsistent Error Handling
+**Suggested fix**:
 
-**Priority**: LOW
-**Location**: `handlers.py` (multiple locations)
-**Type**: Code Quality
+- Add a simple in-memory sliding window or token bucket per user
+
+### 4. No Explicit Input Size Guardrails
+
+**Location**: `handlers.py`  
+**Type**: Defensive programming
 
 **Problem**:
-Some exceptions are logged silently (e.g., failed group message storage), while others show user-facing error messages.
 
-**Practical Assessment**:
-The inconsistency is partially intentional - silently failing to store a background group message is reasonable (the user didn't ask for anything). User-facing operations correctly show errors. Could be more consistent but not causing real issues.
+- The bot relies on Telegram, token trimming, and provider APIs to reject oversized payloads
+- There is no explicit text length or image file-size guardrail before processing
 
----
+**Assessment**:
 
-## Strategic Enhancements 🧠
+- Mostly defense-in-depth, not an immediate production bug
 
-### 16. Context Trimming Strategy
+**Suggested fix**:
 
-**Priority**: Strategic
-**Location**: `token_manager.py`, `database.py`
-**Type**: Intelligence Enhancement
+- Add cheap preflight checks for message length and photo size
 
-Messages are trimmed purely by age (oldest first). No importance scoring, semantic relevance, or summarization. The bot loses information as conversations grow, but this is standard behavior for most chatbots.
+### 5. Inconsistent Error Exposure
 
-**Potential improvements**:
-1. Conversation summarization (compress old context instead of dropping)
-2. Semantic search for relevant past messages (would require pgvector)
+**Location**: `handlers.py`  
+**Type**: Code quality
 
----
+**Problem**:
 
-### 17. Long-Term Memory
+- Some failures are intentionally silent or log-only
+- Others surface user-facing errors
+- The split is reasonable in places, but the policy is implicit rather than documented
 
-**Priority**: Strategic
-**Location**: Entire codebase
-**Type**: Missing Feature
+**Suggested fix**:
 
-No persistence of user preferences, facts, or conversation history beyond the context window. This is the highest-impact enhancement for user experience.
+- Document which failures should stay silent vs user-visible, then align handlers to that rule
 
-**Potential approach**:
-1. Extract facts from messages using GPT
-2. Store in structured format per user
-3. Inject relevant facts into system prompt
+## Completed Since The Previous Review
 
----
+### Model Registry Cleanup
 
-### 27. Semantic Search
+The older `startswith("gpt-5")` branching issue in `openai_client.py` is no longer active. The code now uses `MODEL_REGISTRY` and `ModelConfig`, which is the correct direction.
 
-**Priority**: Strategic
-**Type**: Missing Feature
+## Strategic Enhancements
 
-Implement pgvector for semantic message retrieval - find relevant messages by meaning, not just recency. Would require adding an `embedding` column to the messages table.
+### 6. Conversation Summarization
 
----
+Messages are still trimmed mainly by recency. Summarizing older context before dropping it would preserve more useful history.
 
-### 28. Conversation Summarization
+### 7. Long-Term Memory
 
-**Priority**: Strategic
-**Type**: Missing Feature
+The bot does not yet extract and persist user preferences or facts outside the immediate context window.
 
-When context exceeds limit, summarize old messages instead of dropping them. Would preserve important information beyond token limits.
+### 8. Semantic Retrieval
 
----
-
-### 29. User Profile Building
-
-**Priority**: Strategic
-**Type**: Missing Feature
-
-Extract and persist user facts automatically (preferences, characteristics, goals). Would enable personalized, context-aware responses.
-
----
-
-## Recommended Action Plan
-
-### Phase 1: Quick Wins
-1. Fix model branching logic (Issue #1)
-2. ✅ ~~Centralize prompt construction (Issue #2)~~ - **COMPLETED 2026-02-13**
-3. ✅ ~~Query result caching (Issue #19)~~ - **COMPLETED (separate branch)**
-4. Verify Responses API image compatibility (Issue #12)
-
-### Phase 2: Intelligence Upgrade
-1. Implement long-term memory (Issue #17)
-2. Add conversation summarization (Issue #28)
-3. Build user profile storage (Issue #29)
-4. Explore semantic search with pgvector (Issue #27)
-
----
-
-**Last Updated**: 2026-02-28
-**Status**: Active issues - focused on practical improvements
+There is no semantic search over historical messages. If this becomes important, `pgvector` would be the natural next step.

@@ -1,384 +1,302 @@
 # Telegram GPT Bot
 
-An AI-powered Telegram bot using OpenAI's GPT models with persistent conversation history and intelligent context management.
+A Telegram bot with persistent chat history, token-aware context trimming, image support, and a PostgreSQL/Neon backend.
+
+The bot is triggered by the keyword `chatgpt` or by directly mentioning the bot. It supports multiple model providers and persists the active model in the database so model switches survive restarts.
 
 ## Features
 
-- **Keyword Activation**: Bot responds only when "chatgpt" is mentioned
-- **Persistent Conversation History**: PostgreSQL-backed storage with connection pooling for reliable concurrent access
-- **Token-Aware Context Management**: Intelligent trimming to stay within model limits
-- **Docker-Ready**: Production deployment with Docker and docker-compose
-- **Private Authorization**: Single-user access control
-- **Error Resilient**: Comprehensive error handling for all edge cases
+- Keyword or `@bot` activation
+- Persistent conversation history in PostgreSQL / Neon
+- Token-aware context trimming with `tiktoken`
+- Group chat context storage for better follow-up answers
+- Image handling through multimodal model requests
+- Allowlist-based access control
+- Global model switching with `/model`
+- Global group personality switching with `/personality`
+- Docker and local CLI testing support
 
-## Architecture
+## Supported Models
 
-- **Python 3.12+** with modern async/await patterns
-- **PostgreSQL** (Neon) with connection pooling for concurrent access
-- **tiktoken** for accurate token counting
-- **python-telegram-bot 21.7** for Telegram API
-- **OpenAI API** for GPT completions
+The current model list is defined in `openai_client.py` via `MODEL_REGISTRY`.
+
+Supported today:
+
+- OpenAI: `gpt-4o-mini`, `gpt-4.1-mini`, `gpt-5.4-mini`, `gpt-5`
+- xAI: `grok-4.20-0309-reasoning`, `grok-4.20-0309-non-reasoning`, `grok-4-1-fast-reasoning`
+- Gemini: `gemini-3.1-flash-lite-preview`, `gemini-3-flash-preview`
+
+OpenAI and xAI models use the Responses API path. Gemini models use the Chat Completions path through the OpenAI-compatible Gemini endpoint.
+
+## Requirements
+
+- Python 3.12+
+- Telegram bot token
+- Telegram bot username
+- PostgreSQL / Neon database
+- At least one provider API key matching your `DEFAULT_MODEL`
 
 ## Quick Start
 
-### Prerequisites
-
-- Python 3.12 or higher
-- Telegram account
-- OpenAI API key
-
 ### Local Development
 
-1. **Clone or download this repository**
+1. Install dependencies:
 
-2. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **Configure environment variables**
-   ```bash
-   cp .env.example .env
-   ```
-
-4. **Edit `.env` with your credentials**
-   - `TELEGRAM_BOT_TOKEN`: Get from [@BotFather](https://t.me/BotFather)
-   - `OPENAI_API_KEY`: Get from [OpenAI Platform](https://platform.openai.com/api-keys)
-   - `AUTHORIZED_USER_ID`: Get from [@userinfobot](https://t.me/userinfobot)
-
-5. **Run the bot**
-   ```bash
-   python bot.py
-   ```
-
-### Docker Deployment
-
-1. **Configure environment**
-   ```bash
-   cp .env.example .env
-   # Edit .env with your credentials
-   ```
-
-2. **Build and push arm64 image (local build machine)**
-   ```bash
-   docker login
-   docker buildx build --platform linux/arm64 -t felixlmao/telegram-gpt:latest --push .
-   ```
-
-3. **Run from the published image** (stop/remove old container first if it exists)
-   ```bash
-   # Stop and remove existing container (safe to run if none exists)
-   docker stop telegram-gpt-bot || true
-   docker rm telegram-gpt-bot || true
-
-   docker pull felixlmao/telegram-gpt:latest
-   docker run -d \
-     --name telegram-gpt-bot \
-     --restart unless-stopped \
-     --env-file .env \
-     -v "$(pwd)/data:/app/data" \
-     felixlmao/telegram-gpt:latest
-   ```
-
-4. **View logs**
-   ```bash
-   docker logs -f telegram-gpt-bot
-   ```
-
-5. **Redeploy with a newer image**
-   ```bash
-   docker stop telegram-gpt-bot || true
-   docker rm telegram-gpt-bot || true
-   docker pull felixlmao/telegram-gpt:latest
-   docker run -d \
-     --name telegram-gpt-bot \
-     --restart unless-stopped \
-     --env-file .env \
-     -v "$(pwd)/data:/app/data" \
-     felixlmao/telegram-gpt:latest
-   ```
-
-## Getting Credentials
-
-### Telegram Bot Token
-
-1. Open Telegram and search for [@BotFather](https://t.me/BotFather)
-2. Send `/newbot` command
-3. Follow the prompts to create your bot
-4. Copy the token provided
-
-### Your Telegram User ID
-
-1. Open Telegram and search for [@userinfobot](https://t.me/userinfobot)
-2. Send `/start` command
-3. Copy your user ID (numeric value)
-
-### OpenAI API Key
-
-1. Visit [OpenAI Platform](https://platform.openai.com/api-keys)
-2. Sign in or create an account
-3. Create a new API key
-4. Copy the key immediately (you won't see it again)
-
-## Usage
-
-### Basic Conversation
-
-Send a message containing "chatgpt" followed by your question:
-
-```
-chatgpt what is the weather like?
-chatgpt tell me a joke
-ChatGPT explain quantum computing
+```bash
+pip install -r requirements.txt
 ```
 
-The keyword is case-insensitive and will be removed from your prompt.
+2. Copy the environment template:
 
-### Commands
+```bash
+cp .env.example .env
+```
 
-- `/clear` - Clear conversation history for current chat
-- `/stats` - Show chat statistics (message count, tokens used, etc.)
-- `/grant <user_id>` - Admin only, grant bot access to a user
-- `/revoke <user_id>` - Admin only, revoke bot access from a user
-- `/allowlist` - Admin only, show all authorized users
-- `/version` - Show current bot version
-- `/personality <name>` - Admin only, view or change active personality
-- `/list_personality` - Admin only, list all available personalities
+3. Fill in `.env`:
 
-### Authorization
+- `TELEGRAM_BOT_TOKEN`
+- `BOT_USERNAME`
+- `AUTHORIZED_USER_ID`
+- `DATABASE_URL`
+- `DEFAULT_MODEL`
+- The API key required for that model's provider:
+  - `OPENAI_API_KEY`
+  - `XAI_API_KEY`
+  - `GEMINI_API_KEY`
 
-Two-tier authorization system:
-- The primary user specified in `AUTHORIZED_USER_ID` has full admin access
-- Additional users can be granted access via `/grant` command
-- Other users will receive "Sorry, you have no access to me."
+4. Run the bot:
 
-### Private Chats vs Groups
+```bash
+python3 bot.py
+```
 
-The bot works identically in both private chats and group chats:
-- In groups, only messages containing "chatgpt" or @mentioning the bot trigger a response
-- All group messages are stored for context (even without keyword)
-- Authorization is per-user, not per-chat
-- Each chat maintains its own conversation history
+Or use the helper script:
+
+```bash
+./start.sh
+```
+
+`start.sh` creates or reuses `venv/`, installs dependencies, and starts the bot.
+
+### Docker
+
+Build and run with Compose:
+
+```bash
+docker compose up -d --build
+```
+
+View logs:
+
+```bash
+docker compose logs -f
+```
+
+Stop:
+
+```bash
+docker compose down
+```
+
+The current `docker-compose.yml` still mounts `./data:/app/data`, but the bot's persistent state lives in PostgreSQL, not local files.
+
+## How Activation Works
+
+### Private Chats
+
+- The bot responds when the message contains `chatgpt` or `@BOT_USERNAME`
+- Authorization is checked per user
+- Messages without activation are ignored
+
+### Group Chats
+
+- The bot responds when a message contains `chatgpt` or `@BOT_USERNAME`
+- Text messages without activation are still stored for context
+- Authorization is still checked per user, not per chat
+- Stored group messages are formatted internally as `[Name]: message`
+
+### Images
+
+- Photo messages only trigger when the caption contains `chatgpt` or `@BOT_USERNAME`
+- The image itself is sent to the model at request time
+- The database stores a lightweight text marker such as `[image] <caption>` instead of the raw image payload
+
+## Commands
+
+User-accessible commands:
+
+- `/clear` - Clear conversation history for the current chat
+- `/stats` - Show message count and token usage for the current chat
+- `/version` - Show the current bot version
+
+Main-admin-only commands:
+
+- `/grant <user_id>` - Grant access to another user
+- `/revoke <user_id>` - Revoke access from a granted user
+- `/allowlist` - Show the current allowlist
+- `/model [name]` - Show or change the globally active model
+- `/personality [name]` - Show or change the active group personality
+- `/list_personality` - List personalities stored in the database
+- `/help` - Show the command reference
+
+## Authorization Model
+
+The bot uses a two-tier allowlist:
+
+- `AUTHORIZED_USER_ID` is the main admin
+- Additional users can be granted access with `/grant`
+
+The main admin can use all commands. Granted users can talk to the bot but cannot change global settings.
+
+## Configuration
+
+Environment variables are loaded from `.env`.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TELEGRAM_BOT_TOKEN` | Required | Bot token from BotFather |
+| `BOT_USERNAME` | Required | Bot username, with or without `@` |
+| `OPENAI_API_KEY` | Empty | Required for OpenAI models |
+| `XAI_API_KEY` | Empty | Required for Grok models |
+| `GEMINI_API_KEY` | Empty | Required for Gemini models |
+| `DEFAULT_MODEL` | `gpt-4.1-mini` | Initial model used to seed `active_model` on first run |
+| `OPENAI_TIMEOUT` | `60` | API timeout in seconds |
+| `MAX_CONTEXT_TOKENS` | `16000` | Total history budget before reserve tokens |
+| `RESERVE_TOKENS_TEXT` | `1000` | Tokens reserved for text responses |
+| `RESERVE_TOKENS_IMAGE` | `3000` | Tokens reserved for vision responses |
+| `MAX_GROUP_CONTEXT_MESSAGES` | `100` | Group message retention target used by cleanup |
+| `AUTHORIZED_USER_ID` | Required | Main admin Telegram user ID |
+| `DATABASE_URL` | Required | PostgreSQL / Neon connection string |
+| `LOG_LEVEL` | `INFO` | Python logging level |
+
+Notes:
+
+- `DEFAULT_MODEL` only matters when `active_model` has not been seeded yet.
+- After first startup, the active model is read from the database and can be changed with `/model`.
+- `config.py` validates that the correct provider key is present for the configured `DEFAULT_MODEL`.
 
 ## CLI Chat Simulator
 
-The project includes an interactive CLI tool for testing conversations without using Telegram.
+Use the CLI to test the same prompt-building and context logic without Telegram.
 
-### Usage
+Test mode, writes to the database:
 
-**Test mode (default, writes to database):**
 ```bash
 python3 scripts/chat_cli.py --chat-id test
 ```
 
-**Simulate real group chat (read-only, doesn't write to database):**
+Read-only simulation against an existing chat:
+
 ```bash
 python3 scripts/chat_cli.py --chat-id -5086459563 --group
 ```
 
-**Test mode with group formatting:**
+Test mode with group formatting:
+
 ```bash
 python3 scripts/chat_cli.py --chat-id test --group
 ```
 
-### CLI Commands
+CLI commands:
 
-- `/clear` - Clear conversation history (only works when `chat_id="test"`)
-- `/stats` - Show chat statistics (message count, tokens used, etc.)
-- `/exit` or `/quit` - Exit the CLI
+- `/clear`
+- `/stats`
+- `/model [name]`
+- `/personality [name]`
+- `/list_personality`
+- `/exit`
+- `/quit`
 
-### Modes
+## Architecture
 
-**TEST MODE** (`chat_id="test"`):
-- All prompts and responses are saved to the Neon database
-- You can use `/clear` to clear the conversation history
-- Useful for testing and development
+Core modules:
 
-**READ-ONLY MODE** (any other `chat_id`):
-- Fetches existing conversation history from the database
-- Your prompts/responses are NOT saved (simulation only)
-- `/clear` command is disabled
-- Useful for testing how the bot would respond in a real chat without modifying the actual conversation history
+- `bot.py` - Entry point, dependency wiring, Telegram application setup
+- `config.py` - Env loading and validation
+- `database.py` - PostgreSQL connection pooling, schema init, persistence, cached lookups
+- `handlers.py` - Telegram handlers, authorization checks, command implementations
+- `openai_client.py` - Provider/model routing and API calls
+- `prompt_builder.py` - System prompt assembly and outbound message formatting
+- `token_manager.py` - Token counting and context trimming
+- `cache.py` - Small in-memory TTL cache used by the database layer
+- `scripts/chat_cli.py` - Local chat simulator
 
-## Configuration
+High-level flow:
 
-All configuration is done via environment variables in `.env`:
+1. Receive Telegram text or photo update.
+2. Detect activation via `chatgpt` or `@BOT_USERNAME`.
+3. Authorize the user.
+4. Store the incoming message or image marker in PostgreSQL.
+5. Retrieve recent history by token budget.
+6. Trim history to fit the configured reserve.
+7. Build the system prompt and provider-specific message payload.
+8. Call the active model provider.
+9. Store the assistant response.
+10. Reply back to Telegram.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `TELEGRAM_BOT_TOKEN` | Required | Your bot token from BotFather |
-| `BOT_USERNAME` | Required | Your bot's Telegram username |
-| `OPENAI_API_KEY` | Required | Your OpenAI API key (or xAI key for Grok) |
-| `OPENAI_MODEL` | `gpt-4o-mini` | Model to use |
-| `OPENAI_BASE_URL` | _(empty)_ | Optional base URL for xAI or other OpenAI-compatible APIs |
-| `OPENAI_TIMEOUT` | `60` | API request timeout in seconds |
-| `MAX_CONTEXT_TOKENS` | `16000` | Maximum tokens in conversation context |
-| `RESERVE_TOKENS_TEXT` | `1000` | Tokens reserved for text response generation |
-| `RESERVE_TOKENS_IMAGE` | `3000` | Tokens reserved for vision response generation |
-| `MAX_GROUP_CONTEXT_MESSAGES` | `100` | Max messages stored per group chat |
-| `AUTHORIZED_USER_ID` | Required | Telegram user ID for admin access |
-| `DATABASE_URL` | Required | PostgreSQL connection string (e.g., Neon DB) |
-| `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
+## Database
 
-### Model Options
+Tables are created automatically on startup if they do not exist.
 
-The bot uses the OpenAI Responses API and supports any model compatible with it:
-- `gpt-4o-mini` (default, recommended for cost/performance)
-- `gpt-4o` (most capable)
-- `gpt-5-mini` (reasoning model, uses verbosity/effort instead of temperature)
-- xAI Grok models via `OPENAI_BASE_URL=https://api.x.ai/v1`
+Primary tables:
 
-## Database Setup
+- `messages`
+- `granted_users`
+- `personality`
+- `active_personality`
+- `active_model`
 
-### PostgreSQL / Neon DB
+See `database.md` for the verified live schema summary.
 
-This bot uses PostgreSQL (or Neon DB for cloud hosting) for conversation storage.
+## Validation
 
-#### Getting Started with Neon
+Minimum checks before merging changes:
 
-1. **Sign up at [neon.tech](https://neon.tech)** (free tier available)
-2. **Create a new project** and note your connection string
-3. **Format your DATABASE_URL**:
-   ```
-   postgresql://username:password@host:port/database?sslmode=require&channel_binding=require
-   ```
-4. **Update `.env`** with the connection string
-5. **Start the bot** - tables are created automatically on first run
-
-## Project Structure
-
-```
-telegram-gpt/
-├── bot.py              # Main entry point
-├── config.py           # Configuration management
-├── database.py         # PostgreSQL message storage (Neon)
-├── token_manager.py    # Token counting and trimming
-├── openai_client.py    # OpenAI Responses API wrapper
-├── handlers.py         # Telegram message handlers
-├── prompt_builder.py   # System prompt construction and message formatting
-├── scripts/
-│   └── chat_cli.py     # CLI chat simulator for testing
-├── requirements.txt    # Python dependencies
-├── .env.example        # Environment template
-├── Dockerfile          # Docker image definition
-├── docker-compose.yml  # Docker orchestration
-└── .dockerignore       # Docker build exclusions
+```bash
+python3 -m py_compile *.py
+python3 scripts/chat_cli.py --chat-id test
 ```
 
-## How It Works
+If Telegram credentials are available, also verify:
 
-1. **Message Reception**: Bot receives all messages but only processes those containing "chatgpt"
-2. **Authorization**: Checks if sender's user ID matches `AUTHORIZED_USER_ID`
-3. **Context Retrieval**: Fetches conversation history from PostgreSQL database
-4. **Token Management**: Uses tiktoken to count tokens and trim history to fit model's context window
-5. **API Call**: Sends trimmed conversation to OpenAI API
-6. **Storage**: Saves both user message and assistant response to database
-7. **Response**: Sends assistant's response back to Telegram
-
-## Error Handling
-
-The bot gracefully handles:
-- Invalid API keys
-- Network timeouts
-- Rate limits
-- Token limit exceeded
-- Concurrent database access (via connection pooling)
-- Invalid messages
-- Unauthorized access
-
-All errors are logged and user-friendly messages are returned.
+- `/clear`
+- `/stats`
+- `/model`
 
 ## Troubleshooting
 
-### Bot doesn't respond
+### Bot does not respond
 
-- Check that your message contains "chatgpt" keyword
-- Verify your Telegram user ID matches `AUTHORIZED_USER_ID`
-- Check bot logs for errors: `docker-compose logs -f`
+- Confirm the message contains `chatgpt`, or mention the bot directly
+- Confirm the sender is authorized
+- Check logs with `docker compose logs -f` or local console output
 
-### "OpenAI API key is invalid"
+### Authentication error
 
-- Verify `OPENAI_API_KEY` in `.env` is correct
-- Ensure no extra spaces or quotes around the key
+- Check the API key for the currently active provider
+- Make sure the stored active model matches the key you configured
+- If needed, switch models with `/model`
 
-### "Rate limit exceeded"
+### Database error
 
-- Wait a few moments before trying again
-- Consider upgrading your OpenAI plan
+- Verify `DATABASE_URL`
+- Confirm the database is reachable
+- Check logs for PostgreSQL / Neon connection failures
 
-### Database errors
+### Model changed unexpectedly after restart
 
-- Verify `DATABASE_URL` is set correctly in `.env`
-- Check that Neon DB instance is accessible
-- Ensure Neon connection limits haven't been exceeded
-- Check logs for specific PostgreSQL error messages
+- The bot reads `active_model` from the database on startup
+- `DEFAULT_MODEL` is only the seed value for a fresh database
 
-### Docker issues
+## Security Notes
 
-- Ensure `.env` file exists: `ls -la .env`
-- Check container logs: `docker-compose logs -f`
-- Rebuild image: `docker-compose up --build -d`
-
-## Development
-
-### Running Tests
-
-Manual testing checklist is provided in the plan. For automated testing, consider adding pytest.
-
-### Logging
-
-Set `LOG_LEVEL=DEBUG` in `.env` for detailed logs.
-
-View logs:
-- Local: Check console output
-- Docker: `docker-compose logs -f`
-
-### Database Inspection
-
-```bash
-# Connect to PostgreSQL database using psql or your preferred PostgreSQL client
-# Use the DATABASE_URL from your .env file
-
-# View all messages
-SELECT * FROM messages;
-
-# Count messages per chat
-SELECT chat_id, COUNT(*) FROM messages GROUP BY chat_id;
-
-# Total tokens used
-SELECT SUM(token_count) FROM messages;
-```
-
-## Security Considerations
-
-- Keep `.env` file secure (never commit to git)
-- Use environment-specific API keys
-- Consider network restrictions for production
-- Regular database backups recommended
-- Monitor OpenAI API usage to avoid unexpected costs
-
-## Performance
-
-- PostgreSQL connection pooling enables concurrent access
-- Token counting is done locally (no API calls)
-- Database queries use indexes for speed
-- Context trimming prevents excessive API costs
-- Keepalive settings prevent idle connection timeouts
-
-## License
-
-This is a personal project. Use at your own discretion.
-
-## Support
-
-For issues and questions:
-1. Check the Troubleshooting section above
-2. Review logs for specific error messages
-3. Verify all environment variables are set correctly
+- Do not commit `.env`
+- Treat `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, and all provider keys as secrets
+- Limit who receives `/grant` access
 
 ## Acknowledgments
 
-- Built with [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot)
-- Powered by [OpenAI API](https://openai.com/)
-- Token counting via [tiktoken](https://github.com/openai/tiktoken)
-# telegram-gpt
+- [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot)
+- [OpenAI Python SDK](https://github.com/openai/openai-python)
+- [tiktoken](https://github.com/openai/tiktoken)
+- [Neon](https://neon.tech/)
