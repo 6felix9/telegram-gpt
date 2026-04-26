@@ -399,11 +399,11 @@ async def process_image_request(
 
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Clear conversation history for current chat."""
+    """Clear conversation history for current chat (main authorized user only)."""
 
     user_id = update.message.from_user.id
-    if not is_authorized(user_id):
-        await update.message.reply_text("Sorry, you have no access to me.")
+    if not is_main_authorized_user(user_id):
+        await update.message.reply_text("Sorry, only the main authorized user can clear history.")
         return
 
     chat_id = str(update.message.chat_id)
@@ -423,11 +423,11 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show statistics for current chat."""
+    """Show statistics for current chat (main authorized user only)."""
 
     user_id = update.message.from_user.id
-    if not is_authorized(user_id):
-        await update.message.reply_text("Sorry, you have no access to me.")
+    if not is_main_authorized_user(user_id):
+        await update.message.reply_text("Sorry, only the main authorized user can view stats.")
         return
 
     chat_id = str(update.message.chat_id)
@@ -586,11 +586,11 @@ async def revoke_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def version_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show the version of the bot."""
+    """Show the version of the bot (main authorized user only)."""
 
     user_id = update.message.from_user.id
-    if not is_authorized(user_id):
-        await update.message.reply_text("Sorry, you have no access to me.")
+    if not is_main_authorized_user(user_id):
+        await update.message.reply_text("Sorry, only the main authorized user can view the bot version.")
         return
 
     await update.message.reply_text(f"Bot version: {config.BOT_VERSION}")

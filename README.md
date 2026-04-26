@@ -125,18 +125,17 @@ The current `docker-compose.yml` still mounts `./data:/app/data`, but the bot's 
 
 User-accessible commands:
 
-- `/clear` - Clear conversation history for the current chat
-- `/stats` - Show message count and token usage for the current chat
-- `/version` - Show the current bot version
-
 Main-admin-only commands:
 
+- `/clear` - Clear conversation history for the current chat
+- `/stats` - Show message count and token usage for the current chat
 - `/grant <user_id>` - Grant access to another user
 - `/revoke <user_id>` - Revoke access from a granted user
 - `/allowlist` - Show the current allowlist
 - `/model [name]` - Show or change the globally active model
 - `/personality [name]` - Show or change the active group personality
 - `/list_personality` - List personalities stored in the database
+- `/version` - Show the current bot version
 - `/help` - Show the command reference
 
 ## Authorization Model
