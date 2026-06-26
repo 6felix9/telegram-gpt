@@ -9,6 +9,14 @@ from prompt_builder import PromptBuilder
 logger = logging.getLogger(__name__)
 
 
+class CompletionError(Exception):
+    """API completion failed; user_message is safe to show in Telegram."""
+
+    def __init__(self, user_message: str):
+        self.user_message = user_message
+        super().__init__(user_message)
+
+
 @dataclass
 class ModelConfig:
     api: str          # "responses" | "chat_completions"
@@ -132,7 +140,10 @@ Key behaviors:
             reply_context: Optional tuple of (sender_name, content) being replied to
 
         Returns:
-            Assistant's response text or error message
+            Assistant's response text on success.
+
+        Raises:
+            CompletionError: On API or transport failure, with a user-safe message.
         """
         try:
             logger.debug(f"Requesting completion with {len(messages)} messages (group={is_group})")
@@ -187,57 +198,57 @@ Key behaviors:
 
         except openai.AuthenticationError as e:
             logger.error(f"Authentication failed: {e}")
-            return (
+            raise CompletionError(
                 "❌ API key is invalid or missing for this model's provider. "
                 "Please check your configuration."
-            )
+            ) from e
 
         except openai.RateLimitError as e:
             logger.warning(f"Rate limit exceeded: {e}")
-            return (
+            raise CompletionError(
                 "⏱️ Rate limit exceeded. "
                 "Please wait a moment and try again."
-            )
+            ) from e
 
         except openai.APITimeoutError as e:
             logger.warning(f"Request timed out: {e}")
-            return (
+            raise CompletionError(
                 f"⏱️ Request timed out after {self.timeout}s. "
                 "Please try again."
-            )
+            ) from e
 
         except openai.BadRequestError as e:
             error_msg = str(e)
             logger.error(f"Bad request: {error_msg}")
 
             if "context_length_exceeded" in error_msg:
-                return (
+                raise CompletionError(
                     "❌ Message history is too long for the model. "
                     "Use /clear to clear history and try again."
-                )
+                ) from e
 
-            return f"❌ Invalid request: {error_msg}"
+            raise CompletionError(f"❌ Invalid request: {error_msg}") from e
 
         except openai.APIConnectionError as e:
             logger.error(f"Connection error: {e}")
-            return (
+            raise CompletionError(
                 "❌ Network error connecting to the API. "
                 "Please check your internet connection."
-            )
+            ) from e
 
         except openai.InternalServerError as e:
             logger.error(f"Server error: {e}")
-            return (
+            raise CompletionError(
                 "❌ API service is experiencing issues. "
                 "Please try again in a moment."
-            )
+            ) from e
 
         except Exception as e:
             logger.error(f"Unexpected error: {e}", exc_info=True)
-            return (
+            raise CompletionError(
                 "❌ An unexpected error occurred. "
                 "Please try again or contact support."
-            )
+            ) from e
 
     def test_connection(self) -> bool:
         """

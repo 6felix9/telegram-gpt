@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import config
 from database import Database
 from token_manager import TokenManager
-from openai_client import OpenAIClient, MODEL_REGISTRY
+from openai_client import OpenAIClient, MODEL_REGISTRY, CompletionError
 from prompt_builder import PromptBuilder
 
 # Configure logging
@@ -162,6 +162,8 @@ class ChatCLI:
             logger.info(f"Response generated for chat {self.chat_id}")
             return response
 
+        except CompletionError as e:
+            return e.user_message
         except Exception as e:
             logger.error(f"Error processing request: {e}", exc_info=True)
             return f"❌ Error: {str(e)}"
