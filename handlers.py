@@ -5,7 +5,7 @@ import random
 from telegram import Update
 from telegram.ext import ContextTypes
 from telegram.helpers import escape_markdown
-from openai_client import MODEL_REGISTRY
+from openai_client import MODEL_REGISTRY, CompletionError
 
 logger = logging.getLogger(__name__)
 
@@ -241,6 +241,8 @@ async def process_request(
             f"Response sent for chat {chat_id}: {assistant_tokens} tokens"
         )
 
+    except CompletionError as e:
+        await message.reply_text(e.user_message)
     except Exception as e:
         logger.error(f"Error processing request: {e}", exc_info=True)
         await message.reply_text(
@@ -390,6 +392,8 @@ async def process_image_request(
             f"Image processed for chat {chat_id}: caption={caption_tokens} tokens"
         )
 
+    except CompletionError as e:
+        await message.reply_text(e.user_message)
     except Exception as e:
         logger.error(f"Error processing image: {e}", exc_info=True)
         await message.reply_text(
