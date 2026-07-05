@@ -64,7 +64,13 @@ cp .env.example .env
   - `XAI_API_KEY`
   - `GEMINI_API_KEY`
 
-4. Run the bot:
+4. Apply database migrations:
+
+```bash
+alembic upgrade head
+```
+
+5. Run the bot:
 
 ```bash
 python3 bot.py
@@ -76,7 +82,7 @@ Or use the helper script:
 ./start.sh
 ```
 
-`start.sh` creates or reuses `venv/`, installs dependencies, and starts the bot.
+`start.sh` creates or reuses `venv/`, installs dependencies, applies migrations, and starts the bot.
 
 ### Docker
 
@@ -235,7 +241,7 @@ High-level flow:
 
 ## Database
 
-Tables are created automatically on startup if they do not exist.
+Schema is managed with Alembic migrations in `alembic/versions/`. Run `alembic upgrade head` to apply pending migrations — this is done automatically by `start.sh` locally and by the Railway `preDeployCommand` in each environment.
 
 Primary tables:
 
@@ -253,6 +259,8 @@ Minimum checks before merging changes:
 
 ```bash
 python3 -m py_compile *.py
+python3 -m py_compile alembic/env.py alembic/versions/*.py
+alembic upgrade head
 python3 scripts/chat_cli.py --chat-id test
 ```
 
