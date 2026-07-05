@@ -5,6 +5,7 @@
 *.db
 *.db-shm
 *.db-wal
+*.db.backup
 data/*.db
 
 # Python
