@@ -26,8 +26,9 @@ COPY . .
 
 # Note: No local data directory needed for PostgreSQL
 
-# Make sure scripts are in PATH
+# Make sure scripts and installed packages are found regardless of the running user
 ENV PATH=/root/.local/bin:$PATH
+ENV PYTHONPATH=/root/.local/lib/python3.12/site-packages
 ENV TZ=UTC
 
 # Make start.sh executable
@@ -35,7 +36,8 @@ RUN chmod +x start.sh
 
 # Run as non-root user (security best practice)
 RUN useradd -m -u 1000 botuser && \
-    chown -R botuser:botuser /app
+    chown -R botuser:botuser /app /root/.local && \
+    chmod o+rx /root
 USER botuser
 
 # Health check - verify PostgreSQL database connection
