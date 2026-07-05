@@ -2,11 +2,11 @@ name: Deploy to Railway
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
 concurrency:
-  group: railway-deploy
+  group: railway-deploy-${{ github.ref_name }}
   cancel-in-progress: true
 
 permissions:
@@ -29,13 +29,14 @@ jobs:
         run: pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Compile Python files
-        run: python3 -m py_compile *.py
+        run: python3 -m py_compile *.py alembic/env.py alembic/versions/*.py
 
       - name: Run tests
         run: pytest tests/ -v
 
-  deploy:
+  deploy-production:
     needs: test
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
 
     steps:
@@ -45,7 +46,24 @@ jobs:
       - name: Install Railway CLI
         run: npm i -g @railway/cli
 
-      - name: Deploy to Railway
+      - name: Deploy to Railway (production)
         env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-        run: railway up --service "${{ secrets.RAILWAY_SERVICE_NAME }}" --detach
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_PRODUCTION }}
+        run: railway up --service 02b24c92-333d-45aa-bf3d-68e59cc7d42b --environment production --detach
+
+  deploy-dev:
+    needs: test
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm i -g @railway/cli
+
+      - name: Deploy to Railway (dev)
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_DEV }}
+        run: railway up --service 02b24c92-333d-45aa-bf3d-68e59cc7d42b --environment dev --detach
