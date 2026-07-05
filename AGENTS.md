@@ -143,6 +143,13 @@ CI runs the same compile and pytest steps on pull requests and pushes to `main` 
 - `.github/workflows/deploy-railway.yml` auto-deploys on push: `dev` → the Railway `dev` environment, `main` → `production`. No manual `railway up` needed for normal development.
 - Each environment's Railway `preDeployCommand` runs `alembic upgrade head` before the bot starts.
 
+## Branching & Release Workflow
+
+- Two long-lived branches: `dev` (staging) and `main` (production). Do new work on `dev`, or on a short-lived branch merged into `dev`.
+- Pushing to `dev` auto-deploys to the Railway `dev` environment (its own bot + Neon database branch) — use this to verify changes against a real bot before they reach users.
+- Promote `dev` → `main` via a pull request (`gh pr create --base main --head dev`), not a local merge and direct push. This keeps a reviewable diff and CI status visible before anything reaches production.
+- `main` is a protected branch: direct pushes are blocked and the `CI` workflow must pass before a PR can merge.
+
 ## Database Schema
 
 Expected tables:
