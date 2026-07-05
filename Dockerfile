@@ -37,7 +37,7 @@ RUN chmod +x start.sh
 # Run as non-root user (security best practice)
 RUN useradd -m -u 1000 botuser && \
     chown -R botuser:botuser /app /root/.local && \
-    chmod o+rx /root
+    chmod o+x /root
 USER botuser
 
 # Health check - verify PostgreSQL database connection

@@ -260,7 +260,7 @@ Minimum checks before merging changes:
 ```bash
 python3 -m py_compile *.py
 python3 -m py_compile alembic/env.py alembic/versions/*.py
-alembic upgrade head
+alembic upgrade head  # requires a reachable local/dev DATABASE_URL
 python3 scripts/chat_cli.py --chat-id test
 ```
 
