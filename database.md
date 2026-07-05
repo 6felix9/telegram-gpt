@@ -89,7 +89,7 @@ Purpose:
 Note:
 
 - The live database default is currently `'normal'`.
-- `database.py` currently bootstraps fresh tables with `'default'`, so code and live schema are not perfectly aligned here.
+- The default seeded by `alembic/versions/0001_initial_schema.py` is `'default'`; the live production value was already changed to `'normal'` via `/personality` before Alembic was adopted, which is expected — the seed only applies to brand-new databases.
 
 ## `active_model`
 
@@ -110,6 +110,6 @@ Purpose:
 
 ## Operational Notes
 
-- The bot creates missing tables automatically on startup.
+- Schema changes are applied via Alembic migrations (`alembic upgrade head`), not created automatically on boot.
 - The live database already includes `active_model`, even though older docs omitted it.
 - `DEFAULT_MODEL` in `.env` is only a seed value for a fresh database; the runtime model is loaded from `active_model`.
