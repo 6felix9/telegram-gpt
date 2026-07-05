@@ -21,7 +21,7 @@ if [ -f "requirements.txt" ]; then
 fi
 
 echo "Applying database migrations..."
-alembic upgrade head
+alembic upgrade head || exit 1
 
 echo "Starting bot with fresh instance..."
 python bot.py
