@@ -35,8 +35,6 @@ class Database:
             logger.error(f"Failed to create connection pool: {e}", exc_info=True)
             raise
 
-        self._init_db()
-
     def close(self):
         """Close all connections in the pool."""
         try:
@@ -45,83 +43,6 @@ class Database:
                 logger.info("Database connection pool closed")
         except Exception as e:
             logger.error(f"Failed to close connection pool: {e}", exc_info=True)
-
-    def _init_db(self):
-        """Create tables and indexes if they don't exist."""
-        try:
-            with self._get_connection() as conn:
-                with conn.cursor() as cur:
-                    # Create messages table
-                    cur.execute("""
-                        CREATE TABLE IF NOT EXISTS messages (
-                            id SERIAL PRIMARY KEY,
-                            chat_id TEXT NOT NULL,
-                            role TEXT NOT NULL,
-                            content TEXT NOT NULL,
-                            timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                            user_id BIGINT,
-                            message_id BIGINT,
-                            token_count INTEGER DEFAULT 0,
-                            sender_name TEXT,
-                            sender_username TEXT,
-                            is_group_chat BOOLEAN DEFAULT FALSE
-                        )
-                    """)
-
-                    # Create index for efficient querying
-                    cur.execute("""
-                        CREATE INDEX IF NOT EXISTS idx_chat_timestamp
-                        ON messages(chat_id, timestamp DESC)
-                    """)
-
-                    # Create granted_users table
-                    cur.execute("""
-                        CREATE TABLE IF NOT EXISTS granted_users (
-                            user_id TEXT PRIMARY KEY,
-                            granted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                            first_name TEXT,
-                            username TEXT
-                        )
-                    """)
-
-                    # Create personality table
-                    cur.execute("""
-                        CREATE TABLE IF NOT EXISTS personality (
-                            personality TEXT PRIMARY KEY,
-                            prompt TEXT NOT NULL
-                        )
-                    """)
-
-                    # Create active_personality table (single row table)
-                    cur.execute("""
-                        CREATE TABLE IF NOT EXISTS active_personality (
-                            id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-                            personality TEXT NOT NULL DEFAULT 'default',
-                            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-                        )
-                    """)
-
-                    # Initialize active_personality if empty
-                    cur.execute("""
-                        INSERT INTO active_personality (id, personality, updated_at)
-                        SELECT 1, 'default', CURRENT_TIMESTAMP
-                        WHERE NOT EXISTS (SELECT 1 FROM active_personality WHERE id = 1)
-                    """)
-
-                    # Create active_model table (single row table)
-                    cur.execute("""
-                        CREATE TABLE IF NOT EXISTS active_model (
-                            id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-                            model TEXT NOT NULL DEFAULT 'gpt-4o-mini',
-                            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-                        )
-                    """)
-
-                logger.info("Database tables initialized successfully")
-
-        except Exception as e:
-            logger.error(f"Failed to initialize database: {e}", exc_info=True)
-            raise
 
     @contextmanager
     def _get_connection(self):

@@ -20,5 +20,8 @@ if [ -f "requirements.txt" ]; then
     pip install -r requirements.txt --upgrade
 fi
 
+echo "Applying database migrations..."
+alembic upgrade head
+
 echo "Starting bot with fresh instance..."
 python bot.py
