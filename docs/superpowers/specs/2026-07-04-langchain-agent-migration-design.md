@@ -189,6 +189,62 @@ migrations, as today. The SQLite path uses `SqliteSaver` for the checkpointer
 and a directly-created schema (no Alembic) for the admin tables, avoiding the
 ongoing cost of maintaining two migration-managed schemas.
 
+**`.env.example` layout:** required vars keep instructive placeholder values
+(e.g. `your_bot_token_here`) since they have no code default. Every optional
+var is left blank and instead gets an inline comment naming its code
+default — so a glance at the file shows exactly what's mandatory (has a
+placeholder) versus optional (blank + "defaults to X"). Concretely:
+
+```dotenv
+# Telegram Bot Configuration
+# Get your bot token from @BotFather on Telegram
+TELEGRAM_BOT_TOKEN=your_bot_token_here
+
+# Optional. Without this, @mention activation is disabled — only the
+# "chatgpt" keyword triggers the bot. Defaults to empty.
+BOT_USERNAME=
+
+# AI Provider API Keys
+# OPENAI_API_KEY is the only required key.
+OPENAI_API_KEY=your_openai_api_key_here
+
+# Optional. Only needed if you use grok-* / gemini-* models. Defaults to empty.
+XAI_API_KEY=
+GEMINI_API_KEY=
+
+# Optional. Seed value for a fresh database only — active_model in the DB
+# wins after first run. Defaults to gpt-5.4-mini.
+DEFAULT_MODEL=
+
+# Optional. API timeout in seconds. Defaults to 60.
+OPENAI_TIMEOUT=
+
+# Optional. Maximum tokens to use for conversation context. Defaults to 16000.
+MAX_CONTEXT_TOKENS=
+
+# Optional. Tokens reserved for text responses. Defaults to 2000.
+RESERVE_TOKENS_TEXT=
+
+# Optional. Tokens reserved for image/vision responses. Defaults to 3000.
+RESERVE_TOKENS_IMAGE=
+
+# Optional. Maximum messages to store per group chat. Defaults to 500.
+MAX_GROUP_CONTEXT_MESSAGES=
+
+# Authorization
+# Get your Telegram user ID from @userinfobot
+AUTHORIZED_USER_ID=your_telegram_user_id_here
+
+# Optional. Neon/Postgres connection string. If left empty, falls back to a
+# local SQLite file (dev/testing convenience only — Railway dev/prod always
+# set this and stay on Postgres/Neon).
+DATABASE_URL=
+
+# Optional. Logging verbosity (DEBUG, INFO, WARNING, ERROR, CRITICAL).
+# Defaults to INFO.
+LOG_LEVEL=
+```
+
 ## Testing
 
 Same shape as today's `tests/` suite (pure logic, no database/`.env`/live
