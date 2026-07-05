@@ -48,3 +48,6 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code skill tooling state
+skills-lock.json
