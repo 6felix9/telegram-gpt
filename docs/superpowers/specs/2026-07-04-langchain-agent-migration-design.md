@@ -37,8 +37,10 @@ Gemini.
   allowlist authorization, group `[Name]:` formatting, personality selection,
   and admin commands are preserved as-is from the user's perspective — with
   one explicit, one-time exception: see **Cutover** below.
-- No change of persistence backend — stays on the existing Neon Postgres
-  database.
+- No change of production persistence backend — Railway dev/prod stay on the
+  existing Neon Postgres database. (A local-only SQLite fallback is added for
+  when `DATABASE_URL` is unset — see Configuration — but this is a dev
+  convenience, not a second production backend.)
 - No DB-read introspection tools (e.g. "what model/personality am I using").
   The agent doesn't need to re-fetch state that's already implicit in its
   system prompt (personality/model) or already present in checkpoint state
@@ -76,7 +78,9 @@ history for audit/stats purposes as before (see Components).
   only `/model` changes require a recompile, since the underlying chat model
   object itself changes.
 - **Conversation state** moves to a `PostgresSaver` checkpointer against the
-  same `DATABASE_URL`, keyed by `thread_id = chat_id`. This becomes the
+  same `DATABASE_URL`, keyed by `thread_id = chat_id` — or a `SqliteSaver`
+  against a local SQLite file when `DATABASE_URL` is unset (see
+  Configuration). This becomes the
   LLM-facing working memory, replacing `token_manager.trim_to_fit()`'s manual
   accounting with a pre-model trimming middleware — still token-aware, reusing
   the existing tiktoken-based counting and `MAX_CONTEXT_TOKENS` /
@@ -105,7 +109,9 @@ history for audit/stats purposes as before (see Components).
   checkpointer does. `cleanup_old_group_messages()`'s existing 10%
   probabilistic cleanup keeps running unchanged against this table — it
   bounds audit-log size and is unrelated to the new checkpointer/context
-  system.
+  system. When `DATABASE_URL` is unset, these tables are created directly
+  against a local SQLite file (not via Alembic — see Configuration) rather
+  than gaining a second, migration-managed schema.
 - **`prompt_builder.py`** — slimmed to two responsibilities: (a) building the
   system prompt string from personality/private-vs-group state (logic
   unchanged), (b) converting a stored/incoming message into LangChain message
@@ -144,6 +150,45 @@ replaced with LangChain's equivalent exception types, but map to the same
 user-safe `CompletionError` messages `handlers.py` already expects. No
 observable change to error messages shown in Telegram.
 
+## Configuration
+
+`.env.example` and `config.py`'s `validate()` are restructured around a much
+smaller required set, reflecting that most settings have sane defaults and
+only a few genuinely block startup.
+
+**Required:**
+
+- `TELEGRAM_BOT_TOKEN`
+- `AUTHORIZED_USER_ID`
+- `OPENAI_API_KEY` — now unconditionally required. Validation no longer
+  cross-checks `OPENAI_API_KEY`/`XAI_API_KEY`/`GEMINI_API_KEY` against
+  `DEFAULT_MODEL`'s provider; if `DEFAULT_MODEL` (or a later `/model` switch)
+  selects a provider whose key is missing, that surfaces as a clear runtime
+  error on first use (e.g. "xAI API key is not set"), not a startup failure.
+
+**Optional, with defaults when unset:**
+
+| Var | Default | Notes |
+|---|---|---|
+| `BOT_USERNAME` | `""` | Disables `@mention` activation; `chatgpt` keyword activation still works. `handlers.extract_keyword()` already no-ops mention detection when falsy. |
+| `XAI_API_KEY` / `GEMINI_API_KEY` | `""` | Only needed if that provider's models are actually used. |
+| `DEFAULT_MODEL` | `gpt-5.4-mini` | Seed value for a fresh database only; `active_model` in the DB wins after first run, unchanged from today. |
+| `OPENAI_TIMEOUT` | `60` | Unchanged. |
+| `MAX_CONTEXT_TOKENS` | `16000` | Unchanged. |
+| `RESERVE_TOKENS_TEXT` | `2000` | Was `1000`. |
+| `RESERVE_TOKENS_IMAGE` | `3000` | Unchanged. |
+| `MAX_GROUP_CONTEXT_MESSAGES` | `500` | Was `100` in `config.py` / `300` in `.env.example` (previously inconsistent). |
+| `DATABASE_URL` | local SQLite fallback | See below. |
+| `LOG_LEVEL` | `INFO` | Unchanged. |
+
+**`DATABASE_URL` / SQLite fallback:** when unset, the bot uses a local SQLite
+file instead of Neon Postgres — for local development and `chat_cli.py`
+convenience only, not as a second production backend. Railway dev/prod
+environments always set `DATABASE_URL` and stay on Postgres/Neon with Alembic
+migrations, as today. The SQLite path uses `SqliteSaver` for the checkpointer
+and a directly-created schema (no Alembic) for the admin tables, avoiding the
+ongoing cost of maintaining two migration-managed schemas.
+
 ## Testing
 
 Same shape as today's `tests/` suite (pure logic, no database/`.env`/live
@@ -163,8 +208,18 @@ API calls):
   invocation logic (which tool gets called, argument parsing) is verified
   without a live API or database, consistent with the existing test
   philosophy.
+- Config validation — new tests asserting only `TELEGRAM_BOT_TOKEN`,
+  `AUTHORIZED_USER_ID`, and `OPENAI_API_KEY` are required; that a missing
+  `XAI_API_KEY`/`GEMINI_API_KEY` no longer fails startup even when
+  `DEFAULT_MODEL` selects that provider; and that defaults apply correctly
+  when optional vars are unset (per the Configuration table above).
 
 ## Open Questions / Assumptions Carried Forward
 
 - Exact tool implementations (which web search provider, which code-exec
   sandbox) are left to the implementation plan, not fixed here.
+- Exact local SQLite file path/location (e.g. under a `data/` directory,
+  `.gitignore`'d) is left to the implementation plan, not fixed here.
+- The image-storage-window feature (persisting images for reuse in context,
+  bounded to a recent-messages window) is deferred to a separate future spec
+  and is out of scope for this document.
