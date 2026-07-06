@@ -37,10 +37,9 @@ Gemini.
   allowlist authorization, group `[Name]:` formatting, personality selection,
   and admin commands are preserved as-is from the user's perspective — with
   one explicit, one-time exception: see **Cutover** below.
-- No change of production persistence backend — Railway dev/prod stay on the
-  existing Neon Postgres database. (A local-only SQLite fallback is added for
-  when `DATABASE_URL` is unset — see Configuration — but this is a dev
-  convenience, not a second production backend.)
+- No change of persistence backend — Railway dev/prod, and local development,
+  stay on the existing Neon Postgres database. `DATABASE_URL` is a required
+  variable (see Configuration); no SQLite fallback is introduced.
 - No DB-read introspection tools (e.g. "what model/personality am I using").
   The agent doesn't need to re-fetch state that's already implicit in its
   system prompt (personality/model) or already present in checkpoint state
@@ -78,9 +77,8 @@ history for audit/stats purposes as before (see Components).
   only `/model` changes require a recompile, since the underlying chat model
   object itself changes.
 - **Conversation state** moves to a `PostgresSaver` checkpointer against the
-  same `DATABASE_URL`, keyed by `thread_id = chat_id` — or a `SqliteSaver`
-  against a local SQLite file when `DATABASE_URL` is unset (see
-  Configuration). This becomes the
+  same `DATABASE_URL` (a required variable — see Configuration), keyed by
+  `thread_id = chat_id`. This becomes the
   LLM-facing working memory, replacing `token_manager.trim_to_fit()`'s manual
   accounting with a pre-model trimming middleware — still token-aware, reusing
   the existing tiktoken-based counting and `MAX_CONTEXT_TOKENS` /
@@ -109,9 +107,7 @@ history for audit/stats purposes as before (see Components).
   checkpointer does. `cleanup_old_group_messages()`'s existing 10%
   probabilistic cleanup keeps running unchanged against this table — it
   bounds audit-log size and is unrelated to the new checkpointer/context
-  system. When `DATABASE_URL` is unset, these tables are created directly
-  against a local SQLite file (not via Alembic — see Configuration) rather
-  than gaining a second, migration-managed schema.
+  system.
 - **`prompt_builder.py`** — slimmed to two responsibilities: (a) building the
   system prompt string from personality/private-vs-group state (logic
   unchanged), (b) converting a stored/incoming message into LangChain message
@@ -165,6 +161,9 @@ only a few genuinely block startup.
   `DEFAULT_MODEL`'s provider; if `DEFAULT_MODEL` (or a later `/model` switch)
   selects a provider whose key is missing, that surfaces as a clear runtime
   error on first use (e.g. "xAI API key is not set"), not a startup failure.
+- `DATABASE_URL` — no SQLite fallback; required for every environment,
+  including local development. Backs `messages`/admin tables as today, and
+  now also the LangGraph checkpointer.
 
 **Optional, with defaults when unset:**
 
@@ -178,16 +177,8 @@ only a few genuinely block startup.
 | `RESERVE_TOKENS_TEXT` | `2000` | Was `1000`. |
 | `RESERVE_TOKENS_IMAGE` | `3000` | Unchanged. |
 | `MAX_GROUP_CONTEXT_MESSAGES` | `500` | Was `100` in `config.py` / `300` in `.env.example` (previously inconsistent). |
-| `DATABASE_URL` | local SQLite fallback | See below. |
+| `TAVILY_API_KEY` | `""` | Powers the agent's web search tool. When unset/blank, web search falls back to a DuckDuckGo-backed tool automatically — no startup error either way. |
 | `LOG_LEVEL` | `INFO` | Unchanged. |
-
-**`DATABASE_URL` / SQLite fallback:** when unset, the bot uses a local SQLite
-file instead of Neon Postgres — for local development and `chat_cli.py`
-convenience only, not as a second production backend. Railway dev/prod
-environments always set `DATABASE_URL` and stay on Postgres/Neon with Alembic
-migrations, as today. The SQLite path uses `SqliteSaver` for the checkpointer
-and a directly-created schema (no Alembic) for the admin tables, avoiding the
-ongoing cost of maintaining two migration-managed schemas.
 
 **`.env.example` layout:** required vars keep instructive placeholder values
 (e.g. `your_bot_token_here`) since they have no code default. Every optional
@@ -231,14 +222,18 @@ RESERVE_TOKENS_IMAGE=
 # Optional. Maximum messages to store per group chat. Defaults to 500.
 MAX_GROUP_CONTEXT_MESSAGES=
 
+# Optional. Powers the agent's web search tool via Tavily. If left blank,
+# web search automatically falls back to a DuckDuckGo-backed tool instead.
+# Get a key at https://tavily.com
+TAVILY_API_KEY=
+
 # Authorization
 # Get your Telegram user ID from @userinfobot
 AUTHORIZED_USER_ID=your_telegram_user_id_here
 
-# Optional. Neon/Postgres connection string. If left empty, falls back to a
-# local SQLite file (dev/testing convenience only — Railway dev/prod always
-# set this and stay on Postgres/Neon).
-DATABASE_URL=
+# Neon/Postgres connection string. Required — backs the messages/admin
+# tables and the LangGraph checkpointer (the agent's conversation memory).
+DATABASE_URL=postgresql://user:password@host:port/database?sslmode=require&channel_binding=require
 
 # Optional. Logging verbosity (DEBUG, INFO, WARNING, ERROR, CRITICAL).
 # Defaults to INFO.
@@ -265,17 +260,16 @@ API calls):
   without a live API or database, consistent with the existing test
   philosophy.
 - Config validation — new tests asserting only `TELEGRAM_BOT_TOKEN`,
-  `AUTHORIZED_USER_ID`, and `OPENAI_API_KEY` are required; that a missing
-  `XAI_API_KEY`/`GEMINI_API_KEY` no longer fails startup even when
-  `DEFAULT_MODEL` selects that provider; and that defaults apply correctly
-  when optional vars are unset (per the Configuration table above).
+  `AUTHORIZED_USER_ID`, `OPENAI_API_KEY`, and `DATABASE_URL` are required;
+  that a missing `XAI_API_KEY`/`GEMINI_API_KEY` no longer fails startup even
+  when `DEFAULT_MODEL` selects that provider; and that defaults apply
+  correctly when optional vars are unset (per the Configuration table
+  above).
 
 ## Open Questions / Assumptions Carried Forward
 
 - Exact tool implementations (which web search provider, which code-exec
   sandbox) are left to the implementation plan, not fixed here.
-- Exact local SQLite file path/location (e.g. under a `data/` directory,
-  `.gitignore`'d) is left to the implementation plan, not fixed here.
 - The image-storage-window feature (persisting images for reuse in context,
   bounded to a recent-messages window) is deferred to a separate future spec
   and is out of scope for this document.
