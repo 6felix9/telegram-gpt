@@ -33,13 +33,13 @@ The bot is no longer "OpenAI only". `openai_client.py` routes requests by model 
 
 ### Provider / API Routing
 
-`MODEL_REGISTRY` in `openai_client.py` is the source of truth.
+`agent.py` is the source of truth: `MODEL_PROVIDERS` maps each supported model name to its provider, and `resolve_model()` turns that into the provider-prefixed id (`"<provider>:<model>"`) passed to LangChain's `init_chat_model()`, which builds the actual chat model per provider. `openai_client.py` and `token_manager.py` have been retired — the agent (`agent.py`, built on `create_agent`) and its middleware now own model routing and context trimming.
 
-- OpenAI models use the Responses API
-- xAI models use the Responses API with xAI's base URL
-- Gemini models use the Chat Completions API with Google's OpenAI-compatible base URL
+- OpenAI models use `init_chat_model` with the `openai` provider
+- xAI models use the `xai` provider
+- Gemini models use the `google_genai` provider
 
-Do not document or add models outside `MODEL_REGISTRY` unless the code is updated as well.
+Do not document or add models outside `MODEL_PROVIDERS` unless the code is updated as well.
 
 ### Message Flow
 
@@ -141,7 +141,7 @@ CI runs the same compile and pytest steps on pull requests and pushes to `main` 
 
 - Two Railway environments: `production` (tracks the `main` branch) and `dev` (tracks the `dev` branch), each with its own Telegram bot and Neon database branch.
 - `.github/workflows/deploy-railway.yml` auto-deploys on push: `dev` → the Railway `dev` environment, `main` → `production`. No manual `railway up` needed for normal development.
-- Each environment's Railway `preDeployCommand` runs `alembic upgrade head` before the bot starts.
+- Each environment's Railway `preDeployCommand` runs `alembic upgrade head && python scripts/setup_checkpointer.py` before the bot starts — the first applies the Alembic-managed app schema, the second (idempotent) creates/upgrades the LangGraph checkpointer tables, which are versioned by `langgraph-checkpoint-postgres` and intentionally not part of Alembic.
 
 ## Branching & Release Workflow
 

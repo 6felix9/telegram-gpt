@@ -70,6 +70,12 @@ cp .env.example .env
 alembic upgrade head
 ```
 
+4a. Set up the LangGraph checkpointer tables (once per environment, idempotent):
+
+```bash
+python scripts/setup_checkpointer.py
+```
+
 5. Run the bot:
 
 ```bash
@@ -161,9 +167,10 @@ Environment variables are loaded from `.env`.
 |----------|---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Required | Bot token from BotFather |
 | `BOT_USERNAME` | Required | Bot username, with or without `@` |
-| `OPENAI_API_KEY` | Empty | Required for OpenAI models |
+| `OPENAI_API_KEY` | Required | OpenAI API key (also required as a fallback provider) |
 | `XAI_API_KEY` | Empty | Required for Grok models |
 | `GEMINI_API_KEY` | Empty | Required for Gemini models |
+| `TAVILY_API_KEY` | Empty | Optional; powers the agent's web search tool. If blank, the search tool falls back to DuckDuckGo at runtime |
 | `DEFAULT_MODEL` | `gpt-4.1-mini` | Initial model used to seed `active_model` on first run |
 | `OPENAI_TIMEOUT` | `60` | API timeout in seconds |
 | `MAX_CONTEXT_TOKENS` | `16000` | Total history budget before reserve tokens |
@@ -176,6 +183,8 @@ Environment variables are loaded from `.env`.
 
 Notes:
 
+- The required set validated at startup is `TELEGRAM_BOT_TOKEN`, `AUTHORIZED_USER_ID`, `OPENAI_API_KEY`, and `DATABASE_URL`. `OPENAI_API_KEY` is required even if `DEFAULT_MODEL` targets another provider.
+- `XAI_API_KEY`, `GEMINI_API_KEY`, and `TAVILY_API_KEY` are optional and only needed to use the corresponding provider/tool.
 - `DEFAULT_MODEL` only matters when `active_model` has not been seeded yet.
 - After first startup, the active model is read from the database and can be changed with `/model`.
 - `config.py` validates that the correct provider key is present for the configured `DEFAULT_MODEL`.
@@ -252,6 +261,25 @@ Primary tables:
 - `active_model`
 
 See `database.md` for the verified live schema summary.
+
+## Checkpointer Setup
+
+The LangGraph agent's conversation checkpoints live in their own tables (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`), owned and versioned by `langgraph-checkpoint-postgres` — they are intentionally **not** part of the Alembic-managed schema above.
+
+Run this once per environment, after `alembic upgrade head` and before the bot starts (it is idempotent — safe to re-run):
+
+```bash
+python scripts/setup_checkpointer.py
+```
+
+- Locally, `start.sh` already runs this step for you after migrations.
+- On Railway, add it to each environment's `preDeployCommand` so it runs before every deploy:
+
+  ```
+  alembic upgrade head && python scripts/setup_checkpointer.py
+  ```
+
+See `database.md` for details on what these tables are for.
 
 ## Validation
 
