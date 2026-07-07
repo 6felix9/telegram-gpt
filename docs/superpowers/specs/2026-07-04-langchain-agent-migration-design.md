@@ -10,15 +10,14 @@ model can only answer from its own knowledge and the trimmed conversation
 history built by `token_manager.py` and `prompt_builder.py`.
 
 Goal: move to an agentic, model-agnostic framework (LangChain / LangGraph) so
-the bot can call tools (web search, code execution) in a loop before
-answering, while still supporting `/model` switching across OpenAI, xAI, and
-Gemini.
+the bot can call tools (web search) in a loop before answering, while still
+supporting `/model` switching across OpenAI, xAI, and Gemini.
 
 ## Motivation
 
 - **Tool use is the primary driver.** The bot should be able to search the
-  web and execute code as tools, reasoning over the results before
-  responding — not just single-shot completions.
+  web as a tool, reasoning over the results before responding — not just
+  single-shot completions.
 - **Model-agnosticism is a hard requirement, not a nice-to-have.** `/model`
   switching across three providers must keep working; this is the core
   reason LangChain (rather than a single-provider SDK) was chosen.
@@ -43,8 +42,7 @@ Gemini.
 - No DB-read introspection tools (e.g. "what model/personality am I using").
   The agent doesn't need to re-fetch state that's already implicit in its
   system prompt (personality/model) or already present in checkpoint state
-  (conversation history). Tool set stays limited to web search/fetch and
-  sandboxed code execution.
+  (conversation history). Tool set stays limited to web search/fetch.
 
 ## Cutover
 
@@ -88,7 +86,29 @@ history for audit/stats purposes as before (see Components).
   `tools.py`, available globally (any triggered message may result in the
   agent invoking them):
   - Web search + page fetch
-  - Sandboxed code execution
+
+### Checkpointer Schema
+
+The `PostgresSaver` checkpointer's tables (`checkpoints`, `checkpoint_blobs`,
+`checkpoint_writes`, `checkpoint_migrations`) are **not** brought under
+Alembic. `langgraph-checkpoint-postgres` ships its own internal, versioned
+migration system (tracked via its `checkpoint_migrations` table) that evolves
+independently across `langgraph` package upgrades; hand-copying its DDL into
+an Alembic migration would drift the first time that package updates its
+schema. Instead:
+
+- Alembic continues to own the application schema exactly as today
+  (`messages`, `granted_users`, `personality`, `active_personality`,
+  `active_model`).
+- `PostgresSaver.setup()` is called once as its own explicit step in each
+  Railway environment's `preDeployCommand`, immediately after
+  `alembic upgrade head` — not implicitly on bot boot or on first checkpoint
+  write. This preserves the project's existing "nothing is created implicitly
+  at runtime" convention (see `database.md`) while accepting the checkpointer
+  as a separately-versioned subsystem with its own migration tool.
+- Local development runs `PostgresSaver.setup()` manually (documented in
+  `README.md`/`start.sh`) the same way `alembic upgrade head` is already run
+  today.
 
 ## Components
 
@@ -98,7 +118,7 @@ history for audit/stats purposes as before (see Components).
   with the Postgres checkpointer. Recompiles only on `/model` change.
   Exposes a `get_completion()`-equivalent entry point so `handlers.py` needs
   minimal changes. Owns the `CompletionError` contract (see Error Handling).
-- **`tools.py`** *(new)* — the two tool groups described above.
+- **`tools.py`** *(new)* — the web search/fetch tool described above.
 - **`database.py`** — `granted_users`, `personality`, `active_personality`,
   `active_model` stay as-is; this is admin configuration, not part of the
   linear-model problem. The existing `messages` table is repurposed as an
@@ -127,8 +147,8 @@ history for audit/stats purposes as before (see Components).
 3. **Triggering messages**: `agent.py` invokes the compiled graph with
    `thread_id=chat_id`. The dynamic system-prompt hook resolves the correct
    prompt for this chat, the trimming middleware prunes history to fit the
-   configured token budget, the agent runs its tool-calling loop (web search /
-   code exec as needed), and produces a final answer.
+   configured token budget, the agent runs its tool-calling loop (web search
+   as needed), and produces a final answer.
 4. On success: the response is logged to `messages` (audit) and sent to
    Telegram. On failure: the same `CompletionError`-with-safe-message contract
    as today is raised and shown to the user; nothing is persisted to
@@ -187,56 +207,61 @@ default — so a glance at the file shows exactly what's mandatory (has a
 placeholder) versus optional (blank + "defaults to X"). Concretely:
 
 ```dotenv
+# Required
+# --------
+
 # Telegram Bot Configuration
 # Get your bot token from @BotFather on Telegram
 TELEGRAM_BOT_TOKEN=your_bot_token_here
-
-# Optional. Without this, @mention activation is disabled — only the
-# "chatgpt" keyword triggers the bot. Defaults to empty.
-BOT_USERNAME=
-
-# AI Provider API Keys
-# OPENAI_API_KEY is the only required key.
-OPENAI_API_KEY=your_openai_api_key_here
-
-# Optional. Only needed if you use grok-* / gemini-* models. Defaults to empty.
-XAI_API_KEY=
-GEMINI_API_KEY=
-
-# Optional. Seed value for a fresh database only — active_model in the DB
-# wins after first run. Defaults to gpt-5.4-mini.
-DEFAULT_MODEL=
-
-# Optional. API timeout in seconds. Defaults to 60.
-OPENAI_TIMEOUT=
-
-# Optional. Maximum tokens to use for conversation context. Defaults to 16000.
-MAX_CONTEXT_TOKENS=
-
-# Optional. Tokens reserved for text responses. Defaults to 2000.
-RESERVE_TOKENS_TEXT=
-
-# Optional. Tokens reserved for image/vision responses. Defaults to 3000.
-RESERVE_TOKENS_IMAGE=
-
-# Optional. Maximum messages to store per group chat. Defaults to 500.
-MAX_GROUP_CONTEXT_MESSAGES=
-
-# Optional. Powers the agent's web search tool via Tavily. If left blank,
-# web search automatically falls back to a DuckDuckGo-backed tool instead.
-# Get a key at https://tavily.com
-TAVILY_API_KEY=
 
 # Authorization
 # Get your Telegram user ID from @userinfobot
 AUTHORIZED_USER_ID=your_telegram_user_id_here
 
-# Neon/Postgres connection string. Required — backs the messages/admin
-# tables and the LangGraph checkpointer (the agent's conversation memory).
+# AI Provider API Keys
+# OPENAI_API_KEY is the only required key.
+OPENAI_API_KEY=your_openai_api_key_here
+
+# Neon/Postgres connection string. Backs the messages/admin tables and the
+# LangGraph checkpointer (the agent's conversation memory).
 DATABASE_URL=postgresql://user:password@host:port/database?sslmode=require&channel_binding=require
 
-# Optional. Logging verbosity (DEBUG, INFO, WARNING, ERROR, CRITICAL).
-# Defaults to INFO.
+# Optional
+# --------
+
+# Without this, @mention activation is disabled — only the "chatgpt" keyword
+# triggers the bot. Defaults to empty.
+BOT_USERNAME=
+
+# Only needed if you use grok-* / gemini-* models. Defaults to empty.
+XAI_API_KEY=
+GEMINI_API_KEY=
+
+# Seed value for a fresh database only — active_model in the DB wins after
+# first run. Defaults to gpt-5.4-mini.
+DEFAULT_MODEL=
+
+# API timeout in seconds. Defaults to 60.
+OPENAI_TIMEOUT=
+
+# Maximum tokens to use for conversation context. Defaults to 16000.
+MAX_CONTEXT_TOKENS=
+
+# Tokens reserved for text responses. Defaults to 2000.
+RESERVE_TOKENS_TEXT=
+
+# Tokens reserved for image/vision responses. Defaults to 3000.
+RESERVE_TOKENS_IMAGE=
+
+# Maximum messages to store per group chat. Defaults to 500.
+MAX_GROUP_CONTEXT_MESSAGES=
+
+# Powers the agent's web search tool via Tavily. If left blank, web search
+# automatically falls back to a DuckDuckGo-backed tool instead.
+# Get a key at https://tavily.com. Defaults to empty.
+TAVILY_API_KEY=
+
+# Logging verbosity (DEBUG, INFO, WARNING, ERROR, CRITICAL). Defaults to INFO.
 LOG_LEVEL=
 ```
 
@@ -268,8 +293,6 @@ API calls):
 
 ## Open Questions / Assumptions Carried Forward
 
-- Exact tool implementations (which web search provider, which code-exec
-  sandbox) are left to the implementation plan, not fixed here.
 - The image-storage-window feature (persisting images for reuse in context,
   bounded to a recent-messages window) is deferred to a separate future spec
   and is out of scope for this document.
