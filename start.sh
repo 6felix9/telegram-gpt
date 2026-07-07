@@ -23,5 +23,8 @@ fi
 echo "Applying database migrations..."
 alembic upgrade head || exit 1
 
+echo "Setting up LangGraph checkpointer tables..."
+python scripts/setup_checkpointer.py || exit 1
+
 echo "Starting bot with fresh instance..."
 python bot.py

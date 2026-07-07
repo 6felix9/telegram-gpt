@@ -6,6 +6,8 @@ from datetime import datetime
 from typing import Callable
 from zoneinfo import ZoneInfo
 
+from langchain_core.messages import HumanMessage
+
 logger = logging.getLogger(__name__)
 
 
@@ -107,66 +109,27 @@ class PromptBuilder:
         return "".join(system_parts)
 
     @staticmethod
-    def _apply_group_sender_prefix(role: str, text: str, sender_name: str) -> str:
-        """Prefix group user messages with sender name when missing."""
-        if role != "user":
-            return text
+    def _group_prefix(text: str, sender_name: str) -> str:
         if text.startswith("["):
             return text
         return f"[{sender_name}]: {text}"
 
-    def format_messages(self, messages: list[dict], is_group: bool, api_format: str = "responses") -> list[dict]:
-        """Format messages for the target API and group context semantics.
+    def to_lc_human_message(
+        self,
+        text: str | None = None,
+        is_group: bool = False,
+        sender_name: str = "Unknown",
+        image_data_url: str | None = None,
+    ) -> HumanMessage:
+        """Build a LangChain HumanMessage from an incoming Telegram message."""
+        body = text or ""
+        if is_group and body:
+            body = self._group_prefix(body, sender_name)
 
-        Args:
-            messages: Raw message dicts from the database
-            is_group: Whether this is a group chat (adds sender name prefixes)
-            api_format: Target API format — "responses" (OpenAI/xAI) or "chat_completions" (Gemini)
-        """
-        formatted_messages: list[dict] = []
-
-        for msg in messages:
-            role = msg["role"]
-            content = msg["content"]
-            sender_name = msg.get("sender_name", "Unknown")
-
-            if isinstance(content, str):
-                formatted_content = content
-                if is_group:
-                    formatted_content = self._apply_group_sender_prefix(role, formatted_content, sender_name)
-
-                formatted_messages.append({"role": role, "content": formatted_content})
-                continue
-
-            if isinstance(content, list):
-                updated_content = []
-                for part in content:
-                    part_type = part.get("type")
-                    if part_type in {"text", "input_text"}:
-                        text = part.get("text", "")
-                        if is_group:
-                            text = self._apply_group_sender_prefix(role, text, sender_name)
-                        if api_format == "chat_completions":
-                            updated_content.append({"type": "text", "text": text})
-                        else:
-                            updated_content.append({"type": "input_text", "text": text})
-                    elif part_type in {"image_url", "input_image"}:
-                        if part_type == "image_url":
-                            image_url_obj = part.get("image_url", {})
-                            url = image_url_obj.get("url", "") if isinstance(image_url_obj, dict) else str(image_url_obj)
-                        else:
-                            url = part.get("image_url", "")
-                        if api_format == "chat_completions":
-                            updated_content.append({"type": "image_url", "image_url": {"url": url}})
-                        else:
-                            updated_content.append({"type": "input_image", "image_url": url})
-                    else:
-                        logger.debug("PromptBuilder: skipping unsupported part type '%s'", part_type)
-
-                formatted_messages.append({"role": role, "content": updated_content})
-                continue
-
-            logger.warning("PromptBuilder: unsupported content type %s for role %s", type(content), role)
-
-        return formatted_messages
+        if image_data_url:
+            return HumanMessage(content=[
+                {"type": "text", "text": body or "What's in this image?"},
+                {"type": "image_url", "image_url": {"url": image_data_url}},
+            ])
+        return HumanMessage(content=body)
 
