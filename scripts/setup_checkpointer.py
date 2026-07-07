@@ -5,6 +5,13 @@ starts. The checkpointer tables are versioned independently by
 langgraph-checkpoint-postgres and are intentionally NOT under Alembic.
 """
 import logging
+import os
+import sys
+
+# Allow running as `python scripts/setup_checkpointer.py`: put the repo root
+# (this file's parent's parent) on sys.path so `config` is importable, since
+# running a script by path only adds the script's own dir (scripts/) to it.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import config
 from langgraph.checkpoint.postgres import PostgresSaver
