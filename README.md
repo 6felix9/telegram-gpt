@@ -167,7 +167,7 @@ Environment variables are loaded from `.env`.
 |----------|---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Required | Bot token from BotFather |
 | `BOT_USERNAME` | Required | Bot username, with or without `@` |
-| `OPENAI_API_KEY` | Required | OpenAI API key (also required as a fallback provider) |
+| `OPENAI_API_KEY` | Required | OpenAI API key (always required for config validation) |
 | `XAI_API_KEY` | Empty | Required for Grok models |
 | `GEMINI_API_KEY` | Empty | Required for Gemini models |
 | `TAVILY_API_KEY` | Empty | Optional; powers the agent's web search tool. If blank, the search tool falls back to DuckDuckGo at runtime |
