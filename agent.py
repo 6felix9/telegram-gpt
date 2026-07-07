@@ -2,13 +2,43 @@
 Telegram-facing entry point. Replaces openai_client.py and token_manager.py."""
 from __future__ import annotations
 
+import asyncio
 import logging
+from dataclasses import dataclass
 
 import tiktoken
-from langchain.agents.middleware import wrap_model_call, ModelRequest, ModelResponse
-from langchain_core.messages import BaseMessage, AIMessage, ToolMessage
+from langchain.agents import create_agent
+from langchain.agents.middleware import (
+    wrap_model_call,
+    dynamic_prompt,
+    ModelRequest,
+    ModelResponse,
+)
+from langchain.chat_models import init_chat_model
+from langchain_core.messages import BaseMessage, AIMessage, HumanMessage, ToolMessage
+
+from prompt_builder import PromptBuilder
+from tools import build_tools
 
 logger = logging.getLogger(__name__)
+
+
+SYSTEM_PROMPT = """You are Tze Foong's Assistant, an AI helper in Telegram.
+
+Key behaviors:
+- Be direct and concise - no unnecessary preambles
+- Provide clear, helpful responses
+- Never claim to be OpenAI or reference being a language model
+- Respond naturally as a personal assistant"""
+
+SYSTEM_PROMPT_GROUP = """You are Tze Foong's Assistant, an AI helper in Telegram group chats.
+
+Key behaviors:
+- Be direct and concise - no unnecessary preambles
+- Provide clear, helpful responses
+- Never claim to be OpenAI or reference being a language model
+- Track conversation context from multiple participants
+- Messages are formatted as [Name]: content - reply naturally without mimicking this format"""
 
 # tiktoken encoding is model-independent for our budgeting purposes.
 _ENCODING = tiktoken.get_encoding("cl100k_base")
@@ -20,6 +50,40 @@ class CompletionError(Exception):
     def __init__(self, user_message: str):
         self.user_message = user_message
         super().__init__(user_message)
+
+
+def _to_completion_error(exc: Exception) -> CompletionError:
+    """Map a provider/agent exception to a user-safe CompletionError.
+
+    LangChain surfaces provider SDK exceptions; classify by type name and
+    message so the Telegram-facing messages stay equivalent to the old client.
+    """
+    name = type(exc).__name__
+    text = str(exc).lower()
+
+    if "authentication" in name.lower() or "unauthorized" in text or "api key" in text:
+        return CompletionError(
+            "❌ API key is invalid or missing for this model's provider. "
+            "Please check your configuration."
+        )
+    if "ratelimit" in name.lower() or "rate limit" in text or "429" in text:
+        return CompletionError("⏱️ Rate limit exceeded. Please wait a moment and try again.")
+    if "timeout" in name.lower() or "timed out" in text:
+        return CompletionError("⏱️ Request timed out. Please try again.")
+    if "context_length_exceeded" in text or "context length" in text:
+        return CompletionError(
+            "❌ Message history is too long for the model. "
+            "Use /clear to clear history and try again."
+        )
+    if "connection" in name.lower() or "connection" in text:
+        return CompletionError(
+            "❌ Network error connecting to the API. "
+            "Please check your internet connection."
+        )
+    logger.error("Unhandled agent error: %s", exc, exc_info=True)
+    return CompletionError(
+        "❌ An unexpected error occurred. Please try again or contact support."
+    )
 
 
 MODEL_PROVIDERS: dict[str, str] = {
@@ -142,3 +206,112 @@ def make_trim_middleware(max_context_tokens: int, reserve_text: int, reserve_ima
         return handler(request.override(messages=trimmed))
 
     return trim
+
+
+@dataclass
+class AgentContext:
+    """Per-invocation context read by middleware (not persisted)."""
+    is_group: bool = False
+    reply_context: tuple[str, str] | None = None
+
+
+def _make_dynamic_prompt(prompt_builder):
+    """Build a @dynamic_prompt middleware that resolves the system prompt per call."""
+
+    @dynamic_prompt
+    def system_prompt(request) -> str:
+        ctx = getattr(request.runtime, "context", None) or AgentContext()
+        return prompt_builder.build_system_prompt(
+            is_group=ctx.is_group,
+            reply_context=ctx.reply_context,
+        )
+
+    return system_prompt
+
+
+class Agent:
+    """Compiled LangChain agent with DB-driven model + personality."""
+
+    def __init__(self, config, prompt_builder, checkpointer, model_name: str):
+        self._config = config
+        self._prompt_builder = prompt_builder
+        self._checkpointer = checkpointer
+        self._tools = build_tools(config)  # from tools.py
+        self._middleware = [
+            _make_dynamic_prompt(prompt_builder),
+            make_trim_middleware(
+                config.MAX_CONTEXT_TOKENS,
+                config.RESERVE_TOKENS_TEXT,
+                config.RESERVE_TOKENS_IMAGE,
+            ),
+        ]
+        self.model_name = model_name
+        self._provider = None
+        self._graph = None
+        self.set_model(model_name)
+
+    # --- compilation -----------------------------------------------------
+    def _compile(self, model) -> None:
+        self._graph = create_agent(
+            model=model,
+            tools=self._tools,
+            middleware=self._middleware,
+            checkpointer=self._checkpointer,
+            context_schema=AgentContext,
+        )
+
+    def set_model(self, model_name: str) -> None:
+        self.model_name = model_name
+        provider, prefixed_id = resolve_model(model_name)
+        self._provider = provider
+        key = provider_api_key(provider, self._config)
+        if not key.strip():
+            logger.warning("%s API key not set; model %s will error on use",
+                           PROVIDER_LABEL[provider], model_name)
+            self._graph = None
+            return
+        model = init_chat_model(
+            prefixed_id,
+            api_key=key,
+            timeout=self._config.OPENAI_TIMEOUT,
+            max_retries=2,
+        )
+        self._compile(model)
+        logger.info("Agent compiled for %s (%s)", model_name, provider)
+
+    # --- runtime ---------------------------------------------------------
+    def _config_for(self, chat_id: str) -> dict:
+        return {"configurable": {"thread_id": str(chat_id)}}
+
+    async def run(self, chat_id, human_message, is_group, reply_context=None) -> str:
+        if self._graph is None:
+            raise CompletionError(
+                f"❌ {PROVIDER_LABEL[self._provider]} API key is not set. "
+                "Set it or switch models with /model."
+            )
+        try:
+            result = await asyncio.to_thread(
+                self._graph.invoke,
+                {"messages": [human_message]},
+                config=self._config_for(chat_id),
+                context=AgentContext(is_group=is_group, reply_context=reply_context),
+            )
+            return result["messages"][-1].content
+        except CompletionError:
+            raise
+        except Exception as e:
+            raise _to_completion_error(e) from e
+
+    def append_context_message(self, chat_id, human_message) -> None:
+        """Append a non-triggering group message to the thread (no model call)."""
+        if self._graph is None:
+            return
+        try:
+            self._graph.update_state(
+                self._config_for(chat_id), {"messages": [human_message]}
+            )
+        except Exception as e:
+            logger.error("Failed to append context message: %s", e, exc_info=True)
+
+    def clear_thread(self, chat_id) -> None:
+        self._checkpointer.delete_thread(str(chat_id))
