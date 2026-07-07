@@ -23,14 +23,17 @@ class Config:
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")    # Google Gemini models (gemini-*)
 
     # Default model to use on first startup (persisted in DB after first run)
-    DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gpt-4.1-mini")
+    DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gpt-5.4-mini")
 
     OPENAI_TIMEOUT = int(os.getenv("OPENAI_TIMEOUT", "60"))
     MAX_CONTEXT_TOKENS = int(os.getenv("MAX_CONTEXT_TOKENS", "16000"))
-    
+
     # Token Reserve Configuration
-    RESERVE_TOKENS_TEXT = int(os.getenv("RESERVE_TOKENS_TEXT", "1000"))
+    RESERVE_TOKENS_TEXT = int(os.getenv("RESERVE_TOKENS_TEXT", "2000"))
     RESERVE_TOKENS_IMAGE = int(os.getenv("RESERVE_TOKENS_IMAGE", "3000"))
+
+    # Web search tool (Tavily); blank falls back to DuckDuckGo at runtime
+    TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 
     # Authorization
     AUTHORIZED_USER_ID = os.getenv("AUTHORIZED_USER_ID", "")
@@ -39,72 +42,44 @@ class Config:
     DATABASE_URL = os.getenv("DATABASE_URL", "")
 
     # Group chat settings
-    MAX_GROUP_CONTEXT_MESSAGES = int(os.getenv("MAX_GROUP_CONTEXT_MESSAGES", "100"))
+    MAX_GROUP_CONTEXT_MESSAGES = int(os.getenv("MAX_GROUP_CONTEXT_MESSAGES", "500"))
 
     # Logging
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
     # Bot version
-    BOT_VERSION = "1.1.1"
+    BOT_VERSION = "2.0.0"
 
     @classmethod
     def validate(cls):
-        """Validate all required environment variables are present and correct format."""
+        """Validate the small required set; optional vars fall back to defaults."""
         errors = []
 
-        # Check required variables
-        if not cls.TELEGRAM_BOT_TOKEN:
+        if not cls.TELEGRAM_BOT_TOKEN.strip():
             errors.append("TELEGRAM_BOT_TOKEN is required")
-        elif not cls.TELEGRAM_BOT_TOKEN.strip():
-            errors.append("TELEGRAM_BOT_TOKEN cannot be empty")
 
-        if not cls.BOT_USERNAME:
-            errors.append("BOT_USERNAME is required")
-        elif not cls.BOT_USERNAME.strip():
-            errors.append("BOT_USERNAME cannot be empty")
-
-        # Validate that the API key for the default model's provider is present
-        if cls.DEFAULT_MODEL.startswith("gemini"):
-            if not cls.GEMINI_API_KEY:
-                errors.append(f"GEMINI_API_KEY is required for DEFAULT_MODEL={cls.DEFAULT_MODEL}")
-        elif cls.DEFAULT_MODEL.startswith("grok"):
-            if not cls.XAI_API_KEY:
-                errors.append(f"XAI_API_KEY is required for DEFAULT_MODEL={cls.DEFAULT_MODEL}")
-        else:
-            if not cls.OPENAI_API_KEY:
-                errors.append(f"OPENAI_API_KEY is required for DEFAULT_MODEL={cls.DEFAULT_MODEL}")
+        if not cls.OPENAI_API_KEY.strip():
+            errors.append("OPENAI_API_KEY is required")
 
         if not cls.AUTHORIZED_USER_ID:
             errors.append("AUTHORIZED_USER_ID is required")
         elif not cls.AUTHORIZED_USER_ID.isdigit():
             errors.append("AUTHORIZED_USER_ID must be numeric")
 
-        if not cls.DATABASE_URL:
+        if not cls.DATABASE_URL.strip():
             errors.append("DATABASE_URL is required")
-        elif not cls.DATABASE_URL.strip():
-            errors.append("DATABASE_URL cannot be empty")
 
-        # Validate numeric ranges
-        if cls.OPENAI_TIMEOUT <= 0:
-            errors.append("OPENAI_TIMEOUT must be positive")
+        for name in ("OPENAI_TIMEOUT", "MAX_CONTEXT_TOKENS",
+                     "RESERVE_TOKENS_TEXT", "RESERVE_TOKENS_IMAGE"):
+            if getattr(cls, name) <= 0:
+                errors.append(f"{name} must be positive")
 
-        if cls.MAX_CONTEXT_TOKENS <= 0:
-            errors.append("MAX_CONTEXT_TOKENS must be positive")
-
-        if cls.RESERVE_TOKENS_TEXT <= 0:
-            errors.append("RESERVE_TOKENS_TEXT must be positive")
-
-        if cls.RESERVE_TOKENS_IMAGE <= 0:
-            errors.append("RESERVE_TOKENS_IMAGE must be positive")
-
-        # Optional warning for very large context windows (but don't fail)
         if cls.MAX_CONTEXT_TOKENS > 100000:
             logger.warning(
                 f"MAX_CONTEXT_TOKENS is very large ({cls.MAX_CONTEXT_TOKENS}). "
                 "Make sure this matches your model's actual context window limit."
             )
 
-        # Report all errors
         if errors:
             logger.error("Configuration validation failed:")
             for error in errors:

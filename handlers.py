@@ -2,29 +2,28 @@
 import logging
 import re
 import random
+import base64
 from telegram import Update
 from telegram.ext import ContextTypes
 from telegram.helpers import escape_markdown
-from openai_client import MODEL_REGISTRY, CompletionError
+from agent import MODEL_PROVIDERS, CompletionError, count_tokens
 
 logger = logging.getLogger(__name__)
 
 # Global instances (will be set by bot.py)
 config = None
 db = None
-token_manager = None
-openai_client = None
+agent = None
 prompt_builder = None
 bot_username = None
 
 
-def init_handlers(cfg, database, token_mgr, openai_cl, prompt_bldr, username=None):
+def init_handlers(cfg, database, bot_agent, prompt_bldr, username=None):
     """Initialize handler dependencies."""
-    global config, db, token_manager, openai_client, prompt_builder, bot_username
+    global config, db, agent, prompt_builder, bot_username
     config = cfg
     db = database
-    token_manager = token_mgr
-    openai_client = openai_cl
+    agent = bot_agent
     prompt_builder = prompt_bldr
     bot_username = username
 
@@ -133,26 +132,22 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # In group chats, store ALL messages for context (even without keyword)
     if is_group and not has_keyword:
-        # Store this message for context
+        # Audit-log to `messages` and append to the checkpoint thread for context.
         try:
-            message_tokens = token_manager.count_message_tokens("user", message.text)
             db.add_message(
-                chat_id=chat_id,
-                role="user",
-                content=message.text,
-                user_id=user_id,
-                message_id=message.message_id,
-                token_count=message_tokens,
-                sender_name=sender_name,
-                sender_username=sender_username,
+                chat_id=chat_id, role="user", content=message.text,
+                user_id=user_id, message_id=message.message_id,
+                token_count=count_tokens(message.text),
+                sender_name=sender_name, sender_username=sender_username,
                 is_group_chat=True,
             )
-            logger.debug(f"Stored group message from {sender_name} for context")
-
-            # Periodically cleanup old messages (10% chance)
+            agent.append_context_message(
+                chat_id,
+                prompt_builder.to_lc_human_message(
+                    text=message.text, is_group=True, sender_name=sender_name),
+            )
             if random.random() < 0.1:
                 db.cleanup_old_group_messages(chat_id, config.MAX_GROUP_CONTEXT_MESSAGES)
-
         except Exception as e:
             logger.error(f"Failed to store group message: {e}")
         return  # Don't process, just store for context
@@ -187,67 +182,35 @@ async def process_request(
     is_group: bool,
     reply_context: tuple[str, str] | None = None,
 ):
-    """Process GPT request with context management."""
-
+    """Process a triggering text request through the agent."""
     chat_id = str(message.chat_id)
-    message_id = message.message_id
-
     try:
-        # 1. Count tokens in user's message (use prompt for token counting)
-        user_tokens = token_manager.count_message_tokens("user", prompt)
-
-        # 2. Store user message (store original message with "chatgpt" keyword)
+        # Audit-log the user message (context lives in the checkpoint).
         db.add_message(
-            chat_id=chat_id,
-            role="user",
-            content=message.text,
-            user_id=user_id,
-            message_id=message_id,
-            token_count=user_tokens,
-            sender_name=sender_name,
-            sender_username=sender_username,
+            chat_id=chat_id, role="user", content=message.text,
+            user_id=user_id, message_id=message.message_id,
+            token_count=count_tokens(prompt),
+            sender_name=sender_name, sender_username=sender_username,
             is_group_chat=is_group,
         )
 
-        # 3. Get conversation history within token budget
-        max_tokens = config.MAX_CONTEXT_TOKENS
-        messages = db.get_messages_by_tokens(chat_id, max_tokens)
+        human = prompt_builder.to_lc_human_message(
+            text=prompt, is_group=is_group, sender_name=sender_name)
+        response = await agent.run(chat_id, human, is_group, reply_context=reply_context)
 
-        # 4. Final trim to ensure we fit (accounting for response)
-        messages = token_manager.trim_to_fit(messages, reserve_tokens=config.RESERVE_TOKENS_TEXT)
-
-        logger.info(
-            f"Processing request for chat {chat_id}: "
-            f"{len(messages)} messages, {user_tokens} tokens"
-        )
-
-        # 5. Get completion from OpenAI (with optional reply context)
-        response = await openai_client.get_completion(messages, is_group, reply_context=reply_context)
-
-        # 6. Count and store assistant's response
-        assistant_tokens = token_manager.count_message_tokens("assistant", response)
         db.add_message(
-            chat_id=chat_id,
-            role="assistant",
-            content=response,
-            token_count=assistant_tokens,
-            is_group_chat=is_group,
+            chat_id=chat_id, role="assistant", content=response,
+            token_count=count_tokens(response), is_group_chat=is_group,
         )
-
-        # 7. Send response to user
         await message.reply_text(response)
-
-        logger.info(
-            f"Response sent for chat {chat_id}: {assistant_tokens} tokens"
-        )
+        logger.info(f"Response sent for chat {chat_id}")
 
     except CompletionError as e:
         await message.reply_text(e.user_message)
     except Exception as e:
         logger.error(f"Error processing request: {e}", exc_info=True)
         await message.reply_text(
-            "Sorry, I encountered an error processing your request. "
-            "Please try again."
+            "Sorry, I encountered an error processing your request. Please try again."
         )
 
 
@@ -302,103 +265,43 @@ async def process_image_request(
     is_group: bool,
     reply_context: tuple[str, str] | None = None,
 ):
-    """Process image request with vision model - split storage approach."""
-
+    """Process a triggering image request through the agent."""
     chat_id = str(message.chat_id)
-    message_id = message.message_id
-
     try:
-        # 1. Download image as bytes (in-memory only)
-        import base64
-        photo = message.photo[-1]  # Get highest resolution
+        photo = message.photo[-1]
         photo_file = await photo.get_file()
         photo_bytes = await photo_file.download_as_bytearray()
-
-        # 2. Convert to base64 data URL
-        base64_image = base64.b64encode(photo_bytes).decode('utf-8')
+        base64_image = base64.b64encode(photo_bytes).decode("utf-8")
         image_data_url = f"data:image/jpeg;base64,{base64_image}"
 
-        # 3. Prepare content text
-        content_text = prompt if prompt else ""
-
-        # 4. Store caption as separate text message (preserved in future context)
-        # Store original caption (with "chatgpt" keyword) prefixed with [image]
-        if message.caption:
-            caption_with_marker = f"[image] {message.caption}"
-        else:
-            caption_with_marker = "[image]"
-
-        caption_tokens = token_manager.count_message_tokens("user", caption_with_marker)
+        # Audit-log a text marker only (never the base64 payload).
+        caption_marker = f"[image] {message.caption}" if message.caption else "[image]"
         db.add_message(
-            chat_id=chat_id,
-            role="user",
-            content=caption_with_marker,
-            user_id=user_id,
-            message_id=message_id,
-            token_count=caption_tokens,
-            sender_name=sender_name,
-            sender_username=sender_username,
+            chat_id=chat_id, role="user", content=caption_marker,
+            user_id=user_id, message_id=message.message_id,
+            token_count=count_tokens(caption_marker),
+            sender_name=sender_name, sender_username=sender_username,
             is_group_chat=is_group,
         )
 
-        # 5. Get conversation history (now includes caption from step 4)
-        max_tokens = config.MAX_CONTEXT_TOKENS
-        messages = db.get_messages_by_tokens(chat_id, max_tokens)
+        human = prompt_builder.to_lc_human_message(
+            text=prompt, is_group=is_group, sender_name=sender_name,
+            image_data_url=image_data_url)
+        response = await agent.run(chat_id, human, is_group, reply_context=reply_context)
 
-        # 7. Trim text history conservatively (reserve more for image)
-        messages = token_manager.trim_to_fit(messages, reserve_tokens=config.RESERVE_TOKENS_IMAGE)
-
-        # 8. Build multimodal message array for OpenAI
-        # Use the original content_text (without [image] prefix) for API call
-        messages.append({
-            "role": "user",
-            "content": [
-                {"type": "text", "text": content_text if content_text else "What's in this image?"},
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": image_data_url,
-                        "detail": "auto"
-                    }
-                }
-            ],
-            "sender_name": sender_name,
-            "sender_username": sender_username,
-            "is_group_chat": is_group,
-        })
-
-        logger.info(
-            f"Processing image request for chat {chat_id}: "
-            f"{len(messages)} messages in context, caption={caption_tokens} tokens"
-        )
-
-        # 9. Call OpenAI with vision support (with optional reply context)
-        response_text = await openai_client.get_completion(messages, is_group, reply_context=reply_context)
-
-        # 10. Store assistant response with tiktoken-counted tokens
-        response_tokens = token_manager.count_message_tokens("assistant", response_text)
         db.add_message(
-            chat_id=chat_id,
-            role="assistant",
-            content=response_text,
-            token_count=response_tokens,
-            is_group_chat=is_group,
+            chat_id=chat_id, role="assistant", content=response,
+            token_count=count_tokens(response), is_group_chat=is_group,
         )
-
-        # 11. Send response to user
-        await message.reply_text(response_text)
-
-        logger.info(
-            f"Image processed for chat {chat_id}: caption={caption_tokens} tokens"
-        )
+        await message.reply_text(response)
+        logger.info(f"Image processed for chat {chat_id}")
 
     except CompletionError as e:
         await message.reply_text(e.user_message)
     except Exception as e:
         logger.error(f"Error processing image: {e}", exc_info=True)
         await message.reply_text(
-            "Sorry, I encountered an error processing your image. "
-            "Please try again."
+            "Sorry, I encountered an error processing your image. Please try again."
         )
 
 
@@ -411,19 +314,13 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = str(update.message.chat_id)
-
     try:
-        db.clear_history(chat_id)
-        await update.message.reply_text(
-            "✅ Conversation history cleared for this chat."
-        )
+        agent.clear_thread(chat_id)
+        await update.message.reply_text("✅ Conversation history cleared for this chat.")
         logger.info(f"History cleared for chat {chat_id}")
-
     except Exception as e:
         logger.error(f"Error clearing history: {e}", exc_info=True)
-        await update.message.reply_text(
-            "❌ Failed to clear history. Please try again."
-        )
+        await update.message.reply_text("❌ Failed to clear history. Please try again.")
 
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -736,28 +633,27 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Sorry, only the main authorized user can change the model.")
         return
 
-    available = "\n".join(f"  `{m}`" for m in MODEL_REGISTRY)
+    available = "\n".join(f"  `{m}`" for m in MODEL_PROVIDERS)
 
     if not context.args:
         current = db.get_active_model()
         await update.message.reply_text(
             f"Current model: `{current}`\n\nAvailable models:\n{available}\n\nUsage: `/model <name>`",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
         return
 
     new_model = context.args[0].strip()
-    if new_model not in MODEL_REGISTRY:
+    if new_model not in MODEL_PROVIDERS:
         await update.message.reply_text(
             f"❌ Unknown model `{new_model}`.\n\nAvailable models:\n{available}",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
         return
 
     try:
         db.set_active_model(new_model)
-        openai_client.set_model(new_model)
-        token_manager.set_model(new_model)
+        agent.set_model(new_model)
         await update.message.reply_text(f"✅ Model switched to `{new_model}`", parse_mode="Markdown")
         logger.info(f"User {user_id} switched model to {new_model}")
     except Exception as e:

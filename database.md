@@ -108,8 +108,22 @@ Purpose:
 - Single-row table tracking the globally active model
 - Used by `/model` and loaded on startup before requests are processed
 
+## LangGraph checkpointer (not Alembic-managed)
+
+The LangGraph agent persists conversation state (per-chat threads) using `PostgresSaver` from `langgraph-checkpoint-postgres`, backed by the same `DATABASE_URL`. This adds its own tables:
+
+- `checkpoints`
+- `checkpoint_blobs`
+- `checkpoint_writes`
+- `checkpoint_migrations`
+
+These tables are owned and versioned by the `langgraph-checkpoint-postgres` package itself, not by this repo's Alembic migrations. They are created/upgraded out-of-band by running `python scripts/setup_checkpointer.py`, which calls `PostgresSaver.setup()`. This is idempotent and must be run once per environment, after `alembic upgrade head` and before the bot starts (`start.sh` does this locally; each Railway environment's `preDeployCommand` does this in deployment).
+
+Do not add these tables to Alembic — schema changes to them are driven by upgrading `langgraph-checkpoint-postgres` and re-running `setup()`, not by writing migrations here.
+
 ## Operational Notes
 
-- Schema changes are applied via Alembic migrations (`alembic upgrade head`), not created automatically on boot.
+- Schema changes to the application tables above are applied via Alembic migrations (`alembic upgrade head`), not created automatically on boot.
 - The live database already includes `active_model`, even though older docs omitted it.
 - `DEFAULT_MODEL` in `.env` is only a seed value for a fresh database; the runtime model is loaded from `active_model`.
+- The LangGraph checkpointer tables described above are separate from this Alembic-managed schema; see the section above.
