@@ -9,11 +9,11 @@ This repository contains a Telegram bot with:
 - allowlist-based access control
 - global active-model switching persisted in the database
 
-The bot is no longer "OpenAI only". `openai_client.py` routes requests by model name to OpenAI, xAI, or Gemini.
+The bot is no longer "OpenAI only". `agent.py` routes requests by model name to OpenAI, xAI, or Gemini via `MODEL_PROVIDERS` and LangChain's `init_chat_model()`.
 
 ## Project Structure & Module Organization
 
-- Core runtime files are at repo root: `bot.py` (entrypoint), `handlers.py` (Telegram handlers and commands), `openai_client.py` (provider/model routing for OpenAI, xAI, and Gemini), `database.py` (PostgreSQL/Neon persistence and global settings), `token_manager.py` (context/token logic), `prompt_builder.py` (system prompt construction and message formatting), `cache.py` (TTL cache helpers), and `config.py` (env-driven settings).
+- Core runtime files are at repo root: `bot.py` (entrypoint), `handlers.py` (Telegram handlers and commands), `agent.py` (LangChain agent construction, provider/model routing via `MODEL_PROVIDERS`, and the trimming middleware), `tools.py` (agent tools), `database.py` (PostgreSQL/Neon persistence and global settings), `prompt_builder.py` (system prompt construction and message formatting), `cache.py` (TTL cache helpers), and `config.py` (env-driven settings).
 - Operational docs live in `README.md`, `AGENTS.md`, and `database.md`.
 - Utility scripts are in `scripts/` (notably `scripts/chat_cli.py` for local chat simulation).
 - Unit tests live in `tests/` (pytest; no database or `.env` required).
@@ -22,13 +22,13 @@ The bot is no longer "OpenAI only". `openai_client.py` routes requests by model 
 
 ### Core Components
 
-1. `bot.py` wires together config, database, token manager, prompt builder, OpenAI client, and Telegram handlers.
+1. `bot.py` wires together config, database, the checkpointer, prompt builder, agent, and Telegram handlers.
 2. `config.py` loads `.env` and validates required settings.
 3. `database.py` owns PostgreSQL persistence, cached lookups, and global settings such as active model and active personality (schema itself is Alembic-managed — see Database Schema below).
 4. `handlers.py` implements Telegram message handlers and bot commands.
-5. `openai_client.py` maps the active model to a provider/API path and sends requests.
-6. `prompt_builder.py` builds system prompts and normalizes message payloads for Responses API vs Chat Completions.
-7. `token_manager.py` counts tokens and trims history within the configured budget.
+5. `agent.py` builds the LangChain agent (`create_agent` + `init_chat_model`), maps the active model to a provider via `MODEL_PROVIDERS`, and applies the `wrap_model_call` trimming middleware before each model call.
+6. `prompt_builder.py` builds system prompts and normalizes message payloads for the agent.
+7. The checkpointer (`PostgresSaver`, keyed by chat_id thread) persists conversation state across turns; token counting and trimming live in `agent.py`, not a separate module.
 8. `cache.py` provides a small TTL cache used by the database layer.
 
 ### Provider / API Routing
@@ -47,10 +47,10 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 2. `handlers.extract_keyword()` checks for `chatgpt` and optional `@BOT_USERNAME`.
 3. Authorization is checked.
 4. The incoming user message is stored in `messages`.
-5. History is fetched by token budget from the database.
-6. `token_manager.trim_to_fit()` keeps as much recent context as possible while reserving response tokens.
+5. History is loaded from the checkpoint thread for the chat.
+6. `agent.py`'s trimming middleware (`wrap_model_call`) keeps as much recent context as possible while reserving response tokens.
 7. `prompt_builder` builds the system prompt and provider-specific message format.
-8. `openai_client.get_completion()` calls the active provider.
+8. `agent.run()` invokes the LangChain agent, which calls the active provider.
 9. On success, the assistant response is stored and sent back to Telegram. API failures raise `CompletionError` and are shown to the user without persisting an assistant message.
 
 ### Group Chat Behavior
@@ -77,7 +77,7 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 
 - On startup, `bot.py` calls `db.init_active_model(config.DEFAULT_MODEL)`.
 - After that, the effective model comes from `active_model`, not directly from `.env`.
-- `/model` updates the database, then updates both the live API client and token manager.
+- `/model` updates the database, then calls `agent.set_model()` to rebuild the live chat model for the new provider.
 
 ## Build, Test, and Development Commands
 
@@ -132,8 +132,9 @@ Tests cover pure logic only (no Telegram, database, or live API calls):
 
 - `handlers.extract_keyword()` — activation keyword and `@mention` stripping
 - `prompt_builder.PromptBuilder.format_messages()` — group prefixes and vision payload formatting
-- `token_manager.TokenManager.trim_to_fit()` — context window trimming
-- `openai_client.MODEL_REGISTRY` — model/provider validation used by `/model`
+- `agent.trim_messages()` / `agent.count_message_tokens()` — context window trimming (`tests/test_trimming.py`)
+- `agent.resolve_model()` / `MODEL_PROVIDERS` — model/provider validation used by `/model` (`tests/test_model_resolution.py`)
+- `tests/test_config.py`, `tests/test_prompt_builder.py`, `tests/test_tools.py`, `tests/test_agent.py`, `tests/test_extract_keyword.py` cover config validation, prompt formatting, tools, agent wiring, and keyword extraction respectively
 
 CI runs the same compile and pytest steps on pull requests and pushes to `main` (`.github/workflows/ci.yml`).
 

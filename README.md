@@ -18,7 +18,7 @@ The bot is triggered by the keyword `chatgpt` or by directly mentioning the bot.
 
 ## Supported Models
 
-The current model list is defined in `openai_client.py` via `MODEL_REGISTRY`.
+The current model list is defined in `agent.py` via `MODEL_PROVIDERS`, which routes each model name to its provider for `init_chat_model()`.
 
 Supported today:
 
@@ -229,9 +229,9 @@ Core modules:
 - `config.py` - Env loading and validation
 - `database.py` - PostgreSQL connection pooling, schema init, persistence, cached lookups
 - `handlers.py` - Telegram handlers, authorization checks, command implementations
-- `openai_client.py` - Provider/model routing and API calls
+- `agent.py` - LangChain agent construction (`create_agent` + `init_chat_model`), provider/model routing (`MODEL_PROVIDERS`), and the token-trimming middleware
+- `tools.py` - Agent tools
 - `prompt_builder.py` - System prompt assembly and outbound message formatting
-- `token_manager.py` - Token counting and context trimming
 - `cache.py` - Small in-memory TTL cache used by the database layer
 - `scripts/chat_cli.py` - Local chat simulator
 

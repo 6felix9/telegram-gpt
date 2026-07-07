@@ -4,15 +4,19 @@ Interactive CLI for simulating conversations with the AI bot.
 
 This script allows you to:
 - Test conversations using a dedicated "test" chat_id (default)
-- Simulate conversations in real group chats (read-only mode)
+- Simulate conversations against a real chat_id's live agent memory
 - Clear conversation history (only for chat_id="test")
 - Change bot personality for group chats
 
+Note: every run persists turns to the LangGraph checkpoint thread for the
+given chat_id. Use "test" (or another throwaway id) unless you intend to
+write into a real chat's conversation history.
+
 Usage:
-    # Test mode (default, writes to database)
+    # Test mode (default, writes to the "test" checkpoint thread)
     python scripts/chat_cli.py --chat-id test
 
-    # Simulate real group chat (read-only, doesn't write to database)
+    # Simulate a real group chat (writes to that group's real checkpoint thread!)
     python scripts/chat_cli.py --chat-id 15223921 --group
 
     # Clear test conversation history
@@ -238,7 +242,7 @@ class ChatCLI:
 
     async def run(self):
         """Run the interactive CLI loop."""
-        mode_str = "TEST MODE" if self.is_test_mode else "READ-ONLY MODE"
+        mode_str = "TEST MODE" if self.is_test_mode else "LIVE MODE"
         group_str = " (GROUP)" if self.is_group else ""
         print(f"\n{'='*60}")
         print(f"Chat CLI - {mode_str}{group_str}")
@@ -250,7 +254,9 @@ class ChatCLI:
             stats = self.get_stats()
             print(f"📊 Existing history: {stats['total_messages']} messages, "
                   f"{stats['total_tokens']:,} tokens")
-            print("⚠️  READ-ONLY MODE: Your prompts/responses will NOT be saved to database\n")
+            print("⚠️  LIVE MODE: prompts/responses ARE persisted to this chat_id's "
+                  "checkpoint thread — use a throwaway chat_id to avoid polluting "
+                  "a real conversation's memory\n")
 
         print("Type your message (or /clear, /stats, /model [name], /personality [name], /list_personality, /exit to quit):\n")
 
@@ -333,10 +339,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Test mode (default, writes to database)
+  # Test mode (default, writes to the "test" checkpoint thread)
   python scripts/chat_cli.py --chat-id test
 
-  # Simulate real group chat (read-only, doesn't write to database)
+  # Simulate a real group chat (writes to that group's real checkpoint thread!)
   python scripts/chat_cli.py --chat-id 15223921 --group
 
   # Test mode with group formatting

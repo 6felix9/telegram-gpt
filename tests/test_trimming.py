@@ -18,19 +18,27 @@ def test_keeps_recent_and_drops_old_when_over_budget():
 
 
 def test_never_starts_with_orphan_tool_message():
+    # Make the AIMessage large enough that, once the ToolMessage and
+    # HumanMessage are already kept, it no longer fits the remaining budget.
+    # That forces the age-based trim to drop the AIMessage, leaving a leading
+    # orphaned ToolMessage that the drop-loop must then remove.
+    big = "word " * 200
     messages = [
-        AIMessage(content="", tool_calls=[{"name": "t", "args": {}, "id": "1"}]),
+        AIMessage(content=big, tool_calls=[{"name": "t", "args": {}, "id": "1"}]),
         ToolMessage(content="result", tool_call_id="1"),
         HumanMessage(content="hi"),
     ]
-    # Force a budget that would cut the AIMessage but keep the ToolMessage.
+    # Budget fits only the ToolMessage + HumanMessage, not the much larger AIMessage.
     max_context = (
         agent.count_message_tokens(messages[1])
         + agent.count_message_tokens(messages[2])
         + 5
     )
     kept = agent.trim_messages(messages, max_context, 0, 300)
+    # The AIMessage was trimmed by age, so the orphan-drop loop must fire,
+    # leaving exactly the HumanMessage behind.
     assert not (kept and isinstance(kept[0], ToolMessage))
+    assert kept == [messages[2]]
 
 
 def test_lone_most_recent_tool_message_is_never_dropped():
