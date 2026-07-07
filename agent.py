@@ -92,7 +92,8 @@ def trim_messages(
         total += cost
 
     # Drop a leading orphaned ToolMessage (its AIMessage tool_call was trimmed).
-    while kept and isinstance(kept[0], ToolMessage):
+    # Guard with len(kept) > 1 so the most-recent message is never removed.
+    while len(kept) > 1 and isinstance(kept[0], ToolMessage):
         kept.pop(0)
 
     return kept

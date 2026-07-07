@@ -1,5 +1,5 @@
 """Token counting and the pre-model trimming middleware."""
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 import agent
 
 
@@ -31,3 +31,13 @@ def test_never_starts_with_orphan_tool_message():
     )
     kept = agent.trim_messages(messages, max_context, 0, 300)
     assert not (kept and isinstance(kept[0], ToolMessage))
+
+
+def test_lone_most_recent_tool_message_is_never_dropped():
+    # The newest (and only surviving) message is itself a ToolMessage.
+    # trim_messages must not strip it even though the orphan-drop loop
+    # would otherwise treat it as a leading orphaned ToolMessage.
+    messages = [ToolMessage(content="result", tool_call_id="1")]
+    kept = agent.trim_messages(messages, 100000, 0, 300)
+    assert kept != []
+    assert kept[-1] is messages[-1]
