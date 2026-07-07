@@ -65,8 +65,18 @@ def test_missing_provider_key_raises_completion_error():
     assert "xAI" in exc.value.user_message
 
 
-def test_agent_invokes_a_tool_then_answers():
-    # First model turn asks to call fetch_url; second turn answers.
+def test_agent_invokes_a_tool_then_answers(monkeypatch):
+    # First model turn asks to call fetch_url; second turn answers. fetch_url is
+    # the real tool from tools.py, so stub its underlying httpx.get to avoid a
+    # live network call (would otherwise hit https://example.com for real).
+    class _FakeResponse:
+        text = "fake page content"
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr("tools.httpx.get", lambda *a, **k: _FakeResponse())
+
     fake = _FakeChat(messages=iter([
         AIMessage(content="", tool_calls=[
             {"name": "fetch_url", "args": {"url": "https://example.com"}, "id": "c1"}]),
