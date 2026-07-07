@@ -22,6 +22,38 @@ class CompletionError(Exception):
         super().__init__(user_message)
 
 
+MODEL_PROVIDERS: dict[str, str] = {
+    "gpt-4o-mini": "openai",
+    "gpt-4.1-mini": "openai",
+    "gpt-5.4-mini": "openai",
+    "gpt-5": "openai",
+    "grok-4.20-0309-reasoning": "xai",
+    "grok-4.20-0309-non-reasoning": "xai",
+    "grok-4-1-fast-reasoning": "xai",
+    "gemini-3.1-flash-lite-preview": "google_genai",
+    "gemini-3-flash-preview": "google_genai",
+}
+
+PROVIDER_LABEL: dict[str, str] = {
+    "openai": "OpenAI", "xai": "xAI", "google_genai": "Gemini"
+}
+
+
+def resolve_model(name: str) -> tuple[str, str]:
+    """Map a bare model name to (provider, provider-prefixed id)."""
+    provider = MODEL_PROVIDERS[name]  # KeyError for unknown models (caught by /model)
+    return provider, f"{provider}:{name}"
+
+
+def provider_api_key(provider: str, config) -> str:
+    """Return the configured API key for a provider (may be empty)."""
+    return {
+        "openai": config.OPENAI_API_KEY,
+        "xai": config.XAI_API_KEY,
+        "google_genai": config.GEMINI_API_KEY,
+    }[provider]
+
+
 def count_tokens(text: str) -> int:
     """Token count of a plain string."""
     if not text:
