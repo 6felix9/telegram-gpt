@@ -1,7 +1,27 @@
 python-telegram-bot==21.7
-openai==2.9.0
 tiktoken==0.12.0
 python-dotenv==1.0.1
+
+# Existing app schema layer (Alembic + psycopg2 sync pool)
 psycopg2-binary==2.9.9
 alembic==1.14.1
 SQLAlchemy==2.0.37
+
+# LangChain / LangGraph agent stack
+langchain>=1.0,<2.0
+langchain-core>=1.0,<2.0
+langgraph>=1.0,<2.0
+langgraph-checkpoint-postgres>=2.0,<3.0
+
+# Model providers
+langchain-openai>=0.3
+langchain-xai>=0.2
+langchain-google-genai>=2.0
+
+# Checkpointer driver (psycopg3 + pool) — separate from the psycopg2 app layer
+psycopg[binary]>=3.2
+psycopg-pool>=3.2
+
+# Tools
+langchain-tavily>=0.1
+ddgs>=6.0
