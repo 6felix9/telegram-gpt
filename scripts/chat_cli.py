@@ -4,15 +4,19 @@ Interactive CLI for simulating conversations with the AI bot.
 
 This script allows you to:
 - Test conversations using a dedicated "test" chat_id (default)
-- Simulate conversations in real group chats (read-only mode)
+- Simulate conversations against a real chat_id's live agent memory
 - Clear conversation history (only for chat_id="test")
 - Change bot personality for group chats
 
+Note: every run persists turns to the LangGraph checkpoint thread for the
+given chat_id. Use "test" (or another throwaway id) unless you intend to
+write into a real chat's conversation history.
+
 Usage:
-    # Test mode (default, writes to database)
+    # Test mode (default, writes to the "test" checkpoint thread)
     python scripts/chat_cli.py --chat-id test
 
-    # Simulate real group chat (read-only, doesn't write to database)
+    # Simulate a real group chat (writes to that group's real checkpoint thread!)
     python scripts/chat_cli.py --chat-id 15223921 --group
 
     # Clear test conversation history
@@ -36,9 +40,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import config
 from database import Database
-from token_manager import TokenManager
-from openai_client import OpenAIClient, MODEL_REGISTRY, CompletionError
 from prompt_builder import PromptBuilder
+from agent import Agent, MODEL_PROVIDERS, CompletionError
+import agent as agent_module
+from psycopg_pool import ConnectionPool
+from psycopg.rows import dict_row
+from langgraph.checkpoint.postgres import PostgresSaver
 
 # Configure logging
 logging.basicConfig(
@@ -74,23 +81,26 @@ class ChatCLI:
         self.db.init_active_model(config.DEFAULT_MODEL)
         effective_model = self.db.get_active_model()
 
-        # Token manager
-        self.token_manager = TokenManager(effective_model, config.MAX_CONTEXT_TOKENS)
+        # Checkpointer pool (tables created out-of-band; do NOT call .setup()).
+        self.checkpointer_pool = ConnectionPool(
+            conninfo=config.DATABASE_URL,
+            max_size=10,
+            kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+        )
+        checkpointer = PostgresSaver(self.checkpointer_pool)
 
-        # OpenAI client
-        prompt_builder = PromptBuilder(
-            default_private_prompt=OpenAIClient.SYSTEM_PROMPT,
-            default_group_prompt=OpenAIClient.SYSTEM_PROMPT_GROUP,
+        # Prompt builder + agent (mirrors bot.py wiring).
+        self.prompt_builder = PromptBuilder(
+            default_private_prompt=agent_module.SYSTEM_PROMPT,
+            default_group_prompt=agent_module.SYSTEM_PROMPT_GROUP,
             get_active_personality=self.db.get_active_personality,
             get_personality_prompt=self.db.get_personality_prompt,
         )
-        self.openai_client = OpenAIClient(
-            openai_api_key=config.OPENAI_API_KEY,
-            xai_api_key=config.XAI_API_KEY,
-            gemini_api_key=config.GEMINI_API_KEY,
-            model=effective_model,
-            timeout=config.OPENAI_TIMEOUT,
-            prompt_builder=prompt_builder,
+        self.agent = Agent(
+            config=config,
+            prompt_builder=self.prompt_builder,
+            checkpointer=checkpointer,
+            model_name=effective_model,
         )
 
         logger.info(f"CLI initialized for chat_id={self.chat_id}, group={is_group}, test_mode={self.is_test_mode}")
@@ -106,58 +116,10 @@ class ChatCLI:
             Assistant's response text
         """
         try:
-            # Count tokens in user's message
-            user_tokens = self.token_manager.count_message_tokens("user", user_input)
-
-            # For test mode, store user message
-            if self.is_test_mode:
-                self.db.add_message(
-                    chat_id=self.chat_id,
-                    role="user",
-                    content=user_input,
-                    user_id=int(config.AUTHORIZED_USER_ID),
-                    message_id=None,
-                    token_count=user_tokens,
-                    sender_name="CLI User",
-                    sender_username=None,
-                    is_group_chat=self.is_group,
-                )
-
-            # Get conversation history within token budget
-            max_tokens = config.MAX_CONTEXT_TOKENS
-            messages = self.db.get_messages_by_tokens(self.chat_id, max_tokens)
-
-            # For non-test mode, append current user message in-memory (not persisted)
-            if not self.is_test_mode:
-                messages.append({
-                    "role": "user",
-                    "content": user_input,
-                    "sender_name": "CLI User",
-                    "sender_username": None,
-                    "is_group_chat": self.is_group,
-                })
-
-            # Final trim to ensure we fit (accounting for response)
-            messages = self.token_manager.trim_to_fit(messages, reserve_tokens=config.RESERVE_TOKENS_TEXT)
-
-            logger.info(
-                f"Processing request for chat {self.chat_id}: "
-                f"{len(messages)} messages, {user_tokens} tokens"
-            )
-
-            # Get completion from OpenAI
-            response = await self.openai_client.get_completion(messages, self.is_group)
-
-            # For test mode, store assistant's response
-            if self.is_test_mode:
-                assistant_tokens = self.token_manager.count_message_tokens("assistant", response)
-                self.db.add_message(
-                    chat_id=self.chat_id,
-                    role="assistant",
-                    content=response,
-                    token_count=assistant_tokens,
-                    is_group_chat=self.is_group,
-                )
+            # Context now lives in the checkpoint thread; run through the agent.
+            human = self.prompt_builder.to_lc_human_message(
+                text=user_input, is_group=self.is_group, sender_name="CLI User")
+            response = await self.agent.run(self.chat_id, human, self.is_group)
 
             logger.info(f"Response generated for chat {self.chat_id}")
             return response
@@ -179,7 +141,7 @@ class ChatCLI:
             return False
 
         try:
-            self.db.clear_history(self.chat_id)
+            self.agent.clear_thread(self.chat_id)
             logger.info(f"History cleared for chat {self.chat_id}")
             return True
         except Exception as e:
@@ -256,7 +218,7 @@ class ChatCLI:
 
     def handle_model_command(self, args: list[str]) -> None:
         """Handle /model command."""
-        available = ", ".join(MODEL_REGISTRY.keys())
+        available = ", ".join(MODEL_PROVIDERS.keys())
         if not args:
             current = self.db.get_active_model()
             print(f"\nCurrent model: {current}")
@@ -265,15 +227,14 @@ class ChatCLI:
             return
 
         new_model = args[0].strip()
-        if new_model not in MODEL_REGISTRY:
+        if new_model not in MODEL_PROVIDERS:
             print(f"\n❌ Unknown model '{new_model}'.")
             print(f"Available: {available}\n")
             return
 
         try:
             self.db.set_active_model(new_model)
-            self.openai_client.set_model(new_model)
-            self.token_manager.set_model(new_model)
+            self.agent.set_model(new_model)
             print(f"\n✅ Model switched to '{new_model}'\n")
         except Exception as e:
             logger.error(f"Error switching model: {e}", exc_info=True)
@@ -281,19 +242,21 @@ class ChatCLI:
 
     async def run(self):
         """Run the interactive CLI loop."""
-        mode_str = "TEST MODE" if self.is_test_mode else "READ-ONLY MODE"
+        mode_str = "TEST MODE" if self.is_test_mode else "LIVE MODE"
         group_str = " (GROUP)" if self.is_group else ""
         print(f"\n{'='*60}")
         print(f"Chat CLI - {mode_str}{group_str}")
         print(f"Chat ID: {self.chat_id}")
-        print(f"Model: {self.openai_client.model}")
+        print(f"Model: {self.agent.model_name}")
         print(f"{'='*60}\n")
 
         if not self.is_test_mode:
             stats = self.get_stats()
             print(f"📊 Existing history: {stats['total_messages']} messages, "
                   f"{stats['total_tokens']:,} tokens")
-            print("⚠️  READ-ONLY MODE: Your prompts/responses will NOT be saved to database\n")
+            print("⚠️  LIVE MODE: prompts/responses ARE persisted to this chat_id's "
+                  "checkpoint thread — use a throwaway chat_id to avoid polluting "
+                  "a real conversation's memory\n")
 
         print("Type your message (or /clear, /stats, /model [name], /personality [name], /list_personality, /exit to quit):\n")
 
@@ -365,6 +328,7 @@ class ChatCLI:
 
         # Cleanup
         self.db.close()
+        self.checkpointer_pool.close()
         print("Goodbye!")
 
 
@@ -375,10 +339,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Test mode (default, writes to database)
+  # Test mode (default, writes to the "test" checkpoint thread)
   python scripts/chat_cli.py --chat-id test
 
-  # Simulate real group chat (read-only, doesn't write to database)
+  # Simulate a real group chat (writes to that group's real checkpoint thread!)
   python scripts/chat_cli.py --chat-id 15223921 --group
 
   # Test mode with group formatting

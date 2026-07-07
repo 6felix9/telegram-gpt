@@ -8,9 +8,12 @@ from telegram.ext import Application, MessageHandler, CommandHandler, filters
 
 from config import config
 from database import Database
-from token_manager import TokenManager
-from openai_client import OpenAIClient
 from prompt_builder import PromptBuilder
+from agent import Agent
+import agent as agent_module
+from psycopg_pool import ConnectionPool
+from psycopg.rows import dict_row
+from langgraph.checkpoint.postgres import PostgresSaver
 import handlers
 
 # Configure logging
@@ -22,9 +25,9 @@ logger = logging.getLogger(__name__)
 
 # Global instances
 db = None
-token_manager = None
-openai_client = None
 application = None
+bot_agent = None
+checkpointer_pool = None
 
 
 async def post_init(app: Application):
@@ -46,6 +49,8 @@ async def post_shutdown(app: Application):
     # Close database connection pool
     if db:
         db.close()
+    if checkpointer_pool:
+        checkpointer_pool.close()
 
 
 def signal_handler(signum, frame):
@@ -57,7 +62,7 @@ def signal_handler(signum, frame):
 def main():
     """Initialize and run the bot."""
 
-    global db, token_manager, openai_client, application
+    global db, application, bot_agent, checkpointer_pool
 
     try:
         # 1. Validate configuration
@@ -73,28 +78,33 @@ def main():
         effective_model = db.get_active_model()
         logger.info(f"Active model: {effective_model}")
 
-        # 3. Initialize token manager
-        logger.info("Initializing token manager...")
-        token_manager = TokenManager(effective_model, config.MAX_CONTEXT_TOKENS)
+        # 3. Build the Postgres checkpointer over a dedicated psycopg3 pool.
+        #    Tables are created out-of-band by scripts/setup_checkpointer.py
+        #    (deploy preDeployCommand); we do NOT call .setup() here.
+        logger.info("Initializing checkpointer pool...")
+        checkpointer_pool = ConnectionPool(
+            conninfo=config.DATABASE_URL,
+            max_size=10,
+            kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+        )
+        checkpointer = PostgresSaver(checkpointer_pool)
 
-        # 4. Initialize prompt builder (shared between OpenAI client and handlers)
+        # 4. Prompt builder (shared with the dynamic-prompt middleware).
         logger.info("Initializing prompt builder...")
         prompt_builder = PromptBuilder(
-            default_private_prompt=OpenAIClient.SYSTEM_PROMPT,
-            default_group_prompt=OpenAIClient.SYSTEM_PROMPT_GROUP,
+            default_private_prompt=agent_module.SYSTEM_PROMPT,
+            default_group_prompt=agent_module.SYSTEM_PROMPT_GROUP,
             get_active_personality=db.get_active_personality,
             get_personality_prompt=db.get_personality_prompt,
         )
 
-        # 5. Initialize OpenAI client
-        logger.info("Initializing OpenAI client...")
-        openai_client = OpenAIClient(
-            openai_api_key=config.OPENAI_API_KEY,
-            xai_api_key=config.XAI_API_KEY,
-            gemini_api_key=config.GEMINI_API_KEY,
-            model=effective_model,
-            timeout=config.OPENAI_TIMEOUT,
+        # 5. Build the agent for the active model.
+        logger.info("Building agent...")
+        bot_agent = Agent(
+            config=config,
             prompt_builder=prompt_builder,
+            checkpointer=checkpointer,
+            model_name=effective_model,
         )
 
         # 6. Build Telegram application
@@ -109,7 +119,7 @@ def main():
 
         # 7. Initialize handlers with dependencies
         bot_username = config.BOT_USERNAME.lstrip("@")
-        handlers.init_handlers(config, db, token_manager, openai_client, prompt_builder, bot_username)
+        handlers.init_handlers(config, db, bot_agent, prompt_builder, bot_username)
 
         # 7. Register handlers
         # Message handler (non-command text messages)

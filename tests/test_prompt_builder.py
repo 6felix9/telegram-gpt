@@ -1,78 +1,47 @@
-"""Tests for PromptBuilder message formatting."""
-import pytest
-
+"""PromptBuilder: system prompt resolution + LangChain message construction."""
+from langchain_core.messages import HumanMessage
 from prompt_builder import PromptBuilder
 
 
-@pytest.fixture
-def builder():
-    return PromptBuilder(default_private_prompt="private", default_group_prompt="group")
+def _pb(active=None, prompt_for=None):
+    return PromptBuilder(
+        default_private_prompt="PRIVATE",
+        default_group_prompt="GROUP",
+        get_active_personality=(lambda: active) if active else None,
+        get_personality_prompt=(lambda name: prompt_for) if prompt_for is not None else None,
+    )
 
 
-def test_private_chat_user_content_unchanged(builder):
-    messages = [{"role": "user", "content": "hello", "sender_name": "Alice"}]
-    result = builder.format_messages(messages, is_group=False)
-    assert result == [{"role": "user", "content": "hello"}]
+def test_private_uses_default_private_prompt():
+    out = _pb().build_system_prompt(is_group=False)
+    assert "PRIVATE" in out
 
 
-def test_group_chat_adds_sender_prefix(builder):
-    messages = [{"role": "user", "content": "hello", "sender_name": "Alice"}]
-    result = builder.format_messages(messages, is_group=True)
-    assert result == [{"role": "user", "content": "[Alice]: hello"}]
+def test_group_uses_active_personality_prompt():
+    out = _pb(active="villain", prompt_for="BE EVIL").build_system_prompt(is_group=True)
+    assert "BE EVIL" in out
 
 
-def test_group_chat_skips_already_prefixed_content(builder):
-    messages = [{"role": "user", "content": "[image] caption", "sender_name": "Alice"}]
-    result = builder.format_messages(messages, is_group=True)
-    assert result == [{"role": "user", "content": "[image] caption"}]
+def test_group_falls_back_to_default_when_personality_missing():
+    out = _pb(active="ghost", prompt_for=None).build_system_prompt(is_group=True)
+    assert "GROUP" in out
 
 
-def test_assistant_messages_not_prefixed_in_group(builder):
-    messages = [{"role": "assistant", "content": "reply", "sender_name": "Bot"}]
-    result = builder.format_messages(messages, is_group=True)
-    assert result == [{"role": "assistant", "content": "reply"}]
+def test_to_lc_human_message_plain_text():
+    msg = _pb().to_lc_human_message(text="hello", is_group=False)
+    assert isinstance(msg, HumanMessage)
+    assert msg.content == "hello"
 
 
-def test_multimodal_responses_api_format(builder):
-    messages = [{
-        "role": "user",
-        "content": [
-            {"type": "text", "text": "describe this"},
-            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,abc"}},
-        ],
-        "sender_name": "Alice",
-    }]
-    result = builder.format_messages(messages, is_group=False, api_format="responses")
-    assert result[0]["content"] == [
-        {"type": "input_text", "text": "describe this"},
-        {"type": "input_image", "image_url": "data:image/jpeg;base64,abc"},
-    ]
+def test_group_message_gets_sender_prefix():
+    msg = _pb().to_lc_human_message(text="hi", is_group=True, sender_name="Alice")
+    assert msg.content == "[Alice]: hi"
 
 
-def test_multimodal_chat_completions_format(builder):
-    messages = [{
-        "role": "user",
-        "content": [
-            {"type": "text", "text": "describe this"},
-            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,abc"}},
-        ],
-        "sender_name": "Alice",
-    }]
-    result = builder.format_messages(messages, is_group=False, api_format="chat_completions")
-    assert result[0]["content"] == [
-        {"type": "text", "text": "describe this"},
-        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,abc"}},
-    ]
-
-
-def test_multimodal_group_prefix_on_text_part(builder):
-    messages = [{
-        "role": "user",
-        "content": [
-            {"type": "text", "text": "describe this"},
-            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,abc"}},
-        ],
-        "sender_name": "Alice",
-    }]
-    result = builder.format_messages(messages, is_group=True, api_format="responses")
-    assert result[0]["content"][0] == {"type": "input_text", "text": "[Alice]: describe this"}
+def test_image_message_has_text_and_image_blocks():
+    msg = _pb().to_lc_human_message(
+        text="what is this?", image_data_url="data:image/jpeg;base64,AAAA"
+    )
+    types = [b["type"] for b in msg.content]
+    assert types == ["text", "image_url"]
+    assert msg.content[1]["image_url"]["url"] == "data:image/jpeg;base64,AAAA"
