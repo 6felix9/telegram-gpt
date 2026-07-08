@@ -296,7 +296,7 @@ class Agent:
                 config=self._config_for(chat_id),
                 context=AgentContext(is_group=is_group, reply_context=reply_context),
             )
-            return result["messages"][-1].content
+            return _message_text(result["messages"][-1])
         except CompletionError:
             raise
         except Exception as e:
