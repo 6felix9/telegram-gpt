@@ -41,7 +41,7 @@ def _agent_with_fake(fake_model):
         config=_Cfg,
         prompt_builder=_prompt_builder(),
         checkpointer=InMemorySaver(),
-        model_name="gpt-5",
+        model_name="gpt-5.4",
     )
     a._compile(fake_model)  # test hook: recompile against an injected model
     return a
@@ -57,7 +57,7 @@ def test_run_returns_final_text():
 def test_missing_provider_key_raises_completion_error():
     a = agent_mod.Agent(
         config=_Cfg, prompt_builder=_prompt_builder(),
-        checkpointer=InMemorySaver(), model_name="gpt-5",
+        checkpointer=InMemorySaver(), model_name="gpt-5.4",
     )
     a.set_model("grok-4-1-fast-reasoning")  # xAI key blank -> uncompiled
     with pytest.raises(agent_mod.CompletionError) as exc:

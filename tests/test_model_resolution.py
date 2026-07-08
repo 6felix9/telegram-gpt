@@ -4,11 +4,16 @@ import agent
 
 
 def test_known_models_map_to_expected_providers():
-    assert agent.resolve_model("gpt-5") == ("openai", "openai:gpt-5")
+    assert agent.resolve_model("gpt-5.4") == ("openai", "openai:gpt-5.4")
     assert agent.resolve_model("grok-4-1-fast-reasoning") == (
         "xai", "xai:grok-4-1-fast-reasoning")
-    assert agent.resolve_model("gemini-3-flash-preview") == (
-        "google_genai", "google_genai:gemini-3-flash-preview")
+    assert agent.resolve_model("gemini-3.5-flash") == (
+        "google_genai", "google_genai:gemini-3.5-flash")
+
+
+def test_removed_models_are_not_registered():
+    for name in ("gpt-4o-mini", "gpt-5", "gemini-3-flash-preview"):
+        assert name not in agent.MODEL_PROVIDERS
 
 
 def test_every_registered_model_has_a_label():
