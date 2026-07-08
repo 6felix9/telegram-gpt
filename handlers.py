@@ -1,9 +1,12 @@
 """Telegram message handlers and bot logic."""
+import asyncio
 import logging
 import re
 import random
 import base64
+from contextlib import asynccontextmanager
 from telegram import Update
+from telegram.constants import ChatAction
 from telegram.ext import ContextTypes
 from telegram.helpers import escape_markdown
 from agent import MODEL_PROVIDERS, CompletionError, count_tokens
@@ -111,6 +114,23 @@ def extract_reply_data(message) -> tuple[str, str] | None:
     return (sender, content)
 
 
+@asynccontextmanager
+async def typing_action(bot, chat_id: str):
+    """Keep the Telegram typing indicator active for the duration of the block."""
+    async def _loop():
+        while True:
+            try:
+                await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+            except Exception as e:
+                logger.debug(f"Failed to send typing action: {e}")
+            await asyncio.sleep(4)
+    task = asyncio.create_task(_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+
+
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Main message handler for all text messages."""
 
@@ -170,10 +190,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # 6. Process request
-    await process_request(message, prompt, user_id, sender_name, sender_username, is_group, reply_data)
+    await process_request(
+        context.bot, message, prompt, user_id, sender_name, sender_username, is_group, reply_data
+    )
 
 
 async def process_request(
+    bot,
     message,
     prompt: str,
     user_id: int,
@@ -185,23 +208,24 @@ async def process_request(
     """Process a triggering text request through the agent."""
     chat_id = str(message.chat_id)
     try:
-        # Audit-log the user message (context lives in the checkpoint).
-        db.add_message(
-            chat_id=chat_id, role="user", content=message.text,
-            user_id=user_id, message_id=message.message_id,
-            token_count=count_tokens(prompt),
-            sender_name=sender_name, sender_username=sender_username,
-            is_group_chat=is_group,
-        )
+        async with typing_action(bot, chat_id):
+            # Audit-log the user message (context lives in the checkpoint).
+            db.add_message(
+                chat_id=chat_id, role="user", content=message.text,
+                user_id=user_id, message_id=message.message_id,
+                token_count=count_tokens(prompt),
+                sender_name=sender_name, sender_username=sender_username,
+                is_group_chat=is_group,
+            )
 
-        human = prompt_builder.to_lc_human_message(
-            text=prompt, is_group=is_group, sender_name=sender_name)
-        response = await agent.run(chat_id, human, is_group, reply_context=reply_context)
+            human = prompt_builder.to_lc_human_message(
+                text=prompt, is_group=is_group, sender_name=sender_name)
+            response = await agent.run(chat_id, human, is_group, reply_context=reply_context)
 
-        db.add_message(
-            chat_id=chat_id, role="assistant", content=response,
-            token_count=count_tokens(response), is_group_chat=is_group,
-        )
+            db.add_message(
+                chat_id=chat_id, role="assistant", content=response,
+                token_count=count_tokens(response), is_group_chat=is_group,
+            )
         await message.reply_text(response)
         logger.info(f"Response sent for chat {chat_id}")
 
@@ -252,11 +276,12 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 5. Process image request
     await process_image_request(
-        message, prompt, user_id, sender_name, sender_username, is_group, reply_data
+        context.bot, message, prompt, user_id, sender_name, sender_username, is_group, reply_data
     )
 
 
 async def process_image_request(
+    bot,
     message,
     prompt: str,
     user_id: int,
@@ -268,31 +293,32 @@ async def process_image_request(
     """Process a triggering image request through the agent."""
     chat_id = str(message.chat_id)
     try:
-        photo = message.photo[-1]
-        photo_file = await photo.get_file()
-        photo_bytes = await photo_file.download_as_bytearray()
-        base64_image = base64.b64encode(photo_bytes).decode("utf-8")
-        image_data_url = f"data:image/jpeg;base64,{base64_image}"
+        async with typing_action(bot, chat_id):
+            photo = message.photo[-1]
+            photo_file = await photo.get_file()
+            photo_bytes = await photo_file.download_as_bytearray()
+            base64_image = base64.b64encode(photo_bytes).decode("utf-8")
+            image_data_url = f"data:image/jpeg;base64,{base64_image}"
 
-        # Audit-log a text marker only (never the base64 payload).
-        caption_marker = f"[image] {message.caption}" if message.caption else "[image]"
-        db.add_message(
-            chat_id=chat_id, role="user", content=caption_marker,
-            user_id=user_id, message_id=message.message_id,
-            token_count=count_tokens(caption_marker),
-            sender_name=sender_name, sender_username=sender_username,
-            is_group_chat=is_group,
-        )
+            # Audit-log a text marker only (never the base64 payload).
+            caption_marker = f"[image] {message.caption}" if message.caption else "[image]"
+            db.add_message(
+                chat_id=chat_id, role="user", content=caption_marker,
+                user_id=user_id, message_id=message.message_id,
+                token_count=count_tokens(caption_marker),
+                sender_name=sender_name, sender_username=sender_username,
+                is_group_chat=is_group,
+            )
 
-        human = prompt_builder.to_lc_human_message(
-            text=prompt, is_group=is_group, sender_name=sender_name,
-            image_data_url=image_data_url)
-        response = await agent.run(chat_id, human, is_group, reply_context=reply_context)
+            human = prompt_builder.to_lc_human_message(
+                text=prompt, is_group=is_group, sender_name=sender_name,
+                image_data_url=image_data_url)
+            response = await agent.run(chat_id, human, is_group, reply_context=reply_context)
 
-        db.add_message(
-            chat_id=chat_id, role="assistant", content=response,
-            token_count=count_tokens(response), is_group_chat=is_group,
-        )
+            db.add_message(
+                chat_id=chat_id, role="assistant", content=response,
+                token_count=count_tokens(response), is_group_chat=is_group,
+            )
         await message.reply_text(response)
         logger.info(f"Image processed for chat {chat_id}")
 
