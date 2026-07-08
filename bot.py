@@ -86,6 +86,7 @@ def main():
             conninfo=config.DATABASE_URL,
             max_size=10,
             kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+            check=ConnectionPool.check_connection,
         )
         checkpointer = PostgresSaver(checkpointer_pool)
 
