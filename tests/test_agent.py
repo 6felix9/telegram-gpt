@@ -54,6 +54,17 @@ def test_run_returns_final_text():
     assert out == "hi there"
 
 
+def test_run_flattens_block_list_content():
+    # Gemini 3.x models return AIMessage.content as a list of content blocks
+    # (e.g. [{"type": "text", "text": "..."}]) instead of a plain string.
+    fake = _FakeChat(messages=iter([
+        AIMessage(content=[{"type": "text", "text": "hi there"}])
+    ]))
+    a = _agent_with_fake(fake)
+    out = asyncio.run(a.run("chat-2", HumanMessage(content="hello"), is_group=False))
+    assert out == "hi there"
+
+
 def test_missing_provider_key_raises_completion_error():
     a = agent_mod.Agent(
         config=_Cfg, prompt_builder=_prompt_builder(),
