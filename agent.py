@@ -88,15 +88,14 @@ def _to_completion_error(exc: Exception) -> CompletionError:
 
 
 MODEL_PROVIDERS: dict[str, str] = {
-    "gpt-4o-mini": "openai",
     "gpt-4.1-mini": "openai",
     "gpt-5.4-mini": "openai",
-    "gpt-5": "openai",
+    "gpt-5.4": "openai",
     "grok-4.20-0309-reasoning": "xai",
     "grok-4.20-0309-non-reasoning": "xai",
     "grok-4-1-fast-reasoning": "xai",
     "gemini-3.1-flash-lite-preview": "google_genai",
-    "gemini-3-flash-preview": "google_genai",
+    "gemini-3.5-flash": "google_genai",
 }
 
 PROVIDER_LABEL: dict[str, str] = {

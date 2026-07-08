@@ -23,9 +23,9 @@ The current model list is defined in `agent.py` via `MODEL_PROVIDERS`, which rou
 
 Supported today:
 
-- OpenAI: `gpt-4o-mini`, `gpt-4.1-mini`, `gpt-5.4-mini`, `gpt-5`
+- OpenAI: `gpt-4.1-mini`, `gpt-5.4-mini`, `gpt-5.4`
 - xAI: `grok-4.20-0309-reasoning`, `grok-4.20-0309-non-reasoning`, `grok-4-1-fast-reasoning`
-- Gemini: `gemini-3.1-flash-lite-preview`, `gemini-3-flash-preview`
+- Gemini: `gemini-3.1-flash-lite-preview`, `gemini-3.5-flash`
 
 Each model is routed to its provider (`openai`, `xai`, or `google_genai`) and built with LangChain's `init_chat_model()`.
 

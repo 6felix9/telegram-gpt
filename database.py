@@ -618,14 +618,14 @@ class Database:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
                     cur.execute("SELECT model FROM active_model WHERE id = 1")
                     row = cur.fetchone()
-                    result = row["model"] if row else "gpt-4o-mini"
+                    result = row["model"] if row else "gpt-5.4-mini"
 
             self._cache.set(cache_key, result, ttl=60.0)
             return result
 
         except Exception as e:
             logger.error(f"Failed to get active model: {e}", exc_info=True)
-            return "gpt-4o-mini"
+            return "gpt-5.4-mini"
 
     def set_active_model(self, model: str) -> None:
         """Persist the active model and invalidate cache."""
