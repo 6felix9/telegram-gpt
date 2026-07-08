@@ -76,6 +76,7 @@ def _to_completion_error(exc: Exception) -> CompletionError:
             "Use /clear to clear history and try again."
         )
     if "connection" in name.lower() or "connection" in text:
+        logger.error("Connection error in agent run: %s", exc, exc_info=True)
         return CompletionError(
             "❌ Network error connecting to the API. "
             "Please check your internet connection."
