@@ -11,6 +11,7 @@ The bot is triggered by the keyword `chatgpt` or by directly mentioning the bot.
 - Token-aware context trimming with `tiktoken`
 - Group chat context storage for better follow-up answers
 - Image handling through multimodal model requests
+- Web search and page-fetch agent tools (Tavily, falling back to DuckDuckGo)
 - Allowlist-based access control
 - Global model switching with `/model`
 - Global group personality switching with `/personality`
@@ -26,7 +27,7 @@ Supported today:
 - xAI: `grok-4.20-0309-reasoning`, `grok-4.20-0309-non-reasoning`, `grok-4-1-fast-reasoning`
 - Gemini: `gemini-3.1-flash-lite-preview`, `gemini-3-flash-preview`
 
-OpenAI and xAI models use the Responses API path. Gemini models use the Chat Completions path through the OpenAI-compatible Gemini endpoint.
+Each model is routed to its provider (`openai`, `xai`, or `google_genai`) and built with LangChain's `init_chat_model()`.
 
 ## Requirements
 
@@ -135,9 +136,7 @@ The current `docker-compose.yml` still mounts `./data:/app/data`, but the bot's 
 
 ## Commands
 
-User-accessible commands:
-
-Main-admin-only commands:
+All commands are restricted to the main admin (`AUTHORIZED_USER_ID`); granted users can chat with the bot but cannot run commands:
 
 - `/clear` - Clear conversation history for the current chat
 - `/stats` - Show message count and token usage for the current chat
@@ -157,7 +156,7 @@ The bot uses a two-tier allowlist:
 - `AUTHORIZED_USER_ID` is the main admin
 - Additional users can be granted access with `/grant`
 
-The main admin can use all commands. Granted users can talk to the bot but cannot change global settings.
+The main admin can use all commands. Granted users can talk to the bot but cannot run any command, including `/clear` and `/stats`.
 
 ## Configuration
 
@@ -171,12 +170,12 @@ Environment variables are loaded from `.env`.
 | `XAI_API_KEY` | Empty | Required for Grok models |
 | `GEMINI_API_KEY` | Empty | Required for Gemini models |
 | `TAVILY_API_KEY` | Empty | Optional; powers the agent's web search tool. If blank, the search tool falls back to DuckDuckGo at runtime |
-| `DEFAULT_MODEL` | `gpt-4.1-mini` | Initial model used to seed `active_model` on first run |
+| `DEFAULT_MODEL` | `gpt-5.4-mini` | Initial model used to seed `active_model` on first run |
 | `OPENAI_TIMEOUT` | `60` | API timeout in seconds |
 | `MAX_CONTEXT_TOKENS` | `16000` | Total history budget before reserve tokens |
-| `RESERVE_TOKENS_TEXT` | `1000` | Tokens reserved for text responses |
+| `RESERVE_TOKENS_TEXT` | `2000` | Tokens reserved for text responses |
 | `RESERVE_TOKENS_IMAGE` | `3000` | Tokens reserved for vision responses |
-| `MAX_GROUP_CONTEXT_MESSAGES` | `100` | Group message retention target used by cleanup |
+| `MAX_GROUP_CONTEXT_MESSAGES` | `500` | Group message retention target used by cleanup |
 | `AUTHORIZED_USER_ID` | Required | Main admin Telegram user ID |
 | `DATABASE_URL` | Required | PostgreSQL / Neon connection string |
 | `LOG_LEVEL` | `INFO` | Python logging level |
@@ -260,8 +259,6 @@ Primary tables:
 - `active_personality`
 - `active_model`
 
-See `database.md` for the verified live schema summary.
-
 ## Checkpointer Setup
 
 The LangGraph agent's conversation checkpoints live in their own tables (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`), owned and versioned by `langgraph-checkpoint-postgres` — they are intentionally **not** part of the Alembic-managed schema above.
@@ -278,8 +275,6 @@ python scripts/setup_checkpointer.py
   ```
   alembic upgrade head && python scripts/setup_checkpointer.py
   ```
-
-See `database.md` for details on what these tables are for.
 
 ## Validation
 
