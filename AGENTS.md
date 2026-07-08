@@ -13,8 +13,8 @@ The bot is no longer "OpenAI only". `agent.py` routes requests by model name to 
 
 ## Project Structure & Module Organization
 
-- Core runtime files are at repo root: `bot.py` (entrypoint), `handlers.py` (Telegram handlers and commands), `agent.py` (LangChain agent construction, provider/model routing via `MODEL_PROVIDERS`, and the trimming middleware), `tools.py` (agent tools), `database.py` (PostgreSQL/Neon persistence and global settings), `prompt_builder.py` (system prompt construction and message formatting), `cache.py` (TTL cache helpers), and `config.py` (env-driven settings).
-- Operational docs live in `README.md`, `AGENTS.md`, and `database.md`.
+- Core runtime files are at repo root: `bot.py` (entrypoint), `handlers.py` (Telegram handlers and commands), `agent.py` (LangChain agent construction, provider/model routing via `MODEL_PROVIDERS`, and the trimming middleware), `tools.py` (agent tools: web search and page fetch), `database.py` (PostgreSQL/Neon persistence and global settings), `prompt_builder.py` (system prompt construction and message formatting), `cache.py` (TTL cache helpers), and `config.py` (env-driven settings).
+- Operational docs live in `README.md` and `AGENTS.md`.
 - Utility scripts are in `scripts/` (notably `scripts/chat_cli.py` for local chat simulation).
 - Unit tests live in `tests/` (pytest; no database or `.env` required).
 
@@ -30,6 +30,7 @@ The bot is no longer "OpenAI only". `agent.py` routes requests by model name to 
 6. `prompt_builder.py` builds system prompts and normalizes message payloads for the agent.
 7. The checkpointer (`PostgresSaver`, keyed by chat_id thread) persists conversation state across turns; token counting and trimming live in `agent.py`, not a separate module.
 8. `cache.py` provides a small TTL cache used by the database layer.
+9. `tools.py` builds the agent's tools: a web search tool (Tavily when `TAVILY_API_KEY` is set, else a DuckDuckGo fallback) and a page-fetch tool, wired into the agent via `create_agent`.
 
 ### Provider / API Routing
 
@@ -151,13 +152,6 @@ CI runs the same compile and pytest steps on pull requests and pushes to `main` 
 - Promote `dev` → `main` via a pull request (`gh pr create --base main --head dev`), not a local merge and direct push. This keeps a reviewable diff and CI status visible before anything reaches production.
 - `main` is a protected branch: direct pushes are blocked and the `CI` workflow must pass before a PR can merge.
 
-## Branching & Release Workflow
-
-- Two long-lived branches: `dev` (staging) and `main` (production). Do new work on `dev`, or on a short-lived branch merged into `dev`.
-- Pushing to `dev` auto-deploys to the Railway `dev` environment (its own bot + Neon database branch) — use this to verify changes against a real bot before they reach users.
-- Promote `dev` → `main` via a pull request (`gh pr create --base main --head dev`), not a local merge and direct push. This keeps a reviewable diff and CI status visible before anything reaches production.
-- `main` is a protected branch: direct pushes are blocked and the `CI` workflow must pass before a PR can merge.
-
 ## Database Schema
 
 Expected tables:
@@ -175,8 +169,6 @@ Important details:
 - `active_personality` is a single-row table
 - Schema is version-controlled via Alembic migrations in `alembic/versions/`, applied with `alembic upgrade head` (not created automatically on boot)
 
-See `database.md` for the current verified live schema summary.
-
 ## Configuration
 
 Relevant environment variables:
@@ -191,6 +183,7 @@ Relevant environment variables:
 - `MAX_CONTEXT_TOKENS`
 - `RESERVE_TOKENS_TEXT`
 - `RESERVE_TOKENS_IMAGE`
+- `TAVILY_API_KEY`
 - `MAX_GROUP_CONTEXT_MESSAGES`
 - `AUTHORIZED_USER_ID`
 - `DATABASE_URL`
@@ -201,17 +194,15 @@ Important notes:
 - `DEFAULT_MODEL` is only the seed value for a fresh database
 - `config.py` validates the API key required by `DEFAULT_MODEL`
 - The running bot may use a different model if `/model` has changed `active_model`
+- `TAVILY_API_KEY` is optional; when blank, `tools.py` falls back to a DuckDuckGo-backed web search tool instead of Tavily
 
 ## Commands
 
-Authorized users:
+All commands are main admin only (gated by `is_main_authorized_user()` in `handlers.py`); granted users can chat with the bot but cannot run any command:
 
 - `/clear`
 - `/stats`
 - `/version`
-
-Main admin only:
-
 - `/grant <user_id>`
 - `/revoke <user_id>`
 - `/allowlist`
