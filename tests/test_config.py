@@ -9,7 +9,7 @@ def _fresh_config(monkeypatch, env: dict):
     for key in [
         "TELEGRAM_BOT_TOKEN", "BOT_USERNAME", "OPENAI_API_KEY", "XAI_API_KEY",
         "GEMINI_API_KEY", "DEFAULT_MODEL", "OPENAI_TIMEOUT", "MAX_CONTEXT_TOKENS",
-        "RESERVE_TOKENS_TEXT", "RESERVE_TOKENS_IMAGE", "MAX_GROUP_CONTEXT_MESSAGES",
+        "MAX_OUTPUT_TOKENS", "MAX_GROUP_CONTEXT_MESSAGES",
         "TAVILY_API_KEY", "AUTHORIZED_USER_ID", "DATABASE_URL", "LOG_LEVEL",
     ]:
         monkeypatch.delenv(key, raising=False)
@@ -31,8 +31,7 @@ VALID = {
 def test_defaults_apply_when_optional_unset(monkeypatch):
     cfg = _fresh_config(monkeypatch, VALID)
     assert cfg.config.DEFAULT_MODEL == "gpt-5.4-mini"
-    assert cfg.config.RESERVE_TOKENS_TEXT == 2000
-    assert cfg.config.RESERVE_TOKENS_IMAGE == 3000
+    assert cfg.config.MAX_OUTPUT_TOKENS == 2048
     assert cfg.config.MAX_CONTEXT_TOKENS == 16000
     assert cfg.config.MAX_GROUP_CONTEXT_MESSAGES == 500
     assert cfg.config.OPENAI_TIMEOUT == 60

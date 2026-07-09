@@ -173,8 +173,7 @@ Environment variables are loaded from `.env`.
 | `DEFAULT_MODEL` | `gpt-5.4-mini` | Initial model used to seed `active_model` on first run |
 | `OPENAI_TIMEOUT` | `60` | API timeout in seconds |
 | `MAX_CONTEXT_TOKENS` | `16000` | Total history budget before reserve tokens |
-| `RESERVE_TOKENS_TEXT` | `2000` | Tokens reserved for text responses |
-| `RESERVE_TOKENS_IMAGE` | `3000` | Tokens reserved for vision responses |
+| `MAX_OUTPUT_TOKENS` | `2048` | Max tokens per reply; also the trimming middleware's reserve |
 | `MAX_GROUP_CONTEXT_MESSAGES` | `500` | Group message retention target used by cleanup |
 | `AUTHORIZED_USER_ID` | Required | Main admin Telegram user ID |
 | `DATABASE_URL` | Required | PostgreSQL / Neon connection string |
