@@ -28,9 +28,9 @@ class Config:
     OPENAI_TIMEOUT = int(os.getenv("OPENAI_TIMEOUT", "60"))
     MAX_CONTEXT_TOKENS = int(os.getenv("MAX_CONTEXT_TOKENS", "16000"))
 
-    # Token Reserve Configuration
-    RESERVE_TOKENS_TEXT = int(os.getenv("RESERVE_TOKENS_TEXT", "2000"))
-    RESERVE_TOKENS_IMAGE = int(os.getenv("RESERVE_TOKENS_IMAGE", "3000"))
+    # Max tokens the model may generate per reply; also used as the trimming
+    # middleware's reserve (history budget = MAX_CONTEXT_TOKENS - this).
+    MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "2048"))
 
     # Web search tool (Tavily); blank falls back to DuckDuckGo at runtime
     TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
@@ -69,8 +69,7 @@ class Config:
         if not cls.DATABASE_URL.strip():
             errors.append("DATABASE_URL is required")
 
-        for name in ("OPENAI_TIMEOUT", "MAX_CONTEXT_TOKENS",
-                     "RESERVE_TOKENS_TEXT", "RESERVE_TOKENS_IMAGE"):
+        for name in ("OPENAI_TIMEOUT", "MAX_CONTEXT_TOKENS", "MAX_OUTPUT_TOKENS"):
             if getattr(cls, name) <= 0:
                 errors.append(f"{name} must be positive")
 

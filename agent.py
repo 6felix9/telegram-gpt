@@ -148,14 +148,6 @@ def _message_text(message: BaseMessage) -> str:
     return " ".join(parts)
 
 
-def _has_image(message: BaseMessage) -> bool:
-    content = message.content
-    return isinstance(content, list) and any(
-        isinstance(b, dict) and b.get("type") in ("image_url", "image", "input_image")
-        for b in content
-    )
-
-
 def count_message_tokens(message: BaseMessage) -> int:
     """Approximate token count of one message, including per-message overhead."""
     return count_tokens(_message_text(message)) + 4
@@ -164,8 +156,7 @@ def count_message_tokens(message: BaseMessage) -> int:
 def trim_messages(
     messages: list[BaseMessage],
     max_context_tokens: int,
-    reserve_text: int,
-    reserve_image: int,
+    reserve: int,
 ) -> list[BaseMessage]:
     """Keep as much recent history as fits the budget, newest-first.
 
@@ -176,7 +167,6 @@ def trim_messages(
     if not messages:
         return []
 
-    reserve = reserve_image if any(_has_image(m) for m in messages) else reserve_text
     available = max(0, max_context_tokens - reserve)
 
     kept: list[BaseMessage] = [messages[-1]]
@@ -196,14 +186,12 @@ def trim_messages(
     return kept
 
 
-def make_trim_middleware(max_context_tokens: int, reserve_text: int, reserve_image: int):
+def make_trim_middleware(max_context_tokens: int, reserve: int):
     """Build a wrap_model_call middleware that trims request.messages non-destructively."""
 
     @wrap_model_call
     def trim(request: ModelRequest, handler) -> ModelResponse:
-        trimmed = trim_messages(
-            list(request.messages), max_context_tokens, reserve_text, reserve_image
-        )
+        trimmed = trim_messages(list(request.messages), max_context_tokens, reserve)
         return handler(request.override(messages=trimmed))
 
     return trim
@@ -240,11 +228,7 @@ class Agent:
         self._tools = build_tools(config)  # from tools.py
         self._middleware = [
             _make_dynamic_prompt(prompt_builder),
-            make_trim_middleware(
-                config.MAX_CONTEXT_TOKENS,
-                config.RESERVE_TOKENS_TEXT,
-                config.RESERVE_TOKENS_IMAGE,
-            ),
+            make_trim_middleware(config.MAX_CONTEXT_TOKENS, config.MAX_OUTPUT_TOKENS),
         ]
         self.model_name = model_name
         self._provider = None
@@ -276,6 +260,7 @@ class Agent:
             api_key=key,
             timeout=self._config.OPENAI_TIMEOUT,
             max_retries=2,
+            max_tokens=self._config.MAX_OUTPUT_TOKENS,
         )
         self._compile(model)
         logger.info("Agent compiled for %s (%s)", model_name, provider)

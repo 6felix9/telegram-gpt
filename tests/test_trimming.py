@@ -12,7 +12,7 @@ def test_keeps_recent_and_drops_old_when_over_budget():
     # Many large messages; only the newest should survive a tiny budget.
     big = "word " * 500
     messages = [HumanMessage(content=big) for _ in range(10)]
-    kept = agent.trim_messages(messages, 200, 50, 300)
+    kept = agent.trim_messages(messages, 200, 300)
     assert kept[-1] is messages[-1]
     assert len(kept) < len(messages)
 
@@ -34,7 +34,7 @@ def test_never_starts_with_orphan_tool_message():
         + agent.count_message_tokens(messages[2])
         + 5
     )
-    kept = agent.trim_messages(messages, max_context, 0, 300)
+    kept = agent.trim_messages(messages, max_context, 0)
     # The AIMessage was trimmed by age, so the orphan-drop loop must fire,
     # leaving exactly the HumanMessage behind.
     assert not (kept and isinstance(kept[0], ToolMessage))
@@ -46,6 +46,6 @@ def test_lone_most_recent_tool_message_is_never_dropped():
     # trim_messages must not strip it even though the orphan-drop loop
     # would otherwise treat it as a leading orphaned ToolMessage.
     messages = [ToolMessage(content="result", tool_call_id="1")]
-    kept = agent.trim_messages(messages, 100000, 0, 300)
+    kept = agent.trim_messages(messages, 100000, 0)
     assert kept != []
     assert kept[-1] is messages[-1]

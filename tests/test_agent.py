@@ -27,8 +27,7 @@ class _Cfg:
     TAVILY_API_KEY = ""
     OPENAI_TIMEOUT = 60
     MAX_CONTEXT_TOKENS = 16000
-    RESERVE_TOKENS_TEXT = 2000
-    RESERVE_TOKENS_IMAGE = 3000
+    MAX_OUTPUT_TOKENS = 2048
 
 
 def _prompt_builder():
