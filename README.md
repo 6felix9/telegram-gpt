@@ -23,7 +23,7 @@ The current model list is defined in `agent.py` via `MODEL_PROVIDERS`, which rou
 
 Supported today:
 
-- OpenAI: `gpt-4.1-mini`, `gpt-5.4-mini`, `gpt-5.4`
+- OpenAI: `gpt-4.1-mini`, `gpt-5.4-mini`, `gpt-5.4`, `gpt-5.6-luna`, `gpt-5.6-terra`
 - xAI: `grok-4.20-0309-reasoning`, `grok-4.20-0309-non-reasoning`, `grok-4-1-fast-reasoning`
 - Gemini: `gemini-3.1-flash-lite-preview`, `gemini-3.5-flash`
 
