@@ -5,6 +5,10 @@ import agent
 
 def test_known_models_map_to_expected_providers():
     assert agent.resolve_model("gpt-5.4") == ("openai", "openai:gpt-5.4")
+    assert agent.resolve_model("gpt-5.6-luna") == (
+        "openai", "openai:gpt-5.6-luna")
+    assert agent.resolve_model("gpt-5.6-terra") == (
+        "openai", "openai:gpt-5.6-terra")
     assert agent.resolve_model("grok-4-1-fast-reasoning") == (
         "xai", "xai:grok-4-1-fast-reasoning")
     assert agent.resolve_model("gemini-3.5-flash") == (
