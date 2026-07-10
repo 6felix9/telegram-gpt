@@ -92,6 +92,8 @@ MODEL_PROVIDERS: dict[str, str] = {
     "gpt-4.1-mini": "openai",
     "gpt-5.4-mini": "openai",
     "gpt-5.4": "openai",
+    "gpt-5.6-luna": "openai",
+    "gpt-5.6-terra": "openai",
     "grok-4.20-0309-reasoning": "xai",
     "grok-4.20-0309-non-reasoning": "xai",
     "grok-4-1-fast-reasoning": "xai",
