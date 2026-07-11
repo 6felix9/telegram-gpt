@@ -263,6 +263,7 @@ class Agent:
             timeout=self._config.OPENAI_TIMEOUT,
             max_retries=2,
             max_tokens=self._config.MAX_OUTPUT_TOKENS,
+            **({"use_responses_api": True} if provider == "openai" else {}),
         )
         self._compile(model)
         logger.info("Agent compiled for %s (%s)", model_name, provider)
