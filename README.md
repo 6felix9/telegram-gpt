@@ -264,6 +264,11 @@ The LangGraph agent's conversation checkpoints live in their own tables (`checkp
 
 The latest checkpoint state is temporarily bounded by fixed limits in `agent.py`: exceeding 500 messages prunes the oldest messages until 400 remain. Historical checkpoint rows still accumulate. A future memory architecture should add conversation summarization, durable long-term memory, and checkpoint-history retention or compaction.
 
+Current storage-growth limitations:
+
+- LangGraph's historical checkpoint rows continue accumulating even though the bot only reads the latest state.
+- The application `messages` audit-log table is also unbounded while its database cleanup remains disabled.
+
 Run this once per environment, after `alembic upgrade head` and before the bot starts (it is idempotent — safe to re-run):
 
 ```bash
