@@ -174,7 +174,7 @@ Environment variables are loaded from `.env`.
 | `OPENAI_TIMEOUT` | `60` | API timeout in seconds |
 | `MAX_CONTEXT_TOKENS` | `16000` | Total history budget before reserve tokens |
 | `MAX_OUTPUT_TOKENS` | `2048` | Max tokens per reply; also the trimming middleware's reserve |
-| `MAX_GROUP_CONTEXT_MESSAGES` | `500` | Group message retention target used by cleanup |
+| `MAX_GROUP_CONTEXT_MESSAGES` | `500` | Reserved for future group message retention; cleanup is currently disabled |
 | `AUTHORIZED_USER_ID` | Required | Main admin Telegram user ID |
 | `DATABASE_URL` | Required | PostgreSQL / Neon connection string |
 | `LOG_LEVEL` | `INFO` | Python logging level |
