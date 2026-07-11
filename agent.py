@@ -15,7 +15,7 @@ from langchain.agents.middleware import (
     ModelResponse,
 )
 from langchain.chat_models import init_chat_model
-from langchain_core.messages import BaseMessage, ToolMessage
+from langchain_core.messages import BaseMessage, RemoveMessage, ToolMessage
 
 from prompt_builder import PromptBuilder
 from tools import build_tools
@@ -43,6 +43,11 @@ Key behaviors:
 
 # tiktoken encoding is model-independent for our budgeting purposes.
 _ENCODING = tiktoken.get_encoding("cl100k_base")
+
+# Temporary latest-checkpoint guard. Replace with summarization and durable
+# long-term memory as part of the future context-engineering architecture.
+MAX_CHECKPOINT_MESSAGES = 500
+CHECKPOINT_PRUNE_TARGET_MESSAGES = 400
 
 
 class CompletionError(Exception):
@@ -188,6 +193,33 @@ def trim_messages(
     return kept
 
 
+def checkpoint_messages_to_remove(
+    messages: list[BaseMessage],
+    max_messages: int | None = None,
+    target_messages: int | None = None,
+) -> list[RemoveMessage]:
+    """Return removals that reduce an oversized checkpoint to its target."""
+    if max_messages is None:
+        max_messages = MAX_CHECKPOINT_MESSAGES
+    if target_messages is None:
+        target_messages = CHECKPOINT_PRUNE_TARGET_MESSAGES
+
+    if len(messages) <= max_messages:
+        return []
+
+    remove_count = len(messages) - target_messages
+
+    # Do not leave a ToolMessage without its preceding AI tool call.
+    while remove_count < len(messages) and isinstance(messages[remove_count], ToolMessage):
+        remove_count += 1
+
+    return [
+        RemoveMessage(id=message.id)
+        for message in messages[:remove_count]
+        if message.id is not None
+    ]
+
+
 def make_trim_middleware(max_context_tokens: int, reserve: int):
     """Build a wrap_model_call middleware that trims request.messages non-destructively."""
 
@@ -272,6 +304,33 @@ class Agent:
     def _config_for(self, chat_id: str) -> dict:
         return {"configurable": {"thread_id": str(chat_id)}}
 
+    def _prune_checkpoint(self, chat_id: str, messages: list[BaseMessage]) -> None:
+        """Best-effort temporary cap for the latest checkpoint message state."""
+        removals = checkpoint_messages_to_remove(
+            messages,
+            MAX_CHECKPOINT_MESSAGES,
+            CHECKPOINT_PRUNE_TARGET_MESSAGES,
+        )
+        if not removals:
+            return
+
+        try:
+            self._graph.update_state(
+                self._config_for(chat_id), {"messages": removals}
+            )
+            logger.info(
+                "Pruned %s checkpoint messages for chat %s",
+                len(removals),
+                chat_id,
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to prune checkpoint messages for chat %s: %s",
+                chat_id,
+                e,
+                exc_info=True,
+            )
+
     async def run(self, chat_id, human_message, is_group, reply_context=None) -> str:
         if self._graph is None:
             raise CompletionError(
@@ -285,7 +344,9 @@ class Agent:
                 config=self._config_for(chat_id),
                 context=AgentContext(is_group=is_group, reply_context=reply_context),
             )
-            return _message_text(result["messages"][-1])
+            response = _message_text(result["messages"][-1])
+            self._prune_checkpoint(chat_id, list(result["messages"]))
+            return response
         except CompletionError:
             raise
         except Exception as e:
@@ -296,8 +357,12 @@ class Agent:
         if self._graph is None:
             return
         try:
-            self._graph.update_state(
+            updated_config = self._graph.update_state(
                 self._config_for(chat_id), {"messages": [human_message]}
+            )
+            state = self._graph.get_state(updated_config)
+            self._prune_checkpoint(
+                chat_id, list(state.values.get("messages", []))
             )
         except Exception as e:
             logger.error("Failed to append context message: %s", e, exc_info=True)
