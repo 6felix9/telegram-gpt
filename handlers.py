@@ -2,7 +2,6 @@
 import asyncio
 import logging
 import re
-import random
 import base64
 from contextlib import asynccontextmanager
 from telegram import Update
@@ -166,8 +165,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 prompt_builder.to_lc_human_message(
                     text=message.text, is_group=True, sender_name=sender_name),
             )
-            if random.random() < 0.1:
-                db.cleanup_old_group_messages(chat_id, config.MAX_GROUP_CONTEXT_MESSAGES)
+            # Group messages are currently stored without a database retention
+            # limit. TODO: add a coordinated cleanup policy for stored messages
+            # and checkpoint state.
+            # if random.random() < 0.1:
+            #     db.cleanup_old_group_messages(
+            #         chat_id, config.MAX_GROUP_CONTEXT_MESSAGES
+            #     )
         except Exception as e:
             logger.error(f"Failed to store group message: {e}")
         return  # Don't process, just store for context

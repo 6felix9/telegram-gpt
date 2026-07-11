@@ -59,7 +59,7 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 - Text messages in groups are stored even when they do not trigger the bot.
 - This storage happens only for text messages; non-triggering photo posts are ignored.
 - Group user messages are formatted as `[Name]: message` before model submission.
-- Cleanup is probabilistic: `cleanup_old_group_messages()` runs with a 10% chance on stored non-triggering group text messages.
+- Stored group messages currently have no retention limit. The previous probabilistic database cleanup is disabled pending a coordinated cleanup policy for stored messages and checkpoint state.
 
 ### Image Handling
 
