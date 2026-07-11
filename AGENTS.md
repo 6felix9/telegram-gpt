@@ -28,7 +28,7 @@ The bot is no longer "OpenAI only". `agent.py` routes requests by model name to 
 4. `handlers.py` implements Telegram message handlers and bot commands.
 5. `agent.py` builds the LangChain agent (`create_agent` + `init_chat_model`), maps the active model to a provider via `MODEL_PROVIDERS`, and applies the `wrap_model_call` trimming middleware before each model call.
 6. `prompt_builder.py` builds system prompts and normalizes message payloads for the agent.
-7. The checkpointer (`PostgresSaver`, keyed by chat_id thread) persists conversation state across turns; token counting and trimming live in `agent.py`, not a separate module.
+7. The checkpointer (`PostgresSaver`, keyed by chat_id thread) persists conversation state across turns; `agent.py` temporarily bounds the latest state with fixed 500→400 limits, while token counting and model-input trimming remain separate.
 8. `cache.py` provides a small TTL cache used by the database layer.
 9. `tools.py` builds the agent's tools: a web search tool (Tavily when `TAVILY_API_KEY` is set, else a DuckDuckGo fallback) and a page-fetch tool, wired into the agent via `create_agent`.
 
@@ -59,7 +59,8 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 - Text messages in groups are stored even when they do not trigger the bot.
 - This storage happens only for text messages; non-triggering photo posts are ignored.
 - Group user messages are formatted as `[Name]: message` before model submission.
-- Stored group messages currently have no retention limit. The previous probabilistic database cleanup is disabled pending a coordinated cleanup policy for stored messages and checkpoint state.
+- Stored group messages in the application `messages` table currently have no retention limit. The previous probabilistic database cleanup remains disabled.
+- Latest LangGraph checkpoint state uses a temporary 500→400 message cap. Historical checkpoint retention, summarization, and durable long-term memory remain future context-engineering work.
 
 ### Image Handling
 

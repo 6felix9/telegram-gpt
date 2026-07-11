@@ -262,6 +262,8 @@ Primary tables:
 
 The LangGraph agent's conversation checkpoints live in their own tables (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`), owned and versioned by `langgraph-checkpoint-postgres` — they are intentionally **not** part of the Alembic-managed schema above.
 
+The latest checkpoint state is temporarily bounded by fixed limits in `agent.py`: exceeding 500 messages prunes the oldest messages until 400 remain. Historical checkpoint rows still accumulate. A future memory architecture should add conversation summarization, durable long-term memory, and checkpoint-history retention or compaction.
+
 Run this once per environment, after `alembic upgrade head` and before the bot starts (it is idempotent — safe to re-run):
 
 ```bash
