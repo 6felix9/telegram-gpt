@@ -1,8 +1,26 @@
-# Telegram GPT Bot
+<p align="center">
+  <img src="assets/logo.png" alt="Telegram GPT Bot logo" width="160">
+</p>
 
-A Telegram bot with persistent chat history, token-aware context trimming, image support, and a PostgreSQL/Neon backend.
+<h1 align="center">Telegram GPT Bot</h1>
 
-The bot is triggered by the keyword `chatgpt` or by directly mentioning the bot. It supports multiple model providers and persists the active model in the database so model switches survive restarts.
+<p align="center">
+  An AI agent that lives directly in your Telegram.
+</p>
+
+A Telegram bot with persistent chat history, token-aware context trimming, image support, and a PostgreSQL/Neon backend. It's triggered by the keyword `chatgpt` or by directly mentioning the bot, supports multiple model providers, and persists the active model in the database so model switches survive restarts.
+
+## Tech Stack
+
+- **Language:** Python 3.12+
+- **Bot framework:** [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot)
+- **Agent orchestration:** LangChain / LangGraph (`create_agent`, `init_chat_model`)
+- **Model providers:** OpenAI, xAI, Google Gemini
+- **Database:** PostgreSQL / [Neon](https://neon.tech/)
+- **Migrations:** Alembic
+- **Token counting:** [tiktoken](https://github.com/openai/tiktoken)
+- **Web search:** Tavily, falling back to DuckDuckGo
+- **Deployment:** Docker, Railway
 
 ## Features
 
