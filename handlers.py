@@ -159,7 +159,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 sender_name=sender_name, sender_username=sender_username,
                 is_group_chat=is_group,
             )
-            agent.append_context_message(
+            await agent.append_context_message(
                 chat_id,
                 prompt_builder.to_lc_human_message(
                     text=message.text, is_group=is_group, sender_name=sender_name),

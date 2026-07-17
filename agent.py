@@ -352,10 +352,15 @@ class Agent:
         except Exception as e:
             raise _to_completion_error(e) from e
 
-    def append_context_message(self, chat_id, human_message) -> None:
+    async def append_context_message(self, chat_id, human_message) -> None:
         """Append a non-triggering message to the thread (no model call)."""
         if self._graph is None:
             return
+        await asyncio.to_thread(
+            self._append_context_message_sync, chat_id, human_message
+        )
+
+    def _append_context_message_sync(self, chat_id, human_message) -> None:
         try:
             updated_config = self._graph.update_state(
                 self._config_for(chat_id), {"messages": [human_message]}
