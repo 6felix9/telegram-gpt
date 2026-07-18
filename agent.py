@@ -353,7 +353,7 @@ class Agent:
             raise _to_completion_error(e) from e
 
     def append_context_message(self, chat_id, human_message) -> None:
-        """Append a non-triggering group message to the thread (no model call)."""
+        """Append a non-triggering message to the thread (no model call)."""
         if self._graph is None:
             return
         try:

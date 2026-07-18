@@ -54,12 +54,13 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 8. `agent.run()` invokes the LangChain agent, which calls the active provider.
 9. On success, the assistant response is stored and sent back to Telegram. API failures raise `CompletionError` and are shown to the user without persisting an assistant message.
 
-### Group Chat Behavior
+### Context Storage (Private and Group)
 
-- Text messages in groups are stored even when they do not trigger the bot.
-- This storage happens only for text messages; non-triggering photo posts are ignored.
-- Group user messages are formatted as `[Name]: message` before model submission.
-- Stored group messages in the application `messages` table currently have no retention limit. The previous probabilistic database cleanup remains disabled.
+- Non-triggering **text** messages are stored in both private DMs and groups (audit `messages` table + checkpoint via `append_context_message`), even when they do not trigger a reply.
+- This storage happens only for text messages; non-triggering photo posts are ignored in both chat types.
+- Group user messages are formatted as `[Name]: message` before model submission; private messages are stored as plain text.
+- Replies still require `chatgpt` or `@BOT_USERNAME`, and authorization is still checked before the model runs.
+- Stored messages in the application `messages` table currently have no retention limit. The previous probabilistic database cleanup remains disabled.
 - Latest LangGraph checkpoint state uses a temporary 500→400 message cap. Historical checkpoint retention, summarization, and durable long-term memory remain future context-engineering work.
 
 ### Image Handling

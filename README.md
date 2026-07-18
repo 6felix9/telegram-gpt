@@ -137,7 +137,8 @@ The current `docker-compose.yml` still mounts `./data:/app/data`, but the bot's 
 
 - The bot responds when the message contains `chatgpt` or `@BOT_USERNAME`
 - Authorization is checked per user
-- Messages without activation are ignored
+- Text messages without activation are still stored for context (no reply)
+- Private chats use the default private system prompt (not `/personality`)
 
 ### Group Chats
 
@@ -145,6 +146,7 @@ The current `docker-compose.yml` still mounts `./data:/app/data`, but the bot's 
 - Text messages without activation are still stored for context
 - Authorization is still checked per user, not per chat
 - Stored group messages are formatted internally as `[Name]: message`
+- Group chats use the group system prompt or the active `/personality`
 
 ### Images
 
