@@ -149,35 +149,30 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 2. Check for activation keyword
     has_keyword, prompt = extract_keyword(message.text, bot_username)
 
-    # In group chats, store ALL messages for context (even without keyword)
-    if is_group and not has_keyword:
-        # Audit-log to `messages` and append to the checkpoint thread for context.
+    # Store non-triggering text for context (private and group); do not reply.
+    if not has_keyword:
         try:
             db.add_message(
                 chat_id=chat_id, role="user", content=message.text,
                 user_id=user_id, message_id=message.message_id,
                 token_count=count_tokens(message.text),
                 sender_name=sender_name, sender_username=sender_username,
-                is_group_chat=True,
+                is_group_chat=is_group,
             )
             agent.append_context_message(
                 chat_id,
                 prompt_builder.to_lc_human_message(
-                    text=message.text, is_group=True, sender_name=sender_name),
+                    text=message.text, is_group=is_group, sender_name=sender_name),
             )
-            # Group messages are currently stored without a database retention
-            # limit. TODO: add a coordinated cleanup policy for stored messages
+            # Messages are currently stored without a database retention limit.
+            # TODO: add a coordinated cleanup policy for stored messages
             # and checkpoint state.
-            # if random.random() < 0.1:
+            # if is_group and random.random() < 0.1:
             #     db.cleanup_old_group_messages(
             #         chat_id, config.MAX_GROUP_CONTEXT_MESSAGES
             #     )
         except Exception as e:
-            logger.error(f"Failed to store group message: {e}")
-        return  # Don't process, just store for context
-
-    # If no keyword at all (private chat or group), ignore
-    if not has_keyword:
+            logger.error(f"Failed to store context message: {e}")
         return
 
     # 3. Authorization check
