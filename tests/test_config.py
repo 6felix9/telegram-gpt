@@ -8,7 +8,7 @@ def _fresh_config(monkeypatch, env: dict):
     """Reload config.py with a controlled environment."""
     for key in [
         "TELEGRAM_BOT_TOKEN", "BOT_USERNAME", "OPENAI_API_KEY", "XAI_API_KEY",
-        "GEMINI_API_KEY", "DEFAULT_MODEL", "OPENAI_TIMEOUT", "MAX_CONTEXT_TOKENS",
+        "GEMINI_API_KEY", "DEFAULT_MODEL", "MODEL_TIMEOUT", "MAX_CONTEXT_TOKENS",
         "MAX_OUTPUT_TOKENS", "MAX_GROUP_CONTEXT_MESSAGES",
         "TAVILY_API_KEY", "AUTHORIZED_USER_ID", "DATABASE_URL", "LOG_LEVEL",
     ]:
@@ -34,7 +34,7 @@ def test_defaults_apply_when_optional_unset(monkeypatch):
     assert cfg.config.MAX_OUTPUT_TOKENS == 2048
     assert cfg.config.MAX_CONTEXT_TOKENS == 16000
     assert cfg.config.MAX_GROUP_CONTEXT_MESSAGES == 500
-    assert cfg.config.OPENAI_TIMEOUT == 60
+    assert cfg.config.MODEL_TIMEOUT == 60
     assert cfg.config.BOT_USERNAME == ""
     assert cfg.config.TAVILY_API_KEY == ""
 
