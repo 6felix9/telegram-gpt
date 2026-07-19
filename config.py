@@ -32,6 +32,14 @@ class Config:
     # middleware's reserve (history budget = MAX_CONTEXT_TOKENS - this).
     MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "2048"))
 
+    # Rolling checkpoint summary. Summarization runs only on triggered requests.
+    SUMMARY_MODEL = os.getenv("SUMMARY_MODEL", "gpt-4.1-mini")
+    SUMMARY_TRIGGER_TOKENS = int(os.getenv("SUMMARY_TRIGGER_TOKENS", "10000"))
+    SUMMARY_KEEP_TOKENS = int(os.getenv("SUMMARY_KEEP_TOKENS", "4000"))
+    # Input budget for the summary model call, independent of MAX_CONTEXT_TOKENS
+    # (which bounds the reply model instead).
+    SUMMARY_CONTEXT_TOKENS = int(os.getenv("SUMMARY_CONTEXT_TOKENS", "14000"))
+
     # Web search tool (Tavily); blank falls back to DuckDuckGo at runtime
     TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 
@@ -69,9 +77,30 @@ class Config:
         if not cls.DATABASE_URL.strip():
             errors.append("DATABASE_URL is required")
 
-        for name in ("MODEL_TIMEOUT", "MAX_CONTEXT_TOKENS", "MAX_OUTPUT_TOKENS"):
+        for name in (
+            "MODEL_TIMEOUT",
+            "MAX_CONTEXT_TOKENS",
+            "MAX_OUTPUT_TOKENS",
+            "SUMMARY_TRIGGER_TOKENS",
+            "SUMMARY_KEEP_TOKENS",
+            "SUMMARY_CONTEXT_TOKENS",
+        ):
             if getattr(cls, name) <= 0:
                 errors.append(f"{name} must be positive")
+
+        if cls.SUMMARY_KEEP_TOKENS >= cls.SUMMARY_TRIGGER_TOKENS:
+            errors.append(
+                "SUMMARY_KEEP_TOKENS must be less than SUMMARY_TRIGGER_TOKENS"
+            )
+
+        older_partition_tokens = cls.SUMMARY_TRIGGER_TOKENS - cls.SUMMARY_KEEP_TOKENS
+        if cls.SUMMARY_CONTEXT_TOKENS < older_partition_tokens:
+            errors.append(
+                "SUMMARY_CONTEXT_TOKENS must be at least "
+                "SUMMARY_TRIGGER_TOKENS - SUMMARY_KEEP_TOKENS "
+                f"({older_partition_tokens}), or an ordinary (non-backlog) trigger "
+                "would silently drop history before it reaches the summary model"
+            )
 
         if cls.MAX_CONTEXT_TOKENS > 100000:
             logger.warning(
