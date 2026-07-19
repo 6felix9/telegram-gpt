@@ -3,7 +3,7 @@ import logging
 
 from telegram.helpers import escape_markdown
 
-from agent import MODEL_PROVIDERS
+from model_registry import MODEL_PROVIDERS
 from authorization import is_main_authorized_user
 from handler_deps import HandlerDependencies
 

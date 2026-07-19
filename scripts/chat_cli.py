@@ -41,7 +41,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import config
 from database import Database
 from prompt_builder import PromptBuilder
-from agent import Agent, MODEL_PROVIDERS, CompletionError
+from agent import Agent, CompletionError
+from model_registry import MODEL_PROVIDERS
 import agent as agent_module
 from psycopg_pool import ConnectionPool
 from psycopg.rows import dict_row
