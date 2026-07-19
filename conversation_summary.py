@@ -58,8 +58,9 @@ class SummaryAuditRecord:
 
 
 @dataclass
-class _PendingSummaryAuditRecord:
-    """Private audit metadata tied to one generated summary message."""
+class PendingSummaryAuditRecord:
+    """Audit metadata tied to one generated summary message, staged in
+    per-invocation context until the summary is confirmed checkpointed."""
 
     summary_message_id: str
     record: SummaryAuditRecord
@@ -170,6 +171,8 @@ class ResilientSummarizationMiddleware(SummarizationMiddleware):
         context = getattr(runtime, "context", None)
         if context is not None:
             context.summary_compacted = True
+        if self.on_summary is None:
+            return
         pending_records = getattr(context, "pending_summary_records", None)
         if pending_records is None:
             return
@@ -186,7 +189,7 @@ class ResilientSummarizationMiddleware(SummarizationMiddleware):
         if summary_message.id is None:
             summary_message.id = str(uuid.uuid4())
         pending_records.append(
-            _PendingSummaryAuditRecord(
+            PendingSummaryAuditRecord(
                 summary_message_id=str(summary_message.id),
                 record=SummaryAuditRecord(
                     chat_id=self._thread_id(runtime),
