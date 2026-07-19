@@ -13,7 +13,7 @@ The bot is no longer "OpenAI only". `agent.py` routes requests by model name to 
 
 ## Project Structure & Module Organization
 
-- Core runtime files are at repo root: `bot.py` (entrypoint), `handlers.py` (Telegram handlers and commands), `agent.py` (LangChain agent construction, provider/model routing via `MODEL_PROVIDERS`, and the trimming middleware), `tools.py` (agent tools: web search and page fetch), `database.py` (PostgreSQL/Neon persistence and global settings), `prompt_builder.py` (system prompt construction and message formatting), `cache.py` (TTL cache helpers), and `config.py` (env-driven settings).
+- Core runtime files are at repo root: `bot.py` (entrypoint), `handlers.py` (Telegram handlers and commands), `agent.py` (LangChain agent construction, provider/model routing via `MODEL_PROVIDERS`, summarization middleware wiring, and request-time trimming), `conversation_summary.py` (`ResilientSummarizationMiddleware` and summary helpers), `tools.py` (agent tools: web search and page fetch), `database.py` (PostgreSQL/Neon persistence and global settings), `prompt_builder.py` (system prompt construction and message formatting), `cache.py` (TTL cache helpers), and `config.py` (env-driven settings).
 - Operational docs live in `README.md` and `AGENTS.md`.
 - Utility scripts are in `scripts/` (notably `scripts/chat_cli.py` for local chat simulation).
 - Unit tests live in `tests/` (pytest; no database or `.env` required).
@@ -26,15 +26,16 @@ The bot is no longer "OpenAI only". `agent.py` routes requests by model name to 
 2. `config.py` loads `.env` and validates required settings.
 3. `database.py` owns PostgreSQL persistence, cached lookups, and global settings such as active model and active personality (schema itself is Alembic-managed — see Database Schema below).
 4. `handlers.py` implements Telegram message handlers and bot commands.
-5. `agent.py` builds the LangChain agent (`create_agent` + `init_chat_model`), maps the active model to a provider via `MODEL_PROVIDERS`, and applies the `wrap_model_call` trimming middleware before each model call.
+5. `agent.py` builds the LangChain agent (`create_agent` + `init_chat_model`), maps the active model to a provider via `MODEL_PROVIDERS`, wires `ResilientSummarizationMiddleware` as a persistent state-compaction hook before request trimming, and applies the `wrap_model_call` trimming middleware before each reply-model call.
 6. `prompt_builder.py` builds system prompts and normalizes message payloads for the agent.
-7. The checkpointer (`PostgresSaver`, keyed by chat_id thread) persists conversation state across turns; `agent.py` temporarily bounds the latest state with fixed 500→400 limits, while token counting and model-input trimming remain separate.
+7. The checkpointer (`PostgresSaver`, keyed by chat_id thread) persists conversation state across turns as a rolling summary plus recent raw messages. The previous fixed 500→400 message-count prune has been removed; rolling summarization is the sole bound on active checkpoint state. Token counting and model-input trimming remain separate.
 8. `cache.py` provides a small TTL cache used by the database layer.
 9. `tools.py` builds the agent's tools: a web search tool (Tavily when `TAVILY_API_KEY` is set, else a DuckDuckGo fallback) and a page-fetch tool, wired into the agent via `create_agent`.
+10. `conversation_summary.py` owns fail-open summary generation, historical image sanitization for the summary model, and the post-compaction audit callback.
 
 ### Provider / API Routing
 
-`agent.py` is the source of truth: `MODEL_PROVIDERS` maps each supported model name to its provider, and `resolve_model()` turns that into the provider-prefixed id (`"<provider>:<model>"`) passed to LangChain's `init_chat_model()`, which builds the actual chat model per provider. `openai_client.py` and `token_manager.py` have been retired — the agent (`agent.py`, built on `create_agent`) and its middleware now own model routing and context trimming.
+`agent.py` is the source of truth: `MODEL_PROVIDERS` maps each supported model name to its provider, and `resolve_model()` turns that into the provider-prefixed id (`"<provider>:<model>"`) passed to LangChain's `init_chat_model()`, which builds the actual chat model per provider. `openai_client.py` and `token_manager.py` have been retired — the agent (`agent.py`, built on `create_agent`) and its middleware now own model routing, rolling summarization, and context trimming.
 
 - OpenAI models use `init_chat_model` with the `openai` provider
 - xAI models use the `xai` provider
@@ -49,10 +50,11 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 3. Authorization is checked.
 4. The incoming user message is stored in `messages`.
 5. History is loaded from the checkpoint thread for the chat.
-6. `agent.py`'s trimming middleware (`wrap_model_call`) keeps as much recent context as possible while reserving response tokens.
-7. `prompt_builder` builds the system prompt and provider-specific message format.
-8. `agent.run()` invokes the LangChain agent, which calls the active provider.
-9. On success, the assistant response is stored and sent back to Telegram. API failures raise `CompletionError` and are shown to the user without persisting an assistant message.
+6. On a triggered `Agent.run()`, `ResilientSummarizationMiddleware` may compact older active messages into a summary plus recent raw suffix (at most one successful compaction per triggered invocation/tool loop). Summary failure leaves checkpoint state unchanged.
+7. `agent.py`'s trimming middleware (`wrap_model_call`) keeps as much recent context as possible while reserving response tokens.
+8. `prompt_builder` builds the system prompt and provider-specific message format.
+9. `agent.run()` continues the LangChain agent reply/tool loop with the active provider.
+10. On success, the assistant response is stored and sent back to Telegram. API failures raise `CompletionError` and are shown to the user without persisting an assistant message.
 
 ### Context Storage (Private and Group)
 
@@ -61,13 +63,16 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 - Group user messages are formatted as `[Name]: message` before model submission; private messages are stored as plain text.
 - Replies still require `chatgpt` or `@BOT_USERNAME`, and authorization is still checked before the model runs.
 - Stored messages in the application `messages` table currently have no retention limit. The previous probabilistic database cleanup remains disabled.
-- Latest LangGraph checkpoint state uses a temporary 500→400 message cap. Historical checkpoint retention, summarization, and durable long-term memory remain future context-engineering work.
+- Latest LangGraph checkpoint state is a rolling summary plus recent raw messages. The previous 500→400 message-count prune has been removed; rolling summarization is the sole bound on active checkpoint state. Historical checkpoint rows still accumulate unbounded, and a chat whose summarization keeps failing open — or one that stays purely passive and never triggers a reply — can grow its active checkpoint state without limit.
+- `/clear` removes the current checkpoint's summary and recent messages; it does not delete `messages` or `conversation_summaries` audit rows.
+- A `conversation_summaries` audit row is inserted only after the exact generated summary ID is confirmed in result/checkpoint state. Audit failures are logged and never block compaction or replies.
 
 ### Image Handling
 
 - `photo_handler()` only processes images when the caption activates the bot.
 - The database stores a text marker such as `[image] <caption>`.
 - The actual image bytes are converted to a data URL and sent only in the outbound API request.
+- For summary generation only, historical data-URL image blocks in the older partition are replaced with `[image omitted]` (captions and surrounding text are preserved). Recent raw checkpoint messages are not mutated by that sanitization.
 
 ### Personality Behavior
 
@@ -79,8 +84,9 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 ### Active Model Behavior
 
 - On startup, `bot.py` calls `db.init_active_model(config.DEFAULT_MODEL)`.
-- After that, the effective model comes from `active_model`, not directly from `.env`.
+- After that, the effective reply model comes from `active_model`, not directly from `.env`.
 - `/model` updates the database, then calls `agent.set_model()` to rebuild the live chat model for the new provider.
+- The summary model is fixed by `SUMMARY_MODEL` and is independent of `/model`.
 
 ## Build, Test, and Development Commands
 
@@ -163,12 +169,14 @@ Expected tables:
 - `personality`
 - `active_personality`
 - `active_model`
+- `conversation_summaries`
 
 Important details:
 
 - `granted_users` includes `first_name` and `username`
 - `active_model` persists the globally selected model
 - `active_personality` is a single-row table
+- `conversation_summaries` is an audit-only table and is never read by the agent
 - Schema is version-controlled via Alembic migrations in `alembic/versions/`, applied with `alembic upgrade head` (not created automatically on boot)
 
 ## Configuration
@@ -184,6 +192,10 @@ Relevant environment variables:
 - `MODEL_TIMEOUT`
 - `MAX_CONTEXT_TOKENS`
 - `MAX_OUTPUT_TOKENS`
+- `SUMMARY_MODEL`
+- `SUMMARY_TRIGGER_TOKENS`
+- `SUMMARY_KEEP_TOKENS`
+- `SUMMARY_CONTEXT_TOKENS`
 - `TAVILY_API_KEY`
 - `MAX_GROUP_CONTEXT_MESSAGES`
 - `AUTHORIZED_USER_ID`
@@ -194,7 +206,9 @@ Important notes:
 
 - `DEFAULT_MODEL` is only the seed value for a fresh database
 - `config.py` validates the API key required by `DEFAULT_MODEL`
-- The running bot may use a different model if `/model` has changed `active_model`
+- The running bot may use a different reply model if `/model` has changed `active_model`
+- `SUMMARY_MODEL` is the dedicated summarization model and is independent of `/model` / `active_model`
+- `SUMMARY_CONTEXT_TOKENS` bounds only the summary model's input and is independent of `MAX_CONTEXT_TOKENS`, which bounds the reply model's input
 - `TAVILY_API_KEY` is optional; when blank, `tools.py` falls back to a DuckDuckGo-backed web search tool instead of Tavily
 
 ## Commands

@@ -40,3 +40,46 @@ def test_provider_api_key_selection():
     assert agent.provider_api_key("openai", _Cfg) == "o"
     assert agent.provider_api_key("xai", _Cfg) == "x"
     assert agent.provider_api_key("google_genai", _Cfg) == "g"
+
+
+class _SummaryCfg(_Cfg):
+    SUMMARY_MODEL = "gpt-4.1-mini"
+    MODEL_TIMEOUT = 60
+
+
+def test_make_summary_model_uses_registry_key_and_output_cap(monkeypatch):
+    calls = {}
+
+    def fake_init(model_id, **kwargs):
+        calls["model_id"] = model_id
+        calls["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr(agent, "init_chat_model", fake_init)
+
+    result = agent.make_summary_model(_SummaryCfg)
+
+    assert result is not None
+    assert calls["model_id"] == "openai:gpt-4.1-mini"
+    assert calls["kwargs"]["api_key"] == "o"
+    assert calls["kwargs"]["max_tokens"] == 1024
+    assert calls["kwargs"]["timeout"] == 60
+    assert calls["kwargs"]["max_retries"] == 2
+    assert calls["kwargs"]["use_responses_api"] is True
+
+
+def test_make_summary_model_rejects_unknown_model():
+    class UnknownSummaryCfg(_SummaryCfg):
+        SUMMARY_MODEL = "does-not-exist"
+
+    with pytest.raises(ValueError, match="Unsupported SUMMARY_MODEL"):
+        agent.make_summary_model(UnknownSummaryCfg)
+
+
+def test_make_summary_model_rejects_missing_provider_key():
+    class MissingKeySummaryCfg(_SummaryCfg):
+        SUMMARY_MODEL = "grok-4-1-fast-reasoning"
+        XAI_API_KEY = ""
+
+    with pytest.raises(ValueError, match="XAI_API_KEY is required"):
+        agent.make_summary_model(MissingKeySummaryCfg)

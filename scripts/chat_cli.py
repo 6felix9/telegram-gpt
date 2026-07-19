@@ -101,6 +101,7 @@ class ChatCLI:
             prompt_builder=self.prompt_builder,
             checkpointer=checkpointer,
             model_name=effective_model,
+            db=self.db,
         )
 
         logger.info(f"CLI initialized for chat_id={self.chat_id}, group={is_group}, test_mode={self.is_test_mode}")

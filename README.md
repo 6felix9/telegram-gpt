@@ -158,7 +158,7 @@ The current `docker-compose.yml` still mounts `./data:/app/data`, but the bot's 
 
 All commands are restricted to the main admin (`AUTHORIZED_USER_ID`); granted users can chat with the bot but cannot run commands:
 
-- `/clear` - Clear conversation history for the current chat
+- `/clear` - Clear the current chat's checkpoint summary and recent messages (application audit rows are retained)
 - `/stats` - Show message count and token usage for the current chat
 - `/grant <user_id>` - Grant access to another user
 - `/revoke <user_id>` - Revoke access from a granted user
@@ -194,6 +194,10 @@ Environment variables are loaded from `.env`.
 | `MODEL_TIMEOUT` | `60` | API timeout in seconds |
 | `MAX_CONTEXT_TOKENS` | `16000` | Total history budget before reserve tokens |
 | `MAX_OUTPUT_TOKENS` | `2048` | Max tokens per reply; also the trimming middleware's reserve |
+| `SUMMARY_MODEL` | `gpt-4.1-mini` | Dedicated supported model used for rolling checkpoint summaries |
+| `SUMMARY_TRIGGER_TOKENS` | `10000` | Summarize older active messages on the next triggered request at this approximate token count |
+| `SUMMARY_KEEP_TOKENS` | `4000` | Approximate recent raw-message tokens retained after summarization |
+| `SUMMARY_CONTEXT_TOKENS` | `14000` | Input token budget for the summary model call itself, independent of `MAX_CONTEXT_TOKENS` |
 | `MAX_GROUP_CONTEXT_MESSAGES` | `500` | Reserved for future group message retention; cleanup is currently disabled |
 | `AUTHORIZED_USER_ID` | Required | Main admin Telegram user ID |
 | `DATABASE_URL` | Required | PostgreSQL / Neon connection string |
@@ -206,6 +210,10 @@ Notes:
 - `DEFAULT_MODEL` only matters when `active_model` has not been seeded yet.
 - After first startup, the active model is read from the database and can be changed with `/model`.
 - `config.py` validates that the correct provider key is present for the configured `DEFAULT_MODEL`.
+- `SUMMARY_MODEL` must be listed in `agent.py`'s `MODEL_PROVIDERS`, and its provider key must be configured at startup.
+- `SUMMARY_KEEP_TOKENS` must be lower than `SUMMARY_TRIGGER_TOKENS`; `SUMMARY_CONTEXT_TOKENS` must be at least `SUMMARY_TRIGGER_TOKENS - SUMMARY_KEEP_TOKENS`.
+- `SUMMARY_CONTEXT_TOKENS` bounds only the summary model's input and is unrelated to `MAX_CONTEXT_TOKENS`, which bounds the reply model's input instead.
+- Passive non-triggering text is checkpointed without a model call. If it crosses the summary threshold, compaction waits for the next triggered request.
 
 ## CLI Chat Simulator
 
@@ -247,7 +255,8 @@ Core modules:
 - `config.py` - Env loading and validation
 - `database.py` - PostgreSQL connection pooling, schema init, persistence, cached lookups
 - `handlers.py` - Telegram handlers, authorization checks, command implementations
-- `agent.py` - LangChain agent construction (`create_agent` + `init_chat_model`), provider/model routing (`MODEL_PROVIDERS`), and the token-trimming middleware
+- `agent.py` - LangChain agent construction (`create_agent` + `init_chat_model`), provider/model routing (`MODEL_PROVIDERS`), rolling conversation summarization (`ResilientSummarizationMiddleware`), and the token-trimming middleware
+- `conversation_summary.py` - Fail-open summarization middleware, image sanitization for summary generation, and post-compaction audit callback wiring
 - `tools.py` - Agent tools
 - `prompt_builder.py` - System prompt assembly and outbound message formatting
 - `cache.py` - Small in-memory TTL cache used by the database layer
@@ -259,10 +268,10 @@ High-level flow:
 2. Detect activation via `chatgpt` or `@BOT_USERNAME`.
 3. Authorize the user.
 4. Store the incoming message or image marker in PostgreSQL.
-5. Retrieve recent history by token budget.
-6. Trim history to fit the configured reserve.
+5. On a triggered request, `ResilientSummarizationMiddleware` may compact active checkpoint history at or above `SUMMARY_TRIGGER_TOKENS` (at most one successful compaction per `Agent.run`/tool loop).
+6. Request-time trimming keeps the reply-model input within the configured reserve.
 7. Build the system prompt and provider-specific message payload.
-8. Call the active model provider.
+8. Call the active model provider (reply/tool loop).
 9. Store the assistant response.
 10. Reply back to Telegram.
 
@@ -277,17 +286,34 @@ Primary tables:
 - `personality`
 - `active_personality`
 - `active_model`
+- `conversation_summaries` (write-only audit of successful summaries; never read by the agent)
 
 ## Checkpointer Setup
 
 The LangGraph agent's conversation checkpoints live in their own tables (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`), owned and versioned by `langgraph-checkpoint-postgres` — they are intentionally **not** part of the Alembic-managed schema above.
 
-The latest checkpoint state is temporarily bounded by fixed limits in `agent.py`: exceeding 500 messages prunes the oldest messages until 400 remain. Historical checkpoint rows still accumulate. A future memory architecture should add conversation summarization, durable long-term memory, and checkpoint-history retention or compaction.
+The latest checkpoint uses rolling summaries plus recent raw messages. On a
+triggered request, active history at or above `SUMMARY_TRIGGER_TOKENS` is
+compacted by `SUMMARY_MODEL`; up to `SUMMARY_KEEP_TOKENS` of recent messages
+remain verbatim. Summary failure leaves state unchanged and the normal
+request-time trimming middleware still allows the reply to proceed.
+
+Rolling summarization is the only mechanism that bounds active checkpoint
+state; the previous fixed 500→400 message prune has been removed. A chat
+whose summarization keeps failing open, or one that stays purely passive and
+never triggers a reply, can grow its active checkpoint state without limit —
+there is no message-count fallback. This is monitored via the "summary failed
+open" structured log rather than enforced with a hard ceiling. Historical
+checkpoint rows still accumulate regardless, and the application `messages`
+audit table remains unbounded. Rolling summaries compact the latest logical
+state; they do not physically delete historical checkpoint rows.
 
 Current storage-growth limitations:
 
 - LangGraph's historical checkpoint rows continue accumulating even though the bot only reads the latest state.
 - The application `messages` audit-log table is also unbounded while its database cleanup remains disabled.
+- `conversation_summaries` audit rows are also unbounded; audit insertion happens only after the exact generated summary ID is confirmed in result/checkpoint state, and audit failures never block compaction or replies.
+- `/clear` removes the current checkpoint's summary and recent messages; it does not delete `messages` or `conversation_summaries` audit rows.
 
 Run this once per environment, after `alembic upgrade head` and before the bot starts (it is idempotent — safe to re-run):
 
