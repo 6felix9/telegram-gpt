@@ -4,6 +4,8 @@ from __future__ import annotations
 import copy
 import logging
 import time
+import uuid
+from dataclasses import dataclass
 from typing import Any
 
 from langchain.agents.middleware import SummarizationMiddleware
@@ -33,6 +35,27 @@ Return concise factual prose, not instructions to the assistant.
 
 class SummaryGenerationError(RuntimeError):
     """A summary result that must not replace valid checkpoint history."""
+
+
+@dataclass
+class SummaryAuditRecord:
+    """One generated summary awaiting checkpoint-confirmed audit persistence."""
+
+    chat_id: str
+    summary_text: str
+    summary_model: str
+    before_message_count: int
+    after_message_count: int
+    before_tokens: int
+    after_tokens: int
+
+
+@dataclass
+class _PendingSummaryAuditRecord:
+    """Private audit metadata tied to one generated summary message."""
+
+    summary_message_id: str
+    record: SummaryAuditRecord
 
 
 def _image_source(block: dict[str, Any]) -> str:
@@ -74,9 +97,10 @@ def sanitize_summary_messages(
 class ResilientSummarizationMiddleware(SummarizationMiddleware):
     """Summarize persistently, but preserve state when generation fails."""
 
-    def __init__(self, *args, summary_model_name: str, **kwargs):
+    def __init__(self, *args, summary_model_name: str, on_summary=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.summary_model_name = summary_model_name
+        self.on_summary = on_summary
 
     @staticmethod
     def _snapshot_message_ids(messages: list[BaseMessage]) -> list[tuple[BaseMessage, str | None]]:
@@ -118,6 +142,8 @@ class ResilientSummarizationMiddleware(SummarizationMiddleware):
             for message in update["messages"]
             if not isinstance(message, RemoveMessage)
         ]
+        before_tokens = self.token_counter(state["messages"])
+        after_tokens = self.token_counter(output_messages)
         logger.info(
             "Conversation summary succeeded thread=%s model=%s "
             "before_messages=%s after_messages=%s before_tokens=%s "
@@ -126,12 +152,47 @@ class ResilientSummarizationMiddleware(SummarizationMiddleware):
             self.summary_model_name,
             len(state["messages"]),
             len(output_messages),
-            self.token_counter(state["messages"]),
-            self.token_counter(output_messages),
+            before_tokens,
+            after_tokens,
             round((time.perf_counter() - started) * 1000),
+        )
+        context = getattr(runtime, "context", None)
+        if context is not None:
+            context.summary_compacted = True
+        pending_records = getattr(context, "pending_summary_records", None)
+        if pending_records is None:
+            return
+        summary_message = next(
+            (
+                message
+                for message in output_messages
+                if message.additional_kwargs.get("lc_source") == "summarization"
+            ),
+            None,
+        )
+        if summary_message is None:
+            return
+        if summary_message.id is None:
+            summary_message.id = str(uuid.uuid4())
+        pending_records.append(
+            _PendingSummaryAuditRecord(
+                summary_message_id=str(summary_message.id),
+                record=SummaryAuditRecord(
+                    chat_id=self._thread_id(runtime),
+                    summary_text=str(summary_message.content),
+                    summary_model=self.summary_model_name,
+                    before_message_count=len(state["messages"]),
+                    after_message_count=len(output_messages),
+                    before_tokens=before_tokens,
+                    after_tokens=after_tokens,
+                ),
+            )
         )
 
     def before_model(self, state, runtime):
+        context = getattr(runtime, "context", None)
+        if getattr(context, "summary_compacted", False):
+            return None
         started = time.perf_counter()
         snapshot = self._snapshot_message_ids(state.get("messages", []))
         try:
@@ -173,6 +234,9 @@ class ResilientSummarizationMiddleware(SummarizationMiddleware):
         return update
 
     async def abefore_model(self, state, runtime):
+        context = getattr(runtime, "context", None)
+        if getattr(context, "summary_compacted", False):
+            return None
         started = time.perf_counter()
         snapshot = self._snapshot_message_ids(state.get("messages", []))
         try:

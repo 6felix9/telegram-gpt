@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import tiktoken
 from langchain.agents import create_agent
@@ -18,7 +18,12 @@ from langchain.agents.middleware import (
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import BaseMessage, ToolMessage
 
-from conversation_summary import ResilientSummarizationMiddleware, SUMMARY_PROMPT
+from conversation_summary import (
+    _PendingSummaryAuditRecord,
+    ResilientSummarizationMiddleware,
+    SUMMARY_PROMPT,
+    SummaryAuditRecord,
+)
 from prompt_builder import PromptBuilder
 from tools import build_tools
 
@@ -244,6 +249,8 @@ class AgentContext:
     is_group: bool = False
     reply_context: tuple[str, str] | None = None
     thread_id: str = "unknown"
+    pending_summary_records: list[_PendingSummaryAuditRecord] = field(default_factory=list)
+    summary_compacted: bool = False
 
 
 def _make_dynamic_prompt(prompt_builder):
@@ -271,11 +278,13 @@ class Agent:
         model_name: str,
         *,
         summary_model=None,
+        db=None,
     ):
         self._config = config
         self._prompt_builder = prompt_builder
         self._checkpointer = checkpointer
         self._tools = build_tools(config)  # from tools.py
+        self._db = db
         self._summary_model = summary_model or make_summary_model(config)
         self._summary_middleware = ResilientSummarizationMiddleware(
             model=self._summary_model,
@@ -285,6 +294,7 @@ class Agent:
             token_counter=count_messages_tokens,
             summary_prompt=SUMMARY_PROMPT,
             trim_tokens_to_summarize=config.SUMMARY_CONTEXT_TOKENS,
+            on_summary=self._record_summary if db is not None else None,
         )
         self._middleware = [
             _make_dynamic_prompt(prompt_builder),
@@ -331,22 +341,72 @@ class Agent:
     def _config_for(self, chat_id: str) -> dict:
         return {"configurable": {"thread_id": str(chat_id)}}
 
+    def _record_summary(self, record: SummaryAuditRecord) -> None:
+        """Write one checkpoint-confirmed summary audit record."""
+        self._db.record_conversation_summary(
+            chat_id=record.chat_id,
+            summary_text=record.summary_text,
+            summary_model=record.summary_model,
+            before_message_count=record.before_message_count,
+            after_message_count=record.after_message_count,
+            before_tokens=record.before_tokens,
+            after_tokens=record.after_tokens,
+        )
+
+    def _persist_checkpointed_summary_records(
+        self,
+        chat_id: str,
+        context: AgentContext,
+        final_messages: list[BaseMessage] | None,
+    ) -> None:
+        """Audit staged records only after their exact message ID is confirmed."""
+        records = context.pending_summary_records
+        try:
+            if not records or self._summary_middleware.on_summary is None:
+                return
+            if final_messages is None:
+                state = self._graph.get_state(self._config_for(chat_id))
+                final_messages = state.values.get("messages", [])
+            confirmed_ids = {
+                str(message.id)
+                for message in final_messages
+                if message.id is not None
+            }
+            for pending in records:
+                if pending.summary_message_id in confirmed_ids:
+                    try:
+                        self._summary_middleware.on_summary(pending.record)
+                    except Exception:
+                        logger.exception(
+                            "Failed to persist summary audit record thread=%s",
+                            pending.record.chat_id,
+                        )
+        except Exception:
+            logger.exception(
+                "Could not confirm checkpointed summary audit records thread=%s",
+                chat_id,
+            )
+        finally:
+            records.clear()
+
     async def run(self, chat_id, human_message, is_group, reply_context=None) -> str:
         if self._graph is None:
             raise CompletionError(
                 f"❌ {PROVIDER_LABEL[self._provider]} API key is not set. "
                 "Set it or switch models with /model."
             )
+        context = AgentContext(
+            is_group=is_group,
+            reply_context=reply_context,
+            thread_id=str(chat_id),
+        )
+        result = None
         try:
             result = await asyncio.to_thread(
                 self._graph.invoke,
                 {"messages": [human_message]},
                 config=self._config_for(chat_id),
-                context=AgentContext(
-                    is_group=is_group,
-                    reply_context=reply_context,
-                    thread_id=str(chat_id),
-                ),
+                context=context,
             )
             response = _message_text(result["messages"][-1])
             return response
@@ -354,6 +414,12 @@ class Agent:
             raise
         except Exception as e:
             raise _to_completion_error(e) from e
+        finally:
+            self._persist_checkpointed_summary_records(
+                str(chat_id),
+                context,
+                result["messages"] if result is not None else None,
+            )
 
     def append_context_message(self, chat_id, human_message) -> None:
         """Append a non-triggering message to the thread (no model call)."""
