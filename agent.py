@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 import tiktoken
@@ -15,8 +16,9 @@ from langchain.agents.middleware import (
     ModelResponse,
 )
 from langchain.chat_models import init_chat_model
-from langchain_core.messages import BaseMessage, RemoveMessage, ToolMessage
+from langchain_core.messages import BaseMessage, ToolMessage
 
+from conversation_summary import ResilientSummarizationMiddleware, SUMMARY_PROMPT
 from prompt_builder import PromptBuilder
 from tools import build_tools
 
@@ -44,10 +46,7 @@ Key behaviors:
 # tiktoken encoding is model-independent for our budgeting purposes.
 _ENCODING = tiktoken.get_encoding("cl100k_base")
 
-# Temporary latest-checkpoint guard. Replace with summarization and durable
-# long-term memory as part of the future context-engineering architecture.
-MAX_CHECKPOINT_MESSAGES = 500
-CHECKPOINT_PRUNE_TARGET_MESSAGES = 400
+SUMMARY_MAX_OUTPUT_TOKENS = 1024
 
 
 class CompletionError(Exception):
@@ -126,6 +125,36 @@ def provider_api_key(provider: str, config) -> str:
     }[provider]
 
 
+def make_summary_model(config):
+    """Build and validate the fixed model used for checkpoint summaries."""
+    try:
+        provider, prefixed_id = resolve_model(config.SUMMARY_MODEL)
+    except KeyError as exc:
+        raise ValueError(
+            f"Unsupported SUMMARY_MODEL: {config.SUMMARY_MODEL}"
+        ) from exc
+
+    key = provider_api_key(provider, config)
+    if not key.strip():
+        env_name = {
+            "openai": "OPENAI_API_KEY",
+            "xai": "XAI_API_KEY",
+            "google_genai": "GEMINI_API_KEY",
+        }[provider]
+        raise ValueError(
+            f"{env_name} is required for SUMMARY_MODEL={config.SUMMARY_MODEL}"
+        )
+
+    return init_chat_model(
+        prefixed_id,
+        api_key=key,
+        timeout=config.MODEL_TIMEOUT,
+        max_retries=2,
+        max_tokens=SUMMARY_MAX_OUTPUT_TOKENS,
+        **({"use_responses_api": True} if provider == "openai" else {}),
+    )
+
+
 def count_tokens(text: str) -> int:
     """Token count of a plain string."""
     if not text:
@@ -158,6 +187,11 @@ def _message_text(message: BaseMessage) -> str:
 def count_message_tokens(message: BaseMessage) -> int:
     """Approximate token count of one message, including per-message overhead."""
     return count_tokens(_message_text(message)) + 4
+
+
+def count_messages_tokens(messages: Iterable[BaseMessage]) -> int:
+    """Approximate total tokens for LangChain summary trigger/keep policies."""
+    return sum(count_message_tokens(message) for message in messages)
 
 
 def trim_messages(
@@ -193,33 +227,6 @@ def trim_messages(
     return kept
 
 
-def checkpoint_messages_to_remove(
-    messages: list[BaseMessage],
-    max_messages: int | None = None,
-    target_messages: int | None = None,
-) -> list[RemoveMessage]:
-    """Return removals that reduce an oversized checkpoint to its target."""
-    if max_messages is None:
-        max_messages = MAX_CHECKPOINT_MESSAGES
-    if target_messages is None:
-        target_messages = CHECKPOINT_PRUNE_TARGET_MESSAGES
-
-    if len(messages) <= max_messages:
-        return []
-
-    remove_count = len(messages) - target_messages
-
-    # Do not leave a ToolMessage without its preceding AI tool call.
-    while remove_count < len(messages) and isinstance(messages[remove_count], ToolMessage):
-        remove_count += 1
-
-    return [
-        RemoveMessage(id=message.id)
-        for message in messages[:remove_count]
-        if message.id is not None
-    ]
-
-
 def make_trim_middleware(max_context_tokens: int, reserve: int):
     """Build a wrap_model_call middleware that trims request.messages non-destructively."""
 
@@ -236,6 +243,7 @@ class AgentContext:
     """Per-invocation context read by middleware (not persisted)."""
     is_group: bool = False
     reply_context: tuple[str, str] | None = None
+    thread_id: str = "unknown"
 
 
 def _make_dynamic_prompt(prompt_builder):
@@ -255,13 +263,32 @@ def _make_dynamic_prompt(prompt_builder):
 class Agent:
     """Compiled LangChain agent with DB-driven model + personality."""
 
-    def __init__(self, config, prompt_builder, checkpointer, model_name: str):
+    def __init__(
+        self,
+        config,
+        prompt_builder,
+        checkpointer,
+        model_name: str,
+        *,
+        summary_model=None,
+    ):
         self._config = config
         self._prompt_builder = prompt_builder
         self._checkpointer = checkpointer
         self._tools = build_tools(config)  # from tools.py
+        self._summary_model = summary_model or make_summary_model(config)
+        self._summary_middleware = ResilientSummarizationMiddleware(
+            model=self._summary_model,
+            summary_model_name=config.SUMMARY_MODEL,
+            trigger=("tokens", config.SUMMARY_TRIGGER_TOKENS),
+            keep=("tokens", config.SUMMARY_KEEP_TOKENS),
+            token_counter=count_messages_tokens,
+            summary_prompt=SUMMARY_PROMPT,
+            trim_tokens_to_summarize=config.SUMMARY_CONTEXT_TOKENS,
+        )
         self._middleware = [
             _make_dynamic_prompt(prompt_builder),
+            self._summary_middleware,
             make_trim_middleware(config.MAX_CONTEXT_TOKENS, config.MAX_OUTPUT_TOKENS),
         ]
         self.model_name = model_name
@@ -304,33 +331,6 @@ class Agent:
     def _config_for(self, chat_id: str) -> dict:
         return {"configurable": {"thread_id": str(chat_id)}}
 
-    def _prune_checkpoint(self, chat_id: str, messages: list[BaseMessage]) -> None:
-        """Best-effort temporary cap for the latest checkpoint message state."""
-        removals = checkpoint_messages_to_remove(
-            messages,
-            MAX_CHECKPOINT_MESSAGES,
-            CHECKPOINT_PRUNE_TARGET_MESSAGES,
-        )
-        if not removals:
-            return
-
-        try:
-            self._graph.update_state(
-                self._config_for(chat_id), {"messages": removals}
-            )
-            logger.info(
-                "Pruned %s checkpoint messages for chat %s",
-                len(removals),
-                chat_id,
-            )
-        except Exception as e:
-            logger.error(
-                "Failed to prune checkpoint messages for chat %s: %s",
-                chat_id,
-                e,
-                exc_info=True,
-            )
-
     async def run(self, chat_id, human_message, is_group, reply_context=None) -> str:
         if self._graph is None:
             raise CompletionError(
@@ -342,10 +342,13 @@ class Agent:
                 self._graph.invoke,
                 {"messages": [human_message]},
                 config=self._config_for(chat_id),
-                context=AgentContext(is_group=is_group, reply_context=reply_context),
+                context=AgentContext(
+                    is_group=is_group,
+                    reply_context=reply_context,
+                    thread_id=str(chat_id),
+                ),
             )
             response = _message_text(result["messages"][-1])
-            self._prune_checkpoint(chat_id, list(result["messages"]))
             return response
         except CompletionError:
             raise
@@ -357,12 +360,8 @@ class Agent:
         if self._graph is None:
             return
         try:
-            updated_config = self._graph.update_state(
+            self._graph.update_state(
                 self._config_for(chat_id), {"messages": [human_message]}
-            )
-            state = self._graph.get_state(updated_config)
-            self._prune_checkpoint(
-                chat_id, list(state.values.get("messages", []))
             )
         except Exception as e:
             logger.error("Failed to append context message: %s", e, exc_info=True)

@@ -1,10 +1,9 @@
 """Agent: fake-model tool invocation, key-missing handling, error mapping."""
 import asyncio
-from unittest.mock import Mock
 
 import pytest
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 import agent as agent_mod
@@ -22,6 +21,17 @@ class _FakeChat(GenericFakeChatModel):
         return self
 
 
+class _SummaryFakeChat(_FakeChat):
+    calls: int = 0
+    fail: bool = False
+
+    def invoke(self, *args, **kwargs):
+        self.calls += 1
+        if self.fail:
+            raise TimeoutError("summary unavailable")
+        return super().invoke(*args, **kwargs)
+
+
 class _Cfg:
     OPENAI_API_KEY = "o"
     XAI_API_KEY = ""            # xAI key intentionally missing
@@ -30,21 +40,28 @@ class _Cfg:
     MODEL_TIMEOUT = 60
     MAX_CONTEXT_TOKENS = 16000
     MAX_OUTPUT_TOKENS = 2048
+    SUMMARY_MODEL = "gpt-4.1-mini"
+    SUMMARY_TRIGGER_TOKENS = 10000
+    SUMMARY_KEEP_TOKENS = 4000
+    SUMMARY_CONTEXT_TOKENS = 14000
 
 
 def _prompt_builder():
     return PromptBuilder(default_private_prompt="PRIVATE", default_group_prompt="GROUP")
 
 
-def _agent_with_fake(fake_model):
-    """Build an Agent, then swap in a fake compiled graph over a fake model."""
+def _agent_with_fake(fake_model, summary_model=None, config=_Cfg):
+    """Build an Agent with fake reply and summary models over real graph state."""
+    if summary_model is None:
+        summary_model = _FakeChat(messages=iter([]))
     a = agent_mod.Agent(
-        config=_Cfg,
+        config=config,
         prompt_builder=_prompt_builder(),
         checkpointer=InMemorySaver(),
         model_name="gpt-5.4",
+        summary_model=summary_model,
     )
-    a._compile(fake_model)  # test hook: recompile against an injected model
+    a._compile(fake_model)
     return a
 
 
@@ -100,78 +117,145 @@ def test_agent_invokes_a_tool_then_answers(monkeypatch):
     assert out == "done"
 
 
-def test_checkpoint_pruning_removes_oldest_messages_to_eighty_percent():
-    messages = [HumanMessage(id=str(i), content=f"message {i}") for i in range(501)]
-
-    removals = agent_mod.checkpoint_messages_to_remove(messages)
-
-    assert [message.id for message in removals] == [str(i) for i in range(101)]
-
-
-def test_checkpoint_pruning_does_nothing_at_limit():
-    messages = [HumanMessage(id=str(i), content=f"message {i}") for i in range(500)]
-
-    assert agent_mod.checkpoint_messages_to_remove(messages) == []
+class _SmallSummaryCfg(_Cfg):
+    SUMMARY_TRIGGER_TOKENS = 40
+    SUMMARY_KEEP_TOKENS = 16
+    SUMMARY_CONTEXT_TOKENS = 150
+    MAX_CONTEXT_TOKENS = 200
+    MAX_OUTPUT_TOKENS = 50
 
 
-def test_checkpoint_pruning_drops_leading_orphaned_tool_messages():
-    messages = [
-        HumanMessage(id="0", content="old"),
-        AIMessage(
-            id="1", content="", tool_calls=[
-                {"name": "fetch_url", "args": {"url": "https://example.com"}, "id": "c1"}
-            ],
-        ),
-        ToolMessage(id="2", content="result", tool_call_id="c1"),
-        HumanMessage(id="3", content="newer"),
-        AIMessage(id="4", content="reply"),
-        HumanMessage(id="5", content="newest"),
+def test_triggered_run_persists_summary_and_recent_messages():
+    summary_model = _FakeChat(
+        messages=iter([AIMessage(content="Alice prefers window seats.")])
+    )
+    reply_model = _FakeChat(messages=iter([AIMessage(content="noted")]))
+    a = _agent_with_fake(reply_model, summary_model, _SmallSummaryCfg)
+    for index in range(4):
+        a.append_context_message(
+            "summary-chat",
+            HumanMessage(content=f"[Alice]: old context {index} " + "word " * 8),
+        )
+
+    out = asyncio.run(
+        a.run("summary-chat", HumanMessage(content="chatgpt remember that"), True)
+    )
+    state = a._graph.get_state(a._config_for("summary-chat"))
+    summaries = [
+        message
+        for message in state.values["messages"]
+        if message.additional_kwargs.get("lc_source") == "summarization"
     ]
 
-    removals = agent_mod.checkpoint_messages_to_remove(messages, 5, 4)
+    assert out == "noted"
+    assert len(summaries) == 1
+    assert "window seats" in summaries[0].content
+    assert state.values["messages"][-1].content == "noted"
 
-    assert [message.id for message in removals] == ["0", "1", "2"]
 
+def test_later_compaction_replaces_previous_summary():
+    summary_model = _FakeChat(
+        messages=iter([
+            AIMessage(content="first rolling summary"),
+            AIMessage(content="second rolling summary"),
+        ])
+    )
+    reply_model = _FakeChat(
+        messages=iter([AIMessage(content="reply one"), AIMessage(content="reply two")])
+    )
+    a = _agent_with_fake(reply_model, summary_model, _SmallSummaryCfg)
+    for index in range(4):
+        a.append_context_message(
+            "rolling-chat",
+            HumanMessage(content=f"first batch {index} " + "word " * 8),
+        )
+    asyncio.run(a.run("rolling-chat", HumanMessage(content="first trigger"), False))
+    for index in range(4):
+        a.append_context_message(
+            "rolling-chat",
+            HumanMessage(content=f"second batch {index} " + "word " * 8),
+        )
+    asyncio.run(a.run("rolling-chat", HumanMessage(content="second trigger"), False))
 
-def test_append_context_message_prunes_checkpoint_to_low_watermark(monkeypatch):
-    a = _agent_with_fake(_FakeChat(messages=iter([])))
-    monkeypatch.setattr(agent_mod, "MAX_CHECKPOINT_MESSAGES", 5)
-    monkeypatch.setattr(agent_mod, "CHECKPOINT_PRUNE_TARGET_MESSAGES", 4)
-
-    for index in range(6):
-        a.append_context_message("group", HumanMessage(content=f"message {index}"))
-
-    state = a._graph.get_state(a._config_for("group"))
-    assert [message.content for message in state.values["messages"]] == [
-        "message 2", "message 3", "message 4", "message 5"
+    state = a._graph.get_state(a._config_for("rolling-chat"))
+    summaries = [
+        message
+        for message in state.values["messages"]
+        if message.additional_kwargs.get("lc_source") == "summarization"
     ]
+    assert len(summaries) == 1
+    assert "second rolling summary" in summaries[0].content
 
 
-def test_run_prunes_checkpoint_to_low_watermark(monkeypatch):
-    a = _agent_with_fake(_FakeChat(messages=iter([AIMessage(content="reply")])))
-    monkeypatch.setattr(agent_mod, "MAX_CHECKPOINT_MESSAGES", 3)
-    monkeypatch.setattr(agent_mod, "CHECKPOINT_PRUNE_TARGET_MESSAGES", 2)
-    for index in range(3):
-        a.append_context_message("chat", HumanMessage(content=f"context {index}"))
-
-    out = asyncio.run(a.run("chat", HumanMessage(content="question"), False))
-
-    assert out == "reply"
-    state = a._graph.get_state(a._config_for("chat"))
-    assert [message.content for message in state.values["messages"]] == [
-        "question", "reply"
-    ]
-
-
-def test_run_returns_response_when_checkpoint_pruning_fails(monkeypatch):
-    a = _agent_with_fake(_FakeChat(messages=iter([AIMessage(content="hi there")])))
-    monkeypatch.setattr(agent_mod, "MAX_CHECKPOINT_MESSAGES", 1)
-    monkeypatch.setattr(agent_mod, "CHECKPOINT_PRUNE_TARGET_MESSAGES", 1)
-    monkeypatch.setattr(
-        a._graph, "update_state", Mock(side_effect=RuntimeError("checkpoint unavailable"))
+def test_passive_append_does_not_invoke_summary_model():
+    summary_model = _SummaryFakeChat(
+        messages=iter([AIMessage(content="must not be consumed")])
+    )
+    a = _agent_with_fake(
+        _FakeChat(messages=iter([])), summary_model, _SmallSummaryCfg
     )
 
-    out = asyncio.run(a.run("chat-prune-error", HumanMessage(content="hello"), False))
+    for index in range(5):
+        a.append_context_message(
+            "passive-chat",
+            HumanMessage(content=f"passive {index} " + "word " * 8),
+        )
 
-    assert out == "hi there"
-    a._graph.update_state.assert_called_once()
+    assert summary_model.calls == 0
+
+
+def test_summary_failure_does_not_block_reply():
+    summary_model = _SummaryFakeChat(messages=iter([]), fail=True)
+    a = _agent_with_fake(
+        _FakeChat(messages=iter([AIMessage(content="fallback reply")])),
+        summary_model,
+        _SmallSummaryCfg,
+    )
+    for index in range(4):
+        a.append_context_message(
+            "failure-chat",
+            HumanMessage(content=f"context {index} " + "word " * 8),
+        )
+
+    out = asyncio.run(
+        a.run("failure-chat", HumanMessage(content="trigger"), False)
+    )
+
+    assert out == "fallback reply"
+
+
+def test_clear_thread_removes_summary_and_recent_state():
+    a = _agent_with_fake(
+        _FakeChat(messages=iter([AIMessage(content="reply")])),
+        _FakeChat(messages=iter([AIMessage(content="summary")])),
+        _SmallSummaryCfg,
+    )
+    for index in range(4):
+        a.append_context_message(
+            "clear-chat",
+            HumanMessage(content=f"context {index} " + "word " * 8),
+        )
+    asyncio.run(a.run("clear-chat", HumanMessage(content="trigger"), False))
+
+    a.clear_thread("clear-chat")
+    state = a._graph.get_state(a._config_for("clear-chat"))
+
+    assert not state.values
+
+
+def test_set_model_does_not_replace_dedicated_summary_model(monkeypatch):
+    summary_model = _FakeChat(messages=iter([]))
+    a = _agent_with_fake(
+        _FakeChat(messages=iter([])),
+        summary_model,
+    )
+    monkeypatch.setattr(
+        agent_mod,
+        "init_chat_model",
+        lambda *args, **kwargs: _FakeChat(messages=iter([])),
+    )
+
+    a.set_model("gpt-5.4-mini")
+
+    assert a._summary_model is summary_model
+    assert a._summary_middleware.model is summary_model
