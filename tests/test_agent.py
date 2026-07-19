@@ -1,5 +1,7 @@
 """Agent: fake-model tool invocation, key-missing handling, error mapping."""
 import asyncio
+import time
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -139,7 +141,11 @@ def test_append_context_message_prunes_checkpoint_to_low_watermark(monkeypatch):
     monkeypatch.setattr(agent_mod, "CHECKPOINT_PRUNE_TARGET_MESSAGES", 4)
 
     for index in range(6):
-        a.append_context_message("group", HumanMessage(content=f"message {index}"))
+        asyncio.run(
+            a.append_context_message(
+                "group", HumanMessage(content=f"message {index}")
+            )
+        )
 
     state = a._graph.get_state(a._config_for("group"))
     assert [message.content for message in state.values["messages"]] == [
@@ -152,7 +158,11 @@ def test_run_prunes_checkpoint_to_low_watermark(monkeypatch):
     monkeypatch.setattr(agent_mod, "MAX_CHECKPOINT_MESSAGES", 3)
     monkeypatch.setattr(agent_mod, "CHECKPOINT_PRUNE_TARGET_MESSAGES", 2)
     for index in range(3):
-        a.append_context_message("chat", HumanMessage(content=f"context {index}"))
+        asyncio.run(
+            a.append_context_message(
+                "chat", HumanMessage(content=f"context {index}")
+            )
+        )
 
     out = asyncio.run(a.run("chat", HumanMessage(content="question"), False))
 
@@ -175,3 +185,26 @@ def test_run_returns_response_when_checkpoint_pruning_fails(monkeypatch):
 
     assert out == "hi there"
     a._graph.update_state.assert_called_once()
+
+
+def test_append_context_message_does_not_block_event_loop():
+    class _BlockingGraph:
+        def update_state(self, config, state):
+            time.sleep(0.1)
+            return config
+
+        def get_state(self, config):
+            return SimpleNamespace(values={"messages": []})
+
+    a = object.__new__(agent_mod.Agent)
+    a._graph = _BlockingGraph()
+
+    async def exercise():
+        task = asyncio.create_task(
+            a.append_context_message("group", HumanMessage(content="context"))
+        )
+        await asyncio.sleep(0.01)
+        assert not task.done()
+        await task
+
+    asyncio.run(exercise())
