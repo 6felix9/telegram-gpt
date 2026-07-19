@@ -10,7 +10,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 import agent as agent_mod
 from prompt_builder import PromptBuilder
-from conversation_summary import SummaryAuditRecord, _PendingSummaryAuditRecord
+from conversation_summary import SummaryAuditRecord, PendingSummaryAuditRecord
 
 # GenericFakeChatModel (langchain-core 1.4.8) does not implement bind_tools, but
 # create_agent binds the tool set to the model at compile time. A no-op
@@ -321,7 +321,7 @@ def test_identical_summary_text_does_not_confirm_wrong_summary_id():
     context = agent_mod.AgentContext(
         thread_id="checkpoint-failure-chat",
         pending_summary_records=[
-            _PendingSummaryAuditRecord(
+            PendingSummaryAuditRecord(
                 summary_message_id="expected-summary-id",
                 record=record,
             )
@@ -368,7 +368,7 @@ def test_successful_invocation_confirms_summary_from_returned_messages():
 
     def invoke(*args, **kwargs):
         kwargs["context"].pending_summary_records.append(
-            _PendingSummaryAuditRecord("summary-id", record)
+            PendingSummaryAuditRecord("summary-id", record)
         )
         return {
             "messages": [
@@ -414,7 +414,7 @@ def test_checkpoint_inspection_failure_after_reply_error_does_not_audit():
 
     def fail_after_staging(*args, **kwargs):
         kwargs["context"].pending_summary_records.append(
-            _PendingSummaryAuditRecord("summary-id", record)
+            PendingSummaryAuditRecord("summary-id", record)
         )
         raise RuntimeError("reply failed")
 
