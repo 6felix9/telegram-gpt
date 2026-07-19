@@ -14,6 +14,13 @@ from langchain_core.messages import BaseMessage, RemoveMessage
 logger = logging.getLogger(__name__)
 
 SUMMARY_ERROR_PREFIX = "Error generating summary:"
+# Exact LangChain SummarizationMiddleware fallback strings (not substrings).
+UNUSABLE_SUMMARY_PLACEHOLDERS = frozenset(
+    {
+        "No previous conversation history.",
+        "Previous conversation was too long to summarize.",
+    }
+)
 IMAGE_BLOCK_TYPES = {"image_url", "image", "input_image"}
 
 SUMMARY_PROMPT = """You summarize a Telegram conversation for future continuity.
@@ -115,7 +122,11 @@ class ResilientSummarizationMiddleware(SummarizationMiddleware):
     @staticmethod
     def _validate_summary(summary: str) -> str:
         summary = summary.strip()
-        if not summary or summary.startswith(SUMMARY_ERROR_PREFIX):
+        if (
+            not summary
+            or summary.startswith(SUMMARY_ERROR_PREFIX)
+            or summary in UNUSABLE_SUMMARY_PLACEHOLDERS
+        ):
             raise SummaryGenerationError("summary model returned no usable summary")
         return summary
 
@@ -276,4 +287,3 @@ class ResilientSummarizationMiddleware(SummarizationMiddleware):
             return None
         self._log_success(state, update, runtime, started)
         return update
-
