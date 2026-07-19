@@ -1,22 +1,41 @@
 import asyncio
 import copy
+from typing import ClassVar
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, ToolMessage
+import pytest
 
 from conversation_summary import (
     _PendingSummaryAuditRecord,
     ResilientSummarizationMiddleware,
     SummaryAuditRecord,
+    SummaryGenerationError,
     sanitize_summary_messages,
 )
+
+NO_HISTORY_PLACEHOLDER = "No previous conversation history."
+TOO_LONG_PLACEHOLDER = "Previous conversation was too long to summarize."
 
 
 class _FakeSummaryChat(GenericFakeChatModel):
     def bind_tools(self, tools, **kwargs):
         return self
+
+
+class _TrackingSummaryChat(_FakeSummaryChat):
+    invoke_count: ClassVar[int] = 0
+    ainvoke_count: ClassVar[int] = 0
+
+    def invoke(self, *args, **kwargs):
+        type(self).invoke_count += 1
+        return super().invoke(*args, **kwargs)
+
+    async def ainvoke(self, *args, **kwargs):
+        type(self).ainvoke_count += 1
+        return await super().ainvoke(*args, **kwargs)
 
 
 def _runtime(thread_id="chat-1"):
@@ -170,6 +189,134 @@ def test_empty_summary_fails_open():
     assert middleware.before_model(state, _runtime()) is None
 
 
+@pytest.mark.parametrize(
+    "placeholder",
+    [NO_HISTORY_PLACEHOLDER, TOO_LONG_PLACEHOLDER],
+)
+def test_langchain_placeholder_summaries_are_rejected(placeholder):
+    with pytest.raises(SummaryGenerationError):
+        ResilientSummarizationMiddleware._validate_summary(placeholder)
+
+
+def test_validate_summary_allows_legitimate_text_with_similar_words():
+    text = (
+        "Previous conversation covered travel plans; no previous conversation "
+        "history was discarded because it was too long to summarize in full."
+    )
+    assert ResilientSummarizationMiddleware._validate_summary(text) == text
+
+
+def test_over_budget_trim_to_zero_fails_open_without_model_call():
+    _TrackingSummaryChat.invoke_count = 0
+    model = _TrackingSummaryChat(
+        messages=iter([AIMessage(content="SHOULD NOT BE USED")])
+    )
+    middleware = ResilientSummarizationMiddleware(
+        model=model,
+        summary_model_name="gpt-4.1-mini",
+        trigger=("messages", 4),
+        keep=("messages", 1),
+        token_counter=_count_messages,
+        trim_tokens_to_summarize=0,
+    )
+    messages = [
+        HumanMessage(id=str(index), content=f"message {index} " * 20)
+        for index in range(4)
+    ]
+    state = {"messages": messages}
+    original_list = state["messages"]
+    original_message_objs = list(state["messages"])
+    original_message_ids = [message.id for message in state["messages"]]
+    original_message_contents = [
+        copy.deepcopy(message.content) for message in state["messages"]
+    ]
+    runtime = _runtime()
+    runtime.context.pending_summary_records = []
+
+    assert middleware.before_model(state, runtime) is None
+
+    assert _TrackingSummaryChat.invoke_count == 0
+    assert runtime.context.pending_summary_records == []
+    assert state["messages"] is original_list
+    assert len(state["messages"]) == len(original_message_objs)
+    for index, message in enumerate(original_message_objs):
+        assert state["messages"][index] is message
+    assert [message.id for message in state["messages"]] == original_message_ids
+    assert [
+        copy.deepcopy(message.content) for message in state["messages"]
+    ] == original_message_contents
+
+
+@pytest.mark.parametrize(
+    "placeholder",
+    [NO_HISTORY_PLACEHOLDER, TOO_LONG_PLACEHOLDER],
+)
+def test_placeholder_summary_text_fails_open_via_before_model(placeholder):
+    middleware = _middleware(placeholder)
+    messages = [
+        HumanMessage(id=str(index), content=f"message {index}")
+        for index in range(4)
+    ]
+    state = {"messages": messages}
+    original_message_ids = [message.id for message in messages]
+    original_message_contents = [
+        copy.deepcopy(message.content) for message in messages
+    ]
+    runtime = _runtime()
+    runtime.context.pending_summary_records = []
+
+    assert middleware.before_model(state, runtime) is None
+    assert runtime.context.pending_summary_records == []
+    assert [message.id for message in state["messages"]] == original_message_ids
+    assert [
+        copy.deepcopy(message.content) for message in state["messages"]
+    ] == original_message_contents
+
+
+@pytest.mark.parametrize(
+    "placeholder",
+    [NO_HISTORY_PLACEHOLDER, TOO_LONG_PLACEHOLDER],
+)
+def test_async_placeholder_summary_fails_open(placeholder):
+    _TrackingSummaryChat.ainvoke_count = 0
+    model = _TrackingSummaryChat(
+        messages=iter([AIMessage(content=placeholder)])
+    )
+    middleware = ResilientSummarizationMiddleware(
+        model=model,
+        summary_model_name="gpt-4.1-mini",
+        trigger=("messages", 4),
+        keep=("messages", 1),
+        token_counter=_count_messages,
+        trim_tokens_to_summarize=10000,
+    )
+    messages = [
+        HumanMessage(id=str(index), content=f"message {index}")
+        for index in range(4)
+    ]
+    state = {"messages": messages}
+    original_list = state["messages"]
+    original_message_objs = list(state["messages"])
+    original_message_ids = [message.id for message in state["messages"]]
+    original_message_contents = [
+        copy.deepcopy(message.content) for message in state["messages"]
+    ]
+    runtime = _runtime()
+    runtime.context.pending_summary_records = []
+
+    assert asyncio.run(middleware.abefore_model(state, runtime)) is None
+
+    assert _TrackingSummaryChat.ainvoke_count == 1
+    assert runtime.context.pending_summary_records == []
+    assert state["messages"] is original_list
+    for index, message in enumerate(original_message_objs):
+        assert state["messages"][index] is message
+    assert [message.id for message in state["messages"]] == original_message_ids
+    assert [
+        copy.deepcopy(message.content) for message in state["messages"]
+    ] == original_message_contents
+
+
 def test_async_summary_exception_fails_open(monkeypatch):
     middleware = _middleware()
     monkeypatch.setattr(
@@ -314,4 +461,3 @@ def test_before_model_stages_no_record_when_skipped_or_failed_open():
     callback.assert_not_called()
     assert skipped_runtime.context.pending_summary_records == []
     assert failed_runtime.context.pending_summary_records == []
-
