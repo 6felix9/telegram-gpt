@@ -27,7 +27,7 @@ class _Cfg:
     XAI_API_KEY = ""            # xAI key intentionally missing
     GEMINI_API_KEY = ""
     TAVILY_API_KEY = ""
-    OPENAI_TIMEOUT = 60
+    MODEL_TIMEOUT = 60
     MAX_CONTEXT_TOKENS = 16000
     MAX_OUTPUT_TOKENS = 2048
 

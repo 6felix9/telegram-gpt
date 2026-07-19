@@ -25,7 +25,7 @@ class Config:
     # Default model to use on first startup (persisted in DB after first run)
     DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gpt-5.4-mini")
 
-    OPENAI_TIMEOUT = int(os.getenv("OPENAI_TIMEOUT", "60"))
+    MODEL_TIMEOUT = int(os.getenv("MODEL_TIMEOUT", "60"))
     MAX_CONTEXT_TOKENS = int(os.getenv("MAX_CONTEXT_TOKENS", "16000"))
 
     # Max tokens the model may generate per reply; also used as the trimming
@@ -69,7 +69,7 @@ class Config:
         if not cls.DATABASE_URL.strip():
             errors.append("DATABASE_URL is required")
 
-        for name in ("OPENAI_TIMEOUT", "MAX_CONTEXT_TOKENS", "MAX_OUTPUT_TOKENS"):
+        for name in ("MODEL_TIMEOUT", "MAX_CONTEXT_TOKENS", "MAX_OUTPUT_TOKENS"):
             if getattr(cls, name) <= 0:
                 errors.append(f"{name} must be positive")
 
