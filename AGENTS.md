@@ -163,12 +163,14 @@ Expected tables:
 - `personality`
 - `active_personality`
 - `active_model`
+- `conversation_summaries`
 
 Important details:
 
 - `granted_users` includes `first_name` and `username`
 - `active_model` persists the globally selected model
 - `active_personality` is a single-row table
+- `conversation_summaries` is an audit-only table and is never read by the agent
 - Schema is version-controlled via Alembic migrations in `alembic/versions/`, applied with `alembic upgrade head` (not created automatically on boot)
 
 ## Configuration

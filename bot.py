@@ -106,6 +106,7 @@ def main():
             prompt_builder=prompt_builder,
             checkpointer=checkpointer,
             model_name=effective_model,
+            db=db,
         )
 
         # 6. Build Telegram application
