@@ -19,7 +19,7 @@ from langchain.chat_models import init_chat_model
 from langchain_core.messages import BaseMessage, ToolMessage
 
 from conversation_summary import (
-    _PendingSummaryAuditRecord,
+    PendingSummaryAuditRecord,
     ResilientSummarizationMiddleware,
     SUMMARY_PROMPT,
     SummaryAuditRecord,
@@ -249,7 +249,7 @@ class AgentContext:
     is_group: bool = False
     reply_context: tuple[str, str] | None = None
     thread_id: str = "unknown"
-    pending_summary_records: list[_PendingSummaryAuditRecord] = field(default_factory=list)
+    pending_summary_records: list[PendingSummaryAuditRecord] = field(default_factory=list)
     summary_compacted: bool = False
 
 

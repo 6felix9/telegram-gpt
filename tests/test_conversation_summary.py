@@ -9,7 +9,7 @@ from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, Tool
 import pytest
 
 from conversation_summary import (
-    _PendingSummaryAuditRecord,
+    PendingSummaryAuditRecord,
     ResilientSummarizationMiddleware,
     SummaryAuditRecord,
     SummaryGenerationError,
@@ -379,7 +379,7 @@ def test_before_model_stages_audit_record_without_calling_callback():
     callback.assert_not_called()
     assert len(runtime.context.pending_summary_records) == 1
     pending = runtime.context.pending_summary_records[0]
-    assert isinstance(pending, _PendingSummaryAuditRecord)
+    assert isinstance(pending, PendingSummaryAuditRecord)
     assert pending.summary_message_id
     record = pending.record
     assert isinstance(record, SummaryAuditRecord)
@@ -388,6 +388,33 @@ def test_before_model_stages_audit_record_without_calling_callback():
     assert "durable summary" in record.summary_text
     assert record.before_message_count == 4
     assert record.after_message_count == 2
+
+
+def test_before_model_stages_no_record_when_audit_disabled():
+    runtime = _runtime("chat-9")
+    runtime.context.pending_summary_records = []
+    middleware = ResilientSummarizationMiddleware(
+        model=_FakeSummaryChat(messages=iter([AIMessage(content="durable summary")])),
+        summary_model_name="gpt-4.1-mini",
+        trigger=("messages", 4),
+        keep=("messages", 1),
+        token_counter=_count_messages,
+        trim_tokens_to_summarize=10000,
+        on_summary=None,
+    )
+    state = {
+        "messages": [
+            HumanMessage(id="1", content="old question"),
+            AIMessage(id="2", content="old answer"),
+            HumanMessage(id="3", content="recent question"),
+            HumanMessage(id="4", content="newest"),
+        ]
+    }
+
+    update = middleware.before_model(state, runtime)
+
+    assert update is not None
+    assert runtime.context.pending_summary_records == []
 
 
 def test_second_before_model_pass_in_one_runtime_stages_only_one_summary():
@@ -422,7 +449,7 @@ def test_second_before_model_pass_in_one_runtime_stages_only_one_summary():
     assert second_update is None
     assert len(runtime.context.pending_summary_records) == 1
     pending = runtime.context.pending_summary_records[0]
-    assert isinstance(pending, _PendingSummaryAuditRecord)
+    assert isinstance(pending, PendingSummaryAuditRecord)
     assert pending.summary_message_id
     assert "first summary" in pending.record.summary_text
 
