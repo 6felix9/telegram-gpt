@@ -292,7 +292,7 @@ class Agent:
         model = init_chat_model(
             prefixed_id,
             api_key=key,
-            timeout=self._config.OPENAI_TIMEOUT,
+            timeout=self._config.MODEL_TIMEOUT,
             max_retries=2,
             max_tokens=self._config.MAX_OUTPUT_TOKENS,
             **({"use_responses_api": True} if provider == "openai" else {}),
