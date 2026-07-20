@@ -5,8 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 from agent import CompletionError
-from handler_deps import HandlerDependencies
-from request_processor import RequestProcessor
+from handlers.handler_deps import HandlerDependencies
+from handlers.request_processor import RequestProcessor
 
 
 def _deps(db=None, agent=None):

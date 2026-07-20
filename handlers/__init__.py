@@ -3,20 +3,20 @@ module-level callables bot.py registers with python-telegram-bot. See
 message_handlers.py and command_handlers.py for the actual logic."""
 import logging
 
-from authorization import is_authorized as _authz_is_authorized
-from authorization import is_main_authorized_user as _authz_is_main_authorized_user
-from command_handlers import CommandHandlers
-from command_handlers import error_handler as error_handler  # re-exported for bot.py/tests
-from handler_deps import HandlerDependencies
-from message_handlers import MessageHandlers
-from message_handlers import extract_keyword as extract_keyword  # re-exported for tests
-from message_handlers import extract_reply_data as extract_reply_data  # re-exported for tests
-from request_processor import RequestProcessor
+from .authorization import is_authorized as _authz_is_authorized
+from .authorization import is_main_authorized_user as _authz_is_main_authorized_user
+from .command_handlers import CommandHandlers
+from .command_handlers import error_handler as error_handler  # re-exported for bot.py/tests
+from .handler_deps import HandlerDependencies
+from .message_handlers import MessageHandlers
+from .message_handlers import extract_keyword as extract_keyword  # re-exported for tests
+from .message_handlers import extract_reply_data as extract_reply_data  # re-exported for tests
+from .request_processor import RequestProcessor
 
 logger = logging.getLogger(__name__)
 
 # NOTE: deviates from the plan's brief for this task. The brief's Step 1 had
-# this module do `from authorization import is_authorized,
+# this module do `from .authorization import is_authorized,
 # is_main_authorized_user` as a raw re-export. That breaks
 # tests/test_handlers_characterization.py, which (unchanged since Task 2)
 # calls `handlers.is_authorized(user_id)` / `handlers.is_main_authorized_user

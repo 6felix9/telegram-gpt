@@ -6,7 +6,7 @@ from unittest.mock import Mock
 import psycopg2
 import pytest
 
-from db_connection import ConnectionManager
+from database.db_connection import ConnectionManager
 
 
 class _FakeConn:

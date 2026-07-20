@@ -13,7 +13,9 @@ The bot is no longer "OpenAI only". `agent.py` routes requests by model name to 
 
 ## Project Structure & Module Organization
 
-- Core runtime files are at repo root: `bot.py` (entrypoint), `handlers.py` (Telegram handlers and commands), `agent.py` (LangChain agent construction, provider/model routing via `MODEL_PROVIDERS`, summarization middleware wiring, and request-time trimming), `conversation_summary.py` (`ResilientSummarizationMiddleware` and summary helpers), `tools.py` (agent tools: web search and page fetch), `database.py` (PostgreSQL/Neon persistence and global settings), `prompt_builder.py` (system prompt construction and message formatting), `cache.py` (TTL cache helpers), and `config.py` (env-driven settings).
+- Core runtime files at repo root: `bot.py` (entrypoint), `agent.py` (LangChain agent construction, provider/model routing via `MODEL_PROVIDERS`, summarization middleware wiring, and request-time trimming), `conversation_summary.py` (`ResilientSummarizationMiddleware` and summary helpers), `tools.py` (agent tools: web search and page fetch), `prompt_builder.py` (system prompt construction and message formatting), `cache.py` (TTL cache helpers), `config.py` (env-driven settings), `app_factory.py` (composition for `bot.py` / `scripts/chat_cli.py`), `model_registry.py`, and `token_budget.py`.
+- `handlers/` is a package for Telegram handlers and commands (`handlers/__init__.py` facade plus `handler_deps`, `authorization`, `request_processor`, `message_handlers`, `command_handlers`).
+- `database/` is a package for PostgreSQL/Neon persistence (`database/__init__.py` `Database` facade plus `db_connection`, `message_repository`, `access_repository`, `settings_repository`, `summary_audit_repository`).
 - Operational docs live in `README.md` and `AGENTS.md`.
 - Utility scripts are in `scripts/` (notably `scripts/chat_cli.py` for local chat simulation).
 - Unit tests live in `tests/` (pytest; no database or `.env` required).
@@ -24,8 +26,8 @@ The bot is no longer "OpenAI only". `agent.py` routes requests by model name to 
 
 1. `bot.py` wires together config, database, the checkpointer, prompt builder, agent, and Telegram handlers.
 2. `config.py` loads `.env` and validates required settings.
-3. `database.py` owns PostgreSQL persistence, cached lookups, and global settings such as active model and active personality (schema itself is Alembic-managed — see Database Schema below).
-4. `handlers.py` implements Telegram message handlers and bot commands.
+3. `database/` owns PostgreSQL persistence, cached lookups, and global settings such as active model and active personality (schema itself is Alembic-managed — see Database Schema below).
+4. `handlers/` implements Telegram message handlers and bot commands.
 5. `agent.py` builds the LangChain agent (`create_agent` + `init_chat_model`), maps the active model to a provider via `MODEL_PROVIDERS`, wires `ResilientSummarizationMiddleware` as a persistent state-compaction hook before request trimming, and applies the `wrap_model_call` trimming middleware before each reply-model call.
 6. `prompt_builder.py` builds system prompts and normalizes message payloads for the agent.
 7. The checkpointer (`PostgresSaver`, keyed by chat_id thread) persists conversation state across turns as a rolling summary plus recent raw messages. The previous fixed 500→400 message-count prune has been removed; rolling summarization is the sole bound on active checkpoint state. Token counting and model-input trimming remain separate.
@@ -213,7 +215,7 @@ Important notes:
 
 ## Commands
 
-All commands are main admin only (gated by `is_main_authorized_user()` in `handlers.py`); granted users can chat with the bot but cannot run any command:
+All commands are main admin only (gated by `is_main_authorized_user()` in `handlers/`); granted users can chat with the bot but cannot run any command:
 
 - `/clear`
 - `/stats`

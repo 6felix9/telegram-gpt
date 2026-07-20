@@ -253,8 +253,8 @@ Core modules:
 
 - `bot.py` - Entry point, dependency wiring, Telegram application setup
 - `config.py` - Env loading and validation
-- `database.py` - PostgreSQL connection pooling, schema init, persistence, cached lookups
-- `handlers.py` - Telegram handlers, authorization checks, command implementations
+- `database/` - PostgreSQL connection pooling, persistence, cached lookups (`Database` facade + repositories)
+- `handlers/` - Telegram handlers, authorization checks, command implementations
 - `agent.py` - LangChain agent construction (`create_agent` + `init_chat_model`), provider/model routing (`MODEL_PROVIDERS`), rolling conversation summarization (`ResilientSummarizationMiddleware`), and the token-trimming middleware
 - `conversation_summary.py` - Fail-open summarization middleware, image sanitization for summary generation, and post-compaction audit callback wiring
 - `tools.py` - Agent tools
