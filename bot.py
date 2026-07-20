@@ -86,7 +86,7 @@ def main():
         bot_username = config.BOT_USERNAME.lstrip("@")
         handlers.init_handlers(config, db, bot_agent, prompt_builder, bot_username)
 
-        # 7. Register handlers
+        # 8. Register handlers
         # Message handler (non-command text messages)
         application.add_handler(
             MessageHandler(
@@ -118,11 +118,11 @@ def main():
         # Error handler
         application.add_error_handler(handlers.error_handler)
 
-        # 8. Setup signal handlers for graceful shutdown
+        # 9. Setup signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
 
-        # 9. Start bot polling
+        # 10. Start bot polling
         logger.info("Starting bot polling...")
         application.run_polling(
             allowed_updates=Update.ALL_TYPES,
