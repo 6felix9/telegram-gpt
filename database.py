@@ -31,15 +31,6 @@ class Database:
     def add_message(self, *args, **kwargs) -> int:
         return self._messages.add_message(*args, **kwargs)
 
-    def get_messages_by_tokens(self, chat_id: str, max_tokens: int) -> list:
-        return self._messages.get_messages_by_tokens(chat_id, max_tokens)
-
-    def get_recent_messages(self, chat_id: str, limit: int = 100) -> list:
-        return self._messages.get_recent_messages(chat_id, limit)
-
-    def clear_history(self, chat_id: str):
-        return self._messages.clear_history(chat_id)
-
     def get_stats(self, chat_id: str) -> dict:
         return self._messages.get_stats(chat_id)
 
