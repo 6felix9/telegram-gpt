@@ -5,7 +5,8 @@ from datetime import datetime
 from psycopg2.extras import RealDictCursor
 
 from cache import MISSING, TTLCache
-from db_connection import ConnectionManager
+
+from .db_connection import ConnectionManager
 
 logger = logging.getLogger(__name__)
 

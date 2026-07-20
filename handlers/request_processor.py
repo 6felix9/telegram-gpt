@@ -7,7 +7,8 @@ from contextlib import asynccontextmanager
 from telegram.constants import ChatAction
 
 from agent import CompletionError, count_tokens
-from handler_deps import HandlerDependencies
+
+from .handler_deps import HandlerDependencies
 
 logger = logging.getLogger(__name__)
 

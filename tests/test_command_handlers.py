@@ -3,8 +3,8 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
-from command_handlers import CommandHandlers, error_handler
-from handler_deps import HandlerDependencies
+from handlers.command_handlers import CommandHandlers, error_handler
+from handlers.handler_deps import HandlerDependencies
 
 
 class _Cfg:

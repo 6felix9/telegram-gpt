@@ -2,11 +2,11 @@
 invalidation timing, using a fake connection double instead of a live DB."""
 from contextlib import contextmanager
 
-from access_repository import AccessRepository
 from cache import MISSING, TTLCache
-from db_connection import ConnectionManager
-from message_repository import MessageRepository
-from settings_repository import SettingsRepository
+from database.access_repository import AccessRepository
+from database.db_connection import ConnectionManager
+from database.message_repository import MessageRepository
+from database.settings_repository import SettingsRepository
 
 
 class _FakeCursor:

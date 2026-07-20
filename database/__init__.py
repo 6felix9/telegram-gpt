@@ -2,12 +2,13 @@
 repositories that all share one ConnectionManager and one TTLCache."""
 import logging
 
-from access_repository import AccessRepository
 from cache import TTLCache
-from db_connection import ConnectionManager
-from message_repository import MessageRepository
-from settings_repository import SettingsRepository
-from summary_audit_repository import SummaryAuditRepository
+
+from .access_repository import AccessRepository
+from .db_connection import ConnectionManager
+from .message_repository import MessageRepository
+from .settings_repository import SettingsRepository
+from .summary_audit_repository import SummaryAuditRepository
 
 logger = logging.getLogger(__name__)
 

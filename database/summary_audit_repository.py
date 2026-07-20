@@ -1,7 +1,7 @@
 """Audit-only persistence for confirmed checkpoint summaries."""
 import logging
 
-from db_connection import ConnectionManager
+from .db_connection import ConnectionManager
 
 logger = logging.getLogger(__name__)
 

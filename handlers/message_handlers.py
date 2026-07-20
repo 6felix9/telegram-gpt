@@ -5,9 +5,10 @@ import logging
 import re
 
 from agent import count_tokens
-from authorization import is_authorized
-from handler_deps import HandlerDependencies
-from request_processor import RequestProcessor
+
+from .authorization import is_authorized
+from .handler_deps import HandlerDependencies
+from .request_processor import RequestProcessor
 
 logger = logging.getLogger(__name__)
 

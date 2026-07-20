@@ -2,7 +2,7 @@
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-import authorization
+from handlers import authorization
 
 
 class _Cfg:

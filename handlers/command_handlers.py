@@ -3,9 +3,10 @@ import logging
 
 from telegram.helpers import escape_markdown
 
-from authorization import is_main_authorized_user
-from handler_deps import HandlerDependencies
 from model_registry import MODEL_PROVIDERS
+
+from .authorization import is_main_authorized_user
+from .handler_deps import HandlerDependencies
 
 logger = logging.getLogger(__name__)
 

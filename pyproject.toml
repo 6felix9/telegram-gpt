@@ -11,19 +11,9 @@ ignore_missing_imports = true
 disallow_untyped_defs = false
 follow_imports = "silent"
 files = [
-    "handler_deps.py",
-    "authorization.py",
-    "request_processor.py",
-    "message_handlers.py",
-    "command_handlers.py",
-    "handlers.py",
+    "handlers/",
+    "database/",
     "model_registry.py",
     "token_budget.py",
-    "db_connection.py",
-    "message_repository.py",
-    "access_repository.py",
-    "settings_repository.py",
-    "summary_audit_repository.py",
-    "database.py",
     "app_factory.py",
 ]
