@@ -1,5 +1,6 @@
 """Shared agent-turn workflow for triggering text and image requests."""
 import asyncio
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 
@@ -26,6 +27,8 @@ async def typing_action(bot, chat_id: str):
         yield
     finally:
         task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 class RequestProcessor:
