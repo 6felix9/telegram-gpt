@@ -33,7 +33,7 @@ jobs:
           message_handlers.py command_handlers.py handlers.py model_registry.py
           token_budget.py db_connection.py message_repository.py
           access_repository.py settings_repository.py summary_audit_repository.py
-          database.py
+          database.py app_factory.py
 
       - name: Type check (new modules)
         run: mypy
