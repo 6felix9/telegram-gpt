@@ -10,6 +10,7 @@ from command_handlers import error_handler as error_handler  # re-exported for b
 from handler_deps import HandlerDependencies
 from message_handlers import MessageHandlers
 from message_handlers import extract_keyword as extract_keyword  # re-exported for tests
+from message_handlers import extract_reply_data as extract_reply_data  # re-exported for tests
 from request_processor import RequestProcessor
 
 logger = logging.getLogger(__name__)
