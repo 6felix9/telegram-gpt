@@ -39,14 +39,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import config
-from database import Database
-from prompt_builder import PromptBuilder
-from agent import Agent, CompletionError
+from agent import CompletionError
+from app_factory import build_app_stack
 from model_registry import MODEL_PROVIDERS
-import agent as agent_module
-from psycopg_pool import ConnectionPool
-from psycopg.rows import dict_row
-from langgraph.checkpoint.postgres import PostgresSaver
 
 # Configure logging
 logging.basicConfig(
@@ -71,39 +66,15 @@ class ChatCLI:
         self.is_group = is_group
         self.is_test_mode = (self.chat_id == "test")
 
-        # Initialize components (mirroring bot.py setup)
+        # Initialize components via the shared app_factory stack (mirrors bot.py).
         logger.info("Initializing components...")
         config.validate()
 
-        # Database
-        self.db = Database(config.DATABASE_URL)
-
-        # Load persisted active model (seeds from DEFAULT_MODEL on first run)
-        self.db.init_active_model(config.DEFAULT_MODEL)
-        effective_model = self.db.get_active_model()
-
-        # Checkpointer pool (tables created out-of-band; do NOT call .setup()).
-        self.checkpointer_pool = ConnectionPool(
-            conninfo=config.DATABASE_URL,
-            max_size=10,
-            kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
-        )
-        checkpointer = PostgresSaver(self.checkpointer_pool)
-
-        # Prompt builder + agent (mirrors bot.py wiring).
-        self.prompt_builder = PromptBuilder(
-            default_private_prompt=agent_module.SYSTEM_PROMPT,
-            default_group_prompt=agent_module.SYSTEM_PROMPT_GROUP,
-            get_active_personality=self.db.get_active_personality,
-            get_personality_prompt=self.db.get_personality_prompt,
-        )
-        self.agent = Agent(
-            config=config,
-            prompt_builder=self.prompt_builder,
-            checkpointer=checkpointer,
-            model_name=effective_model,
-            db=self.db,
-        )
+        stack = build_app_stack(config)
+        self.db = stack.db
+        self.checkpointer_pool = stack.checkpointer_pool
+        self.prompt_builder = stack.prompt_builder
+        self.agent = stack.agent
 
         logger.info(f"CLI initialized for chat_id={self.chat_id}, group={is_group}, test_mode={self.is_test_mode}")
 

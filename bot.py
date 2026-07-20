@@ -7,13 +7,7 @@ from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters
 
 from config import config
-from database import Database
-from prompt_builder import PromptBuilder
-from agent import Agent
-import agent as agent_module
-from psycopg_pool import ConnectionPool
-from psycopg.rows import dict_row
-from langgraph.checkpoint.postgres import PostgresSaver
+from app_factory import build_app_stack
 import handlers
 
 # Configure logging
@@ -69,45 +63,14 @@ def main():
         logger.info("Validating configuration...")
         config.validate()
 
-        # 2. Initialize database
-        logger.info("Initializing database...")
-        db = Database(config.DATABASE_URL)
-
-        # Seed active_model on first run with env var default, then load persisted value
-        db.init_active_model(config.DEFAULT_MODEL)
-        effective_model = db.get_active_model()
-        logger.info(f"Active model: {effective_model}")
-
-        # 3. Build the Postgres checkpointer over a dedicated psycopg3 pool.
-        #    Tables are created out-of-band by scripts/setup_checkpointer.py
-        #    (deploy preDeployCommand); we do NOT call .setup() here.
-        logger.info("Initializing checkpointer pool...")
-        checkpointer_pool = ConnectionPool(
-            conninfo=config.DATABASE_URL,
-            max_size=10,
-            kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
-            check=ConnectionPool.check_connection,
-        )
-        checkpointer = PostgresSaver(checkpointer_pool)
-
-        # 4. Prompt builder (shared with the dynamic-prompt middleware).
-        logger.info("Initializing prompt builder...")
-        prompt_builder = PromptBuilder(
-            default_private_prompt=agent_module.SYSTEM_PROMPT,
-            default_group_prompt=agent_module.SYSTEM_PROMPT_GROUP,
-            get_active_personality=db.get_active_personality,
-            get_personality_prompt=db.get_personality_prompt,
-        )
-
-        # 5. Build the agent for the active model.
-        logger.info("Building agent...")
-        bot_agent = Agent(
-            config=config,
-            prompt_builder=prompt_builder,
-            checkpointer=checkpointer,
-            model_name=effective_model,
-            db=db,
-        )
+        # 2-5. Build the shared db/prompt-builder/agent stack.
+        logger.info("Building application stack...")
+        stack = build_app_stack(config)
+        db = stack.db
+        checkpointer_pool = stack.checkpointer_pool
+        prompt_builder = stack.prompt_builder
+        bot_agent = stack.agent
+        logger.info(f"Active model: {bot_agent.model_name}")
 
         # 6. Build Telegram application
         logger.info("Building Telegram application...")

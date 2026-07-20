@@ -25,4 +25,5 @@ files = [
     "settings_repository.py",
     "summary_audit_repository.py",
     "database.py",
+    "app_factory.py",
 ]
