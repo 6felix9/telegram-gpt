@@ -5,7 +5,7 @@ from collections.abc import Iterable
 
 import tiktoken
 from langchain.agents.middleware import ModelRequest, ModelResponse, wrap_model_call
-from langchain_core.messages import BaseMessage, ToolMessage
+from langchain_core.messages import AnyMessage, BaseMessage, ToolMessage
 
 # tiktoken encoding is model-independent for our budgeting purposes.
 _ENCODING = tiktoken.get_encoding("cl100k_base")
@@ -51,10 +51,10 @@ def count_messages_tokens(messages: Iterable[BaseMessage]) -> int:
 
 
 def trim_messages(
-    messages: list[BaseMessage],
+    messages: list[AnyMessage],
     max_context_tokens: int,
     reserve: int,
-) -> list[BaseMessage]:
+) -> list[AnyMessage]:
     """Keep as much recent history as fits the budget, newest-first.
 
     Non-destructive: returns a new list. Always keeps the last message.
@@ -66,7 +66,7 @@ def trim_messages(
 
     available = max(0, max_context_tokens - reserve)
 
-    kept: list[BaseMessage] = [messages[-1]]
+    kept: list[AnyMessage] = [messages[-1]]
     total = count_message_tokens(messages[-1])
     for message in reversed(messages[:-1]):
         cost = count_message_tokens(message)
