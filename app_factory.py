@@ -1,8 +1,10 @@
 """Single composition point for the db/prompt-builder/agent stack, shared by
 bot.py and scripts/chat_cli.py so their bootstrap can't drift apart."""
 from dataclasses import dataclass
+from typing import Any
 
 from langgraph.checkpoint.postgres import PostgresSaver
+from psycopg import Connection
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
@@ -17,7 +19,7 @@ class AppStack:
     db: Database
     prompt_builder: PromptBuilder
     agent: Agent
-    checkpointer_pool: ConnectionPool
+    checkpointer_pool: ConnectionPool[Connection[dict[str, Any]]]
 
 
 def build_app_stack(config) -> AppStack:
@@ -30,7 +32,11 @@ def build_app_stack(config) -> AppStack:
     db.init_active_model(config.DEFAULT_MODEL)
     effective_model = db.get_active_model()
 
-    checkpointer_pool = ConnectionPool(
+    # row_factory=dict_row is set via the runtime kwargs dict below, which mypy
+    # can't thread through ConnectionPool's generic parameter — annotate the
+    # variable explicitly so PostgresSaver's Connection[dict[str, Any]] type
+    # checks correctly against what this pool actually produces at runtime.
+    checkpointer_pool: ConnectionPool[Connection[dict[str, Any]]] = ConnectionPool(
         conninfo=config.DATABASE_URL,
         max_size=10,
         kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
