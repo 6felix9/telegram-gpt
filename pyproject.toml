@@ -1,0 +1,28 @@
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+disallow_untyped_defs = false
+follow_imports = "silent"
+files = [
+    "handler_deps.py",
+    "authorization.py",
+    "request_processor.py",
+    "message_handlers.py",
+    "command_handlers.py",
+    "handlers.py",
+    "model_registry.py",
+    "token_budget.py",
+    "db_connection.py",
+    "message_repository.py",
+    "access_repository.py",
+    "settings_repository.py",
+    "summary_audit_repository.py",
+    "database.py",
+]
