@@ -20,11 +20,11 @@ class MessageRepository:
         chat_id: str,
         role: str,
         content: str,
-        user_id: int = None,
-        message_id: int = None,
+        user_id: int | None = None,
+        message_id: int | None = None,
         token_count: int = 0,
-        sender_name: str = None,
-        sender_username: str = None,
+        sender_name: str | None = None,
+        sender_username: str | None = None,
         is_group_chat: bool = False,
     ) -> int:
         """Add a message to the database with atomic transaction."""
@@ -78,11 +78,13 @@ class MessageRepository:
                     )
                     row = cur.fetchone()
 
+                    first_message = row["first_message"]
+                    last_message = row["last_message"]
                     return {
                         "total_messages": row["total_messages"] or 0,
                         "total_tokens": row["total_tokens"] or 0,
-                        "first_message": row["first_message"].isoformat() if row["first_message"] else "N/A",
-                        "last_message": row["last_message"].isoformat() if row["last_message"] else "N/A",
+                        "first_message": first_message.isoformat() if first_message else "N/A",
+                        "last_message": last_message.isoformat() if last_message else "N/A",
                     }
 
         except Exception as e:
@@ -112,7 +114,8 @@ class MessageRepository:
             with self._conn.connection() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
                     cur.execute(
-                        "SELECT COUNT(*) as count FROM messages WHERE chat_id = %s AND is_group_chat = TRUE",
+                        "SELECT COUNT(*) as count FROM messages "
+                        "WHERE chat_id = %s AND is_group_chat = TRUE",
                         (chat_id,),
                     )
                     total = cur.fetchone()["count"]

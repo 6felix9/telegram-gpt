@@ -17,7 +17,9 @@ class AccessRepository:
         self._conn = conn
         self._cache = cache
 
-    def grant_access(self, user_id: int, first_name: str = None, username: str = None) -> bool:
+    def grant_access(
+        self, user_id: int, first_name: str | None = None, username: str | None = None
+    ) -> bool:
         try:
             user_id_str = str(user_id)
             timestamp = datetime.utcnow()
@@ -35,7 +37,8 @@ class AccessRepository:
                         return False
 
                     cur.execute(
-                        "INSERT INTO granted_users (user_id, granted_at, first_name, username) VALUES (%s, %s, %s, %s)",
+                        "INSERT INTO granted_users (user_id, granted_at, first_name, username) "
+                        "VALUES (%s, %s, %s, %s)",
                         (user_id_str, timestamp, first_name, username),
                     )
 
@@ -101,7 +104,8 @@ class AccessRepository:
             with self._conn.connection() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
                     cur.execute(
-                        "SELECT user_id, granted_at, first_name, username FROM granted_users ORDER BY granted_at DESC"
+                        "SELECT user_id, granted_at, first_name, username "
+                        "FROM granted_users ORDER BY granted_at DESC"
                     )
                     users = [
                         (

@@ -108,8 +108,11 @@ class SettingsRepository:
                     cur.execute(
                         "SELECT personality, prompt FROM personality ORDER BY personality"
                     )
+                    def _preview(prompt: str) -> str:
+                        return prompt[:100] + "..." if len(prompt) > 100 else prompt
+
                     personalities = [
-                        (row["personality"], row["prompt"][:100] + "..." if len(row["prompt"]) > 100 else row["prompt"])
+                        (row["personality"], _preview(row["prompt"]))
                         for row in cur.fetchall()
                     ]
             return personalities
@@ -122,7 +125,8 @@ class SettingsRepository:
             with self._conn.connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "INSERT INTO active_model (id, model) VALUES (1, %s) ON CONFLICT DO NOTHING",
+                        "INSERT INTO active_model (id, model) VALUES (1, %s) "
+                        "ON CONFLICT DO NOTHING",
                         (default_model,)
                     )
         except Exception as e:

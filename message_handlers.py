@@ -12,7 +12,7 @@ from request_processor import RequestProcessor
 logger = logging.getLogger(__name__)
 
 
-def extract_keyword(text: str, bot_username: str = None) -> tuple[bool, str]:
+def extract_keyword(text: str, bot_username: str | None = None) -> tuple[bool, str]:
     """
     Check for activation keyword or @mention and extract prompt.
 

@@ -5,9 +5,11 @@ import logging
 
 from authorization import is_authorized as _authz_is_authorized
 from authorization import is_main_authorized_user as _authz_is_main_authorized_user
-from command_handlers import CommandHandlers, error_handler
+from command_handlers import CommandHandlers
+from command_handlers import error_handler as error_handler  # re-exported for bot.py/tests
 from handler_deps import HandlerDependencies
-from message_handlers import MessageHandlers, extract_keyword, extract_reply_data
+from message_handlers import MessageHandlers
+from message_handlers import extract_keyword as extract_keyword  # re-exported for tests
 from request_processor import RequestProcessor
 
 logger = logging.getLogger(__name__)
@@ -44,11 +46,13 @@ def init_handlers(cfg, database, bot_agent, prompt_bldr, username=None):
 
 def is_authorized(user_id: int) -> bool:
     """Check if user is authorized to use the bot."""
+    assert _deps is not None, "init_handlers() must run before is_authorized()"
     return _authz_is_authorized(user_id, _deps.config, _deps.db)
 
 
 def is_main_authorized_user(user_id: int) -> bool:
     """Check if user is the main authorized user (for admin commands)."""
+    assert _deps is not None, "init_handlers() must run before is_main_authorized_user()"
     return _authz_is_main_authorized_user(user_id, _deps.config)
 
 

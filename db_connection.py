@@ -17,7 +17,7 @@ class ConnectionManager:
         self.db_url = db_url
         self._last_health_check: float = 0.0
         try:
-            self.pool = psycopg2.pool.ThreadedConnectionPool(
+            self.pool = pool.ThreadedConnectionPool(
                 minconn=1,
                 maxconn=10,
                 dsn=db_url,

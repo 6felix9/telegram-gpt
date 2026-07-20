@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 import tiktoken
-from langchain.agents.middleware import wrap_model_call, ModelRequest, ModelResponse
+from langchain.agents.middleware import ModelRequest, ModelResponse, wrap_model_call
 from langchain_core.messages import BaseMessage, ToolMessage
 
 # tiktoken encoding is model-independent for our budgeting purposes.

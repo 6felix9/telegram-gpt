@@ -3,9 +3,9 @@ import logging
 
 from telegram.helpers import escape_markdown
 
-from model_registry import MODEL_PROVIDERS
 from authorization import is_main_authorized_user
 from handler_deps import HandlerDependencies
+from model_registry import MODEL_PROVIDERS
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,9 @@ class CommandHandlers:
     async def clear_command(self, update, context):
         user_id = update.message.from_user.id
         if not is_main_authorized_user(user_id, self._deps.config):
-            await update.message.reply_text("Sorry, only the main authorized user can clear history.")
+            await update.message.reply_text(
+                "Sorry, only the main authorized user can clear history."
+            )
             return
 
         chat_id = str(update.message.chat_id)
@@ -58,7 +60,9 @@ class CommandHandlers:
     async def grant_command(self, update, context):
         user_id = update.message.from_user.id
         if not is_main_authorized_user(user_id, self._deps.config):
-            await update.message.reply_text("Sorry, only the main authorized user can grant access.")
+            await update.message.reply_text(
+                "Sorry, only the main authorized user can grant access."
+            )
             return
 
         if not context.args or len(context.args) == 0:
@@ -117,7 +121,9 @@ class CommandHandlers:
     async def revoke_command(self, update, context):
         user_id = update.message.from_user.id
         if not is_main_authorized_user(user_id, self._deps.config):
-            await update.message.reply_text("Sorry, only the main authorized user can revoke access.")
+            await update.message.reply_text(
+                "Sorry, only the main authorized user can revoke access."
+            )
             return
 
         if not context.args or len(context.args) == 0:
@@ -160,7 +166,9 @@ class CommandHandlers:
     async def version_command(self, update, context):
         user_id = update.message.from_user.id
         if not is_main_authorized_user(user_id, self._deps.config):
-            await update.message.reply_text("Sorry, only the main authorized user can view the bot version.")
+            await update.message.reply_text(
+                "Sorry, only the main authorized user can view the bot version."
+            )
             return
 
         await update.message.reply_text(f"Bot version: {self._deps.config.BOT_VERSION}")
@@ -169,7 +177,9 @@ class CommandHandlers:
     async def allowlist_command(self, update, context):
         user_id = update.message.from_user.id
         if not is_main_authorized_user(user_id, self._deps.config):
-            await update.message.reply_text("Sorry, only the main authorized user can see the allowlist.")
+            await update.message.reply_text(
+                "Sorry, only the main authorized user can see the allowlist."
+            )
             return
 
         try:
@@ -204,7 +214,9 @@ class CommandHandlers:
     async def personality_command(self, update, context):
         user_id = update.message.from_user.id
         if not is_main_authorized_user(user_id, self._deps.config):
-            await update.message.reply_text("Sorry, only the main authorized user can change personality.")
+            await update.message.reply_text(
+                "Sorry, only the main authorized user can change personality."
+            )
             return
 
         if not context.args or len(context.args) == 0:
@@ -241,7 +253,9 @@ class CommandHandlers:
     async def list_personality_command(self, update, context):
         user_id = update.message.from_user.id
         if not is_main_authorized_user(user_id, self._deps.config):
-            await update.message.reply_text("Sorry, only the main authorized user can view personalities.")
+            await update.message.reply_text(
+                "Sorry, only the main authorized user can view personalities."
+            )
             return
 
         try:
@@ -252,7 +266,7 @@ class CommandHandlers:
                 await update.message.reply_text("No personalities found in database.")
                 return
 
-            message = f"**Available Personalities:**\n"
+            message = "**Available Personalities:**\n"
             message += f"Currently active: **{active}**\n\n"
 
             for name, prompt_preview in personalities:
@@ -270,7 +284,9 @@ class CommandHandlers:
     async def model_command(self, update, context):
         user_id = update.message.from_user.id
         if not is_main_authorized_user(user_id, self._deps.config):
-            await update.message.reply_text("Sorry, only the main authorized user can change the model.")
+            await update.message.reply_text(
+                "Sorry, only the main authorized user can change the model."
+            )
             return
 
         available = "\n".join(f"  `{m}`" for m in MODEL_PROVIDERS)
@@ -278,7 +294,8 @@ class CommandHandlers:
         if not context.args:
             current = self._deps.db.get_active_model()
             await update.message.reply_text(
-                f"Current model: `{current}`\n\nAvailable models:\n{available}\n\nUsage: `/model <name>`",
+                f"Current model: `{current}`\n\nAvailable models:\n{available}\n\n"
+                "Usage: `/model <name>`",
                 parse_mode="Markdown",
             )
             return
@@ -294,7 +311,9 @@ class CommandHandlers:
         try:
             self._deps.db.set_active_model(new_model)
             self._deps.agent.set_model(new_model)
-            await update.message.reply_text(f"✅ Model switched to `{new_model}`", parse_mode="Markdown")
+            await update.message.reply_text(
+                f"✅ Model switched to `{new_model}`", parse_mode="Markdown"
+            )
             logger.info(f"User {user_id} switched model to {new_model}")
         except Exception as e:
             logger.error(f"Error switching model: {e}", exc_info=True)
@@ -303,7 +322,9 @@ class CommandHandlers:
     async def help_command(self, update, context):
         user_id = update.message.from_user.id
         if not is_main_authorized_user(user_id, self._deps.config):
-            await update.message.reply_text("Sorry, only the main authorized user can use this command.")
+            await update.message.reply_text(
+                "Sorry, only the main authorized user can use this command."
+            )
             return
 
         help_text = (

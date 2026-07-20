@@ -38,7 +38,9 @@ class Database:
         return self._messages.cleanup_old_group_messages(chat_id, keep_recent)
 
     # --- access ----------------------------------------------------------
-    def grant_access(self, user_id: int, first_name: str = None, username: str = None) -> bool:
+    def grant_access(
+        self, user_id: int, first_name: str | None = None, username: str | None = None
+    ) -> bool:
         return self._access.grant_access(user_id, first_name=first_name, username=username)
 
     def revoke_access(self, user_id: int) -> bool:
