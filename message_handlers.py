@@ -146,8 +146,6 @@ class MessageHandlers:
             extract_keyword(caption, self._deps.bot_username) if caption else (False, "")
         )
 
-        if is_group and not has_keyword:
-            return
         if not has_keyword:
             return
 
