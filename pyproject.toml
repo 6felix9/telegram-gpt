@@ -1,0 +1,19 @@
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+disallow_untyped_defs = false
+follow_imports = "silent"
+files = [
+    "handlers/",
+    "database/",
+    "model_registry.py",
+    "token_budget.py",
+    "app_factory.py",
+]

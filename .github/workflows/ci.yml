@@ -25,7 +25,15 @@ jobs:
         run: pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Compile Python files
-        run: python3 -m py_compile *.py alembic/env.py alembic/versions/*.py
+        run: python3 -m py_compile *.py handlers/*.py database/*.py alembic/env.py alembic/versions/*.py
+
+      - name: Lint (new modules)
+        run: >
+          ruff check handlers/ database/ model_registry.py token_budget.py
+          app_factory.py
+
+      - name: Type check (new modules)
+        run: mypy
 
       - name: Run tests
         run: pytest tests/ -v
