@@ -316,6 +316,17 @@ class Agent:
                 )
                 if last_message.id is not None:
                     empty_reply_ids.append(last_message.id)
+                    try:
+                        self._graph.update_state(
+                            self._config_for(chat_id),
+                            {"messages": [RemoveMessage(id=last_message.id)]},
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to prune empty-reply message for chat %s", chat_id
+                        )
+                    else:
+                        empty_reply_ids.remove(last_message.id)
             raise CompletionError(
                 "⚠️ The model didn't return a reply after several attempts. "
                 "Please try again or use /model to switch models."
