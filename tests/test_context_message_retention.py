@@ -6,7 +6,7 @@ from unittest.mock import Mock
 import handlers
 
 
-def _run_message_handler(message, *, monkeypatch):
+def _run_message_handler(message):
     database = SimpleNamespace(
         add_message=Mock(),
         cleanup_old_group_messages=Mock(),
@@ -16,14 +16,9 @@ def _run_message_handler(message, *, monkeypatch):
         run=Mock(),
     )
     prompt_builder = SimpleNamespace(to_lc_human_message=Mock(return_value="human"))
+    config = SimpleNamespace(MAX_GROUP_CONTEXT_MESSAGES=500, AUTHORIZED_USER_ID="1")
 
-    monkeypatch.setattr(handlers, "config", SimpleNamespace(MAX_GROUP_CONTEXT_MESSAGES=500))
-    monkeypatch.setattr(handlers, "db", database)
-    monkeypatch.setattr(handlers, "agent", bot_agent)
-    monkeypatch.setattr(handlers, "prompt_builder", prompt_builder)
-    monkeypatch.setattr(handlers, "bot_username", "mybot")
-    if hasattr(handlers, "random"):
-        monkeypatch.setattr(handlers.random, "random", lambda: 0.0)
+    handlers.init_handlers(config, database, bot_agent, prompt_builder, "mybot")
 
     asyncio.run(
         handlers.message_handler(
@@ -34,16 +29,17 @@ def _run_message_handler(message, *, monkeypatch):
     return database, bot_agent, prompt_builder
 
 
-def test_non_triggering_group_message_stores_context_without_cleanup(monkeypatch):
+def test_non_triggering_group_message_stores_context_without_cleanup():
     message = SimpleNamespace(
         text="ordinary group message",
         chat_id=-123,
         chat=SimpleNamespace(type="group"),
         from_user=SimpleNamespace(id=42, first_name="Alice", username="alice"),
         message_id=7,
+        reply_to_message=None,
     )
 
-    database, bot_agent, prompt_builder = _run_message_handler(message, monkeypatch=monkeypatch)
+    database, bot_agent, prompt_builder = _run_message_handler(message)
 
     database.add_message.assert_called_once()
     assert database.add_message.call_args.kwargs["is_group_chat"] is True
@@ -55,16 +51,17 @@ def test_non_triggering_group_message_stores_context_without_cleanup(monkeypatch
     database.cleanup_old_group_messages.assert_not_called()
 
 
-def test_non_triggering_private_message_stores_context(monkeypatch):
+def test_non_triggering_private_message_stores_context():
     message = SimpleNamespace(
         text="flight is at 6",
         chat_id=99,
         chat=SimpleNamespace(type="private"),
         from_user=SimpleNamespace(id=42, first_name="Alice", username="alice"),
         message_id=8,
+        reply_to_message=None,
     )
 
-    database, bot_agent, prompt_builder = _run_message_handler(message, monkeypatch=monkeypatch)
+    database, bot_agent, prompt_builder = _run_message_handler(message)
 
     database.add_message.assert_called_once()
     assert database.add_message.call_args.kwargs["is_group_chat"] is False

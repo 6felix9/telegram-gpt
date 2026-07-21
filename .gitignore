@@ -52,3 +52,4 @@ Thumbs.db
 
 # Claude Code skill tooling state
 skills-lock.json
+.superpowers/
