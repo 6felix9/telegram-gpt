@@ -35,6 +35,28 @@ class _SummaryFakeChat(_FakeChat):
         return super().invoke(*args, **kwargs)
 
 
+class _CapturingFakeChat(_FakeChat):
+    """Records each invoke's input message list for mid-retry assertions."""
+
+    # GenericFakeChatModel is a pydantic model — use object.__setattr__ for
+    # non-field instance state (same constraint that forces _SummaryFakeChat
+    # to declare calls/fail as annotated class attributes).
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        object.__setattr__(self, "seen_message_batches", [])
+
+    def invoke(self, input, *args, **kwargs):
+        # GenericFakeChatModel accepts a list of messages or a prompt value;
+        # normalize to a flat list so callers can assert on message types.
+        if isinstance(input, list):
+            self.seen_message_batches.append(list(input))
+        elif hasattr(input, "to_messages"):
+            self.seen_message_batches.append(list(input.to_messages()))
+        else:
+            self.seen_message_batches.append([input])
+        return super().invoke(input, *args, **kwargs)
+
+
 class _Cfg:
     OPENAI_API_KEY = "o"
     XAI_API_KEY = ""            # xAI key intentionally missing
@@ -85,6 +107,51 @@ def test_run_flattens_block_list_content():
     a = _agent_with_fake(fake)
     out = asyncio.run(a.run("chat-2", HumanMessage(content="hello"), is_group=False))
     assert out == "hi there"
+
+
+def test_run_retries_on_empty_response_then_succeeds():
+    # First attempt returns a reasoning-only block (no visible text, as OpenAI's
+    # Responses API can return when reasoning exhausts the output budget);
+    # second attempt succeeds.
+    fake = _FakeChat(messages=iter([
+        AIMessage(content=[{"type": "reasoning", "summary": []}]),
+        AIMessage(content="finally answered"),
+    ]))
+    a = _agent_with_fake(fake)
+    out = asyncio.run(a.run("chat-empty-retry", HumanMessage(content="hello"), is_group=False))
+    assert out == "finally answered"
+    state = a._graph.get_state(a._config_for("chat-empty-retry"))
+    ai_messages = [m for m in state.values["messages"] if isinstance(m, AIMessage)]
+    assert len(ai_messages) == 1
+    assert ai_messages[0].content == "finally answered"
+
+
+def test_run_raises_completion_error_after_exhausting_empty_retries():
+    fake = _FakeChat(messages=iter([
+        AIMessage(content=[{"type": "reasoning", "summary": []}]),
+        AIMessage(content=[{"type": "reasoning", "summary": []}]),
+        AIMessage(content=[{"type": "reasoning", "summary": []}]),
+    ]))
+    a = _agent_with_fake(fake)
+    with pytest.raises(agent_mod.CompletionError):
+        asyncio.run(a.run("chat-empty-exhausted", HumanMessage(content="hello"), is_group=False))
+    state = a._graph.get_state(a._config_for("chat-empty-exhausted"))
+    assert not any(isinstance(m, AIMessage) for m in state.values["messages"])
+
+
+def test_retry_does_not_resend_empty_reply_to_model():
+    # Proof that empty AI turns are pruned *before* the next invoke, not only
+    # in finally: the second model call must not see the prior empty AIMessage.
+    fake = _CapturingFakeChat(messages=iter([
+        AIMessage(content=[{"type": "reasoning", "summary": []}]),
+        AIMessage(content="finally answered"),
+    ]))
+    a = _agent_with_fake(fake)
+    asyncio.run(a.run("chat-retry-clean", HumanMessage(content="hello"), is_group=False))
+
+    assert len(fake.seen_message_batches) == 2
+    second_call_messages = fake.seen_message_batches[1]
+    assert not any(isinstance(m, AIMessage) for m in second_call_messages)
 
 
 def test_missing_provider_key_raises_completion_error():

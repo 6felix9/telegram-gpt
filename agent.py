@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from langchain.agents import create_agent
 from langchain.agents.middleware import dynamic_prompt
 from langchain.chat_models import init_chat_model
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, RemoveMessage
 
 from conversation_summary import (
     PendingSummaryAuditRecord,
@@ -19,7 +19,13 @@ from conversation_summary import (
 )
 from prompt_builder import PromptBuilder
 from tools import build_tools
-from model_registry import MODEL_PROVIDERS, PROVIDER_LABEL, resolve_model, provider_api_key
+from model_registry import (
+    MODEL_PROVIDERS,
+    PROVIDER_LABEL,
+    REASONING_EFFORT_LOW,
+    resolve_model,
+    provider_api_key,
+)
 from token_budget import (
     _message_text,
     count_tokens,
@@ -51,6 +57,11 @@ Key behaviors:
 - Messages are formatted as [Name]: content - reply naturally without mimicking this format"""
 
 SUMMARY_MAX_OUTPUT_TOKENS = 1024
+
+# An empty (e.g. reasoning-only, no visible text) model reply is treated as a
+# retryable failure, mirroring the transport-level max_retries=2 already used
+# for the underlying provider client.
+EMPTY_RESPONSE_MAX_RETRIES = 2
 
 
 class CompletionError(Exception):
@@ -123,6 +134,7 @@ def make_summary_model(config):
         max_retries=2,
         max_tokens=SUMMARY_MAX_OUTPUT_TOKENS,
         **({"use_responses_api": True} if provider == "openai" else {}),
+        **({"reasoning": {"effort": "low"}} if config.SUMMARY_MODEL in REASONING_EFFORT_LOW else {}),
     )
 
 
@@ -216,6 +228,7 @@ class Agent:
             max_retries=2,
             max_tokens=self._config.MAX_OUTPUT_TOKENS,
             **({"use_responses_api": True} if provider == "openai" else {}),
+            **({"reasoning": {"effort": "low"}} if model_name in REASONING_EFFORT_LOW else {}),
         )
         self._compile(model)
         logger.info("Agent compiled for %s (%s)", model_name, provider)
@@ -284,20 +297,55 @@ class Agent:
             thread_id=str(chat_id),
         )
         result = None
+        empty_reply_ids: list[str] = []
         try:
-            result = await asyncio.to_thread(
-                self._graph.invoke,
-                {"messages": [human_message]},
-                config=self._config_for(chat_id),
-                context=context,
+            for attempt in range(EMPTY_RESPONSE_MAX_RETRIES + 1):
+                result = await asyncio.to_thread(
+                    self._graph.invoke,
+                    {"messages": [human_message]},
+                    config=self._config_for(chat_id),
+                    context=context,
+                )
+                last_message = result["messages"][-1]
+                response = _message_text(last_message)
+                if response.strip():
+                    return response
+                logger.warning(
+                    "Empty model reply for chat %s (attempt %s/%s)",
+                    chat_id, attempt + 1, EMPTY_RESPONSE_MAX_RETRIES + 1,
+                )
+                if last_message.id is not None:
+                    empty_reply_ids.append(last_message.id)
+                    try:
+                        self._graph.update_state(
+                            self._config_for(chat_id),
+                            {"messages": [RemoveMessage(id=last_message.id)]},
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to prune empty-reply message for chat %s", chat_id
+                        )
+                    else:
+                        empty_reply_ids.remove(last_message.id)
+            raise CompletionError(
+                "⚠️ The model didn't return a reply after several attempts. "
+                "Please try again or use /model to switch models."
             )
-            response = _message_text(result["messages"][-1])
-            return response
         except CompletionError:
             raise
         except Exception as e:
             raise _to_completion_error(e) from e
         finally:
+            if empty_reply_ids:
+                try:
+                    self._graph.update_state(
+                        self._config_for(chat_id),
+                        {"messages": [RemoveMessage(id=mid) for mid in empty_reply_ids]},
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to prune empty-reply messages for chat %s", chat_id
+                    )
             self._persist_checkpointed_summary_records(
                 str(chat_id),
                 context,
