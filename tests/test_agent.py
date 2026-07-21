@@ -87,6 +87,30 @@ def test_run_flattens_block_list_content():
     assert out == "hi there"
 
 
+def test_run_retries_on_empty_response_then_succeeds():
+    # First attempt returns a reasoning-only block (no visible text, as OpenAI's
+    # Responses API can return when reasoning exhausts the output budget);
+    # second attempt succeeds.
+    fake = _FakeChat(messages=iter([
+        AIMessage(content=[{"type": "reasoning", "summary": []}]),
+        AIMessage(content="finally answered"),
+    ]))
+    a = _agent_with_fake(fake)
+    out = asyncio.run(a.run("chat-empty-retry", HumanMessage(content="hello"), is_group=False))
+    assert out == "finally answered"
+
+
+def test_run_raises_completion_error_after_exhausting_empty_retries():
+    fake = _FakeChat(messages=iter([
+        AIMessage(content=[{"type": "reasoning", "summary": []}]),
+        AIMessage(content=[{"type": "reasoning", "summary": []}]),
+        AIMessage(content=[{"type": "reasoning", "summary": []}]),
+    ]))
+    a = _agent_with_fake(fake)
+    with pytest.raises(agent_mod.CompletionError):
+        asyncio.run(a.run("chat-empty-exhausted", HumanMessage(content="hello"), is_group=False))
+
+
 def test_missing_provider_key_raises_completion_error():
     a = agent_mod.Agent(
         config=_Cfg, prompt_builder=_prompt_builder(),

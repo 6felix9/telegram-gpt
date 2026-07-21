@@ -17,6 +17,10 @@ PROVIDER_LABEL: dict[str, str] = {
     "openai": "OpenAI", "xai": "xAI", "google_genai": "Gemini"
 }
 
+# OpenAI reasoning-capable models: a low reasoning effort leaves more of
+# MAX_OUTPUT_TOKENS free for visible text, reducing empty (reasoning-only) replies.
+REASONING_EFFORT_LOW: set[str] = {"gpt-5.6-luna", "gpt-5.6-terra"}
+
 
 def resolve_model(name: str) -> tuple[str, str]:
     """Map a bare model name to (provider, provider-prefixed id)."""
