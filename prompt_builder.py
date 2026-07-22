@@ -106,6 +106,12 @@ class PromptBuilder:
             system_parts.append(reply_note)
             logger.debug("PromptBuilder: added reply context to system prompt")
 
+        system_parts.append(
+            "\n\nAn [image #N] marker refers to an image shared earlier in the "
+            "conversation. Call get_image(N) to view the full image if the "
+            "text description is not enough to answer."
+        )
+
         return "".join(system_parts)
 
     @staticmethod
@@ -120,16 +126,21 @@ class PromptBuilder:
         is_group: bool = False,
         sender_name: str = "Unknown",
         image_data_url: str | None = None,
+        message_id: str | None = None,
     ) -> HumanMessage:
-        """Build a LangChain HumanMessage from an incoming Telegram message."""
+        """Build a LangChain HumanMessage from an incoming Telegram message.
+
+        When message_id is given, it is set as the message's stable id so the
+        message can later be rewritten in place in the checkpoint."""
         body = text or ""
         if is_group and body:
             body = self._group_prefix(body, sender_name)
 
+        extra = {"id": message_id} if message_id is not None else {}
         if image_data_url:
             return HumanMessage(content=[
                 {"type": "text", "text": body or "What's in this image?"},
                 {"type": "image_url", "image_url": {"url": image_data_url}},
-            ])
-        return HumanMessage(content=body)
+            ], **extra)
+        return HumanMessage(content=body, **extra)
 
