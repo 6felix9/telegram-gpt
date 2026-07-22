@@ -53,6 +53,7 @@ class RequestProcessor:
         generic_error_text: str,
         success_log: str,
         error_log_prefix: str,
+        post_success=None,
     ) -> None:
         chat_id = str(message.chat_id)
         db = self._deps.db
@@ -76,6 +77,13 @@ class RequestProcessor:
                 )
             await message.reply_text(response)
             logger.info(success_log)
+            if post_success is not None:
+                try:
+                    await post_success()
+                except Exception:
+                    logger.exception(
+                        "post_success hook failed for chat %s", chat_id
+                    )
         except CompletionError as e:
             await message.reply_text(e.user_message)
         except Exception as e:
