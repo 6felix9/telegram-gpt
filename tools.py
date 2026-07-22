@@ -60,12 +60,18 @@ def _duckduckgo_search_tool():
     return web_search
 
 
-def build_tools(config) -> list:
-    """Assemble the agent's tool set based on configuration."""
+def build_tools(config, db=None) -> list:
+    """Assemble the agent's tool set based on configuration.
+
+    When db is provided, includes the get_image retrieval tool."""
     if web_search_backend(config) == "tavily":
         from langchain_tavily import TavilySearch
         search = TavilySearch(max_results=5, tavily_api_key=config.TAVILY_API_KEY)
     else:
         logger.info("TAVILY_API_KEY not set — using DuckDuckGo web search")
         search = _duckduckgo_search_tool()
-    return [search, fetch_url]
+    built = [search, fetch_url]
+    if db is not None:
+        from image_store import build_image_tool
+        built.append(build_image_tool(db))
+    return built
