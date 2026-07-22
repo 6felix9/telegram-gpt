@@ -45,3 +45,18 @@ def test_image_message_has_text_and_image_blocks():
     types = [b["type"] for b in msg.content]
     assert types == ["text", "image_url"]
     assert msg.content[1]["image_url"]["url"] == "data:image/jpeg;base64,AAAA"
+
+
+def test_to_lc_human_message_sets_id_when_provided():
+    msg = _pb().to_lc_human_message(text="hi", message_id="abc-123")
+    assert msg.id == "abc-123"
+
+
+def test_to_lc_human_message_no_id_by_default():
+    msg = _pb().to_lc_human_message(text="hi")
+    assert msg.id is None
+
+
+def test_system_prompt_mentions_get_image():
+    out = _pb().build_system_prompt(is_group=False)
+    assert "get_image" in out
