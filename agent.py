@@ -3,13 +3,14 @@ Telegram-facing entry point. Replaces openai_client.py and token_manager.py."""
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 from dataclasses import dataclass, field
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import dynamic_prompt
 from langchain.chat_models import init_chat_model
-from langchain_core.messages import BaseMessage, RemoveMessage
+from langchain_core.messages import BaseMessage, HumanMessage, RemoveMessage
 
 from conversation_summary import (
     PendingSummaryAuditRecord,
@@ -17,6 +18,7 @@ from conversation_summary import (
     SUMMARY_PROMPT,
     SummaryAuditRecord,
 )
+from image_store import make_image_summary
 from prompt_builder import PromptBuilder
 from tools import build_tools
 from model_registry import (
@@ -176,6 +178,14 @@ def _build_vision_model(config):
         return None
 
 
+def _image_marker(image_id: int, caption: str | None, summary: str) -> str:
+    """Compact checkpoint marker that replaces a raw image after ingest."""
+    prefix = f"[image #{image_id}]"
+    if caption:
+        return f"{prefix} {caption} — {summary}"
+    return f"{prefix} {summary}"
+
+
 @dataclass
 class AgentContext:
     """Per-invocation context read by middleware (not persisted)."""
@@ -219,6 +229,7 @@ class Agent:
         self._tools = build_tools(config, db)  # from tools.py
         self._db = db
         self._summary_model = summary_model or make_summary_model(config)
+        self._vision_summary_model = _build_vision_model(config)
         self._summary_middleware = ResilientSummarizationMiddleware(
             model=self._summary_model,
             summary_model_name=config.SUMMARY_MODEL,
@@ -400,6 +411,50 @@ class Agent:
             )
         except Exception as e:
             logger.error("Failed to append context message: %s", e, exc_info=True)
+
+    async def persist_image(
+        self,
+        chat_id,
+        image_message_id: str,
+        image_data_url: str,
+        mime_type: str,
+        caption: str | None,
+        telegram_message_id: int | None,
+    ) -> None:
+        """Fail-open post-reply step: describe the image, store it durably, and
+        replace its checkpoint message in place with a compact [image #id]
+        marker. Never raises — a failure just leaves the raw image as-is."""
+        if self._graph is None or self._vision_summary_model is None or self._db is None:
+            return
+        try:
+            summary = await asyncio.to_thread(
+                make_image_summary, self._vision_summary_model, image_data_url
+            )
+            summary = summary.strip() if summary else ""
+            if not summary:
+                logger.warning(
+                    "Empty image summary for chat %s; skipping image persist", chat_id
+                )
+                return
+            raw = base64.b64decode(image_data_url.split(",", 1)[1])
+            image_id = self._db.save_image(
+                chat_id=str(chat_id),
+                message_id=telegram_message_id,
+                mime_type=mime_type,
+                caption=caption,
+                summary=summary,
+                image_bytes=raw,
+            )
+            self._graph.update_state(
+                self._config_for(chat_id),
+                {"messages": [HumanMessage(
+                    id=image_message_id,
+                    content=_image_marker(image_id, caption, summary),
+                )]},
+            )
+            logger.info("Persisted image %s for chat %s", image_id, chat_id)
+        except Exception:
+            logger.exception("Failed to persist image for chat %s", chat_id)
 
     def clear_thread(self, chat_id) -> None:
         self._checkpointer.delete_thread(str(chat_id))
