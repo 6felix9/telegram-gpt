@@ -216,7 +216,7 @@ class Agent:
         self._config = config
         self._prompt_builder = prompt_builder
         self._checkpointer = checkpointer
-        self._tools = build_tools(config)  # from tools.py
+        self._tools = build_tools(config, db)  # from tools.py
         self._db = db
         self._summary_model = summary_model or make_summary_model(config)
         self._summary_middleware = ResilientSummarizationMiddleware(
