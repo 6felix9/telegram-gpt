@@ -72,8 +72,11 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 ### Image Handling
 
 - `photo_handler()` only processes images when the caption activates the bot.
-- The database stores a text marker such as `[image] <caption>`.
-- The actual image bytes are converted to a data URL and sent only in the outbound API request.
+- The `messages` audit table stores a text marker such as `[image] <caption>`.
+- The actual image bytes are converted to a data URL and sent to the reply model on the arrival turn at full fidelity.
+- After the reply is sent, a fail-open post-success hook (`Agent.persist_image`) describes the image with `VISION_SUMMARY_MODEL`, stores the raw bytes + summary in the `images` table, and rewrites the photo's checkpoint message in place (same message id) to a compact `[image #<id>] <summary>` marker. Any failure leaves the raw image in state unchanged and is never surfaced to the user.
+- The agent can call the `get_image(image_id)` tool to pull a stored image back into context as a multimodal tool result when the summary is not enough. Retrieval is chat-scoped: a chat can only fetch its own images.
+- Persisted image bytes currently have no retention limit (deferred to the checkpoint/`messages` retention work).
 - For summary generation only, historical data-URL image blocks in the older partition are replaced with `[image omitted]` (captions and surrounding text are preserved). Recent raw checkpoint messages are not mutated by that sanitization.
 
 ### Personality Behavior
@@ -172,6 +175,7 @@ Expected tables:
 - `active_personality`
 - `active_model`
 - `conversation_summaries`
+- `images`
 
 Important details:
 
@@ -195,6 +199,7 @@ Relevant environment variables:
 - `MAX_CONTEXT_TOKENS`
 - `MAX_OUTPUT_TOKENS`
 - `SUMMARY_MODEL`
+- `VISION_SUMMARY_MODEL`
 - `SUMMARY_TRIGGER_TOKENS`
 - `SUMMARY_KEEP_TOKENS`
 - `SUMMARY_CONTEXT_TOKENS`
@@ -210,6 +215,7 @@ Important notes:
 - `config.py` validates the API key required by `DEFAULT_MODEL`
 - The running bot may use a different reply model if `/model` has changed `active_model`
 - `SUMMARY_MODEL` is the dedicated summarization model and is independent of `/model` / `active_model`
+- `VISION_SUMMARY_MODEL` is the dedicated model that describes images on ingest; it is fixed and independent of `/model` and `SUMMARY_MODEL`. A missing provider key does not block startup — image persistence simply fails open.
 - `SUMMARY_CONTEXT_TOKENS` bounds only the summary model's input and is independent of `MAX_CONTEXT_TOKENS`, which bounds the reply model's input
 - `TAVILY_API_KEY` is optional; when blank, `tools.py` falls back to a DuckDuckGo-backed web search tool instead of Tavily
 
