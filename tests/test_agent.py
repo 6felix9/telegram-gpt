@@ -544,3 +544,25 @@ def test_audit_write_failure_does_not_block_reply():
     )
 
     assert out == "ok"
+
+
+# --- Vision summary model builders (Task 2) ---------------------------------
+
+class _CfgVision:
+    VISION_SUMMARY_MODEL = "gpt-4.1-mini"
+    OPENAI_API_KEY = ""
+    XAI_API_KEY = ""
+    GEMINI_API_KEY = ""
+    MODEL_TIMEOUT = 60
+
+
+def test_make_vision_summary_model_rejects_unsupported():
+    cfg = _CfgVision()
+    cfg.VISION_SUMMARY_MODEL = "not-a-real-model"
+    with pytest.raises(ValueError):
+        agent_mod.make_vision_summary_model(cfg)
+
+
+def test_build_vision_model_fail_open_on_missing_key():
+    # Supported model but no provider key -> None, no exception.
+    assert agent_mod._build_vision_model(_CfgVision()) is None
