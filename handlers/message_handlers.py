@@ -3,6 +3,7 @@ handing off to the shared request processor."""
 import base64
 import logging
 import re
+import uuid
 
 from agent import count_tokens
 
@@ -155,6 +156,8 @@ class MessageHandlers:
             return
 
         reply_data = extract_reply_data(message)
+        image_message_id = str(uuid.uuid4())
+        captured: dict[str, str] = {}
 
         async def _build_payload():
             photo = message.photo[-1]
@@ -165,8 +168,22 @@ class MessageHandlers:
             caption_marker = f"[image] {message.caption}" if message.caption else "[image]"
             human = self._deps.prompt_builder.to_lc_human_message(
                 text=prompt, is_group=is_group, sender_name=sender_name,
-                image_data_url=image_data_url)
+                image_data_url=image_data_url, message_id=image_message_id)
+            captured["image_data_url"] = image_data_url
             return caption_marker, count_tokens(caption_marker), human
+
+        async def _post_success():
+            image_data_url = captured.get("image_data_url")
+            if not image_data_url:
+                return
+            await self._deps.agent.persist_image(
+                chat_id=chat_id,
+                image_message_id=image_message_id,
+                image_data_url=image_data_url,
+                mime_type="image/jpeg",
+                caption=message.caption,
+                telegram_message_id=message.message_id,
+            )
 
         await self._processor.process(
             context.bot, message,
@@ -177,4 +194,5 @@ class MessageHandlers:
             ),
             success_log=f"Image processed for chat {chat_id}",
             error_log_prefix="Error processing image",
+            post_success=_post_success,
         )

@@ -105,3 +105,59 @@ def test_authorized_triggering_message_processes_and_replies():
     asyncio.run(handlers_obj.message_handler(update, context))
 
     message.reply_text.assert_awaited_once_with("hi there")
+
+
+def _photo_message(caption="chatgpt look", user_id=1):
+    message = _message(chat_type="private", user_id=user_id)
+    photo_file = SimpleNamespace(
+        download_as_bytearray=AsyncMock(return_value=bytearray(b"\xff\xd8jpeg")))
+    message.photo = [SimpleNamespace(get_file=AsyncMock(return_value=photo_file))]
+    message.caption = caption
+    return message
+
+
+def test_photo_handler_passes_post_success_that_calls_persist_image():
+    agent = SimpleNamespace(run=AsyncMock(return_value="a cat"),
+                            persist_image=AsyncMock())
+    prompt_builder = SimpleNamespace(to_lc_human_message=Mock(return_value="human"))
+    db = SimpleNamespace(add_message=Mock())
+    handlers_obj = _handlers(db=db, agent=agent, prompt_builder=prompt_builder)
+
+    captured = {}
+
+    async def _fake_process(bot, message, **kwargs):
+        # Simulate a successful turn: build the payload, then run the hook.
+        await kwargs["build_payload"]()
+        captured.update(kwargs)
+        if kwargs.get("post_success") is not None:
+            await kwargs["post_success"]()
+
+    handlers_obj._processor.process = _fake_process
+
+    message = _photo_message()
+    update = SimpleNamespace(message=message)
+    context = SimpleNamespace(bot=SimpleNamespace(send_chat_action=AsyncMock()))
+
+    asyncio.run(handlers_obj.photo_handler(update, context))
+
+    assert captured.get("post_success") is not None
+    agent.persist_image.assert_awaited_once()
+    call = agent.persist_image.await_args.kwargs
+    id_used = prompt_builder.to_lc_human_message.call_args.kwargs["message_id"]
+    assert call["image_message_id"] == id_used
+    assert call["mime_type"] == "image/jpeg"
+    assert call["image_data_url"].startswith("data:image/jpeg;base64,")
+    assert call["caption"] == "chatgpt look"
+
+
+def test_photo_handler_ignores_non_triggering_caption():
+    agent = SimpleNamespace(persist_image=AsyncMock())
+    handlers_obj = _handlers(agent=agent)
+    message = _photo_message(caption="just a plain caption")
+    update = SimpleNamespace(message=message)
+    context = SimpleNamespace()
+
+    asyncio.run(handlers_obj.photo_handler(update, context))
+
+    agent.persist_image.assert_not_awaited()
+    message.reply_text.assert_not_awaited()
