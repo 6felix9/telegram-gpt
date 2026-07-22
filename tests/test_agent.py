@@ -66,6 +66,7 @@ class _Cfg:
     MAX_CONTEXT_TOKENS = 16000
     MAX_OUTPUT_TOKENS = 2048
     SUMMARY_MODEL = "gpt-4.1-mini"
+    VISION_SUMMARY_MODEL = "gpt-4.1-mini"
     SUMMARY_TRIGGER_TOKENS = 10000
     SUMMARY_KEEP_TOKENS = 4000
     SUMMARY_CONTEXT_TOKENS = 14000
@@ -566,3 +567,68 @@ def test_make_vision_summary_model_rejects_unsupported():
 def test_build_vision_model_fail_open_on_missing_key():
     # Supported model but no provider key -> None, no exception.
     assert agent_mod._build_vision_model(_CfgVision()) is None
+
+
+# --- Agent.persist_image (Task 6) -------------------------------------------
+
+def test_image_marker_with_and_without_caption():
+    assert agent_mod._image_marker(5, None, "a cat") == "[image #5] a cat"
+    assert agent_mod._image_marker(5, "pets", "a cat") == "[image #5] pets — a cat"
+
+
+def _agent_for_persist(vision_model, db, graph):
+    a = agent_mod.Agent.__new__(agent_mod.Agent)
+    a._vision_summary_model = vision_model
+    a._db = db
+    a._graph = graph
+    return a
+
+
+def test_persist_image_stores_and_rewrites_checkpoint(monkeypatch):
+    monkeypatch.setattr(agent_mod, "make_image_summary", lambda m, url: "A tabby cat.")
+    db = SimpleNamespace(save_image=Mock(return_value=77))
+    graph = SimpleNamespace(update_state=Mock())
+    a = _agent_for_persist(vision_model=object(), db=db, graph=graph)
+
+    asyncio.run(a.persist_image(
+        chat_id="123", image_message_id="mid-1",
+        image_data_url="data:image/jpeg;base64,AAAA",
+        mime_type="image/jpeg", caption="pets", telegram_message_id=9,
+    ))
+
+    db.save_image.assert_called_once()
+    _, kwargs = db.save_image.call_args
+    assert kwargs["summary"] == "A tabby cat."
+    assert kwargs["chat_id"] == "123"
+    graph.update_state.assert_called_once()
+    _, rewrite = graph.update_state.call_args[0]
+    rewritten = rewrite["messages"][0]
+    assert rewritten.id == "mid-1"
+    assert rewritten.content == "[image #77] pets — A tabby cat."
+
+
+def test_persist_image_fail_open_when_no_vision_model():
+    db = SimpleNamespace(save_image=Mock())
+    graph = SimpleNamespace(update_state=Mock())
+    a = _agent_for_persist(vision_model=None, db=db, graph=graph)
+    asyncio.run(a.persist_image(
+        chat_id="123", image_message_id="mid-1",
+        image_data_url="data:image/jpeg;base64,AAAA",
+        mime_type="image/jpeg", caption=None, telegram_message_id=9,
+    ))
+    db.save_image.assert_not_called()
+    graph.update_state.assert_not_called()
+
+
+def test_persist_image_fail_open_on_empty_summary(monkeypatch):
+    monkeypatch.setattr(agent_mod, "make_image_summary", lambda m, url: "   ")
+    db = SimpleNamespace(save_image=Mock())
+    graph = SimpleNamespace(update_state=Mock())
+    a = _agent_for_persist(vision_model=object(), db=db, graph=graph)
+    asyncio.run(a.persist_image(
+        chat_id="123", image_message_id="mid-1",
+        image_data_url="data:image/jpeg;base64,AAAA",
+        mime_type="image/jpeg", caption=None, telegram_message_id=9,
+    ))
+    db.save_image.assert_not_called()
+    graph.update_state.assert_not_called()
