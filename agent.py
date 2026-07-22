@@ -138,6 +138,44 @@ def make_summary_model(config):
     )
 
 
+def make_vision_summary_model(config):
+    """Build and validate the fixed model used to describe images on ingest."""
+    try:
+        provider, prefixed_id = resolve_model(config.VISION_SUMMARY_MODEL)
+    except KeyError as exc:
+        raise ValueError(
+            f"Unsupported VISION_SUMMARY_MODEL: {config.VISION_SUMMARY_MODEL}"
+        ) from exc
+
+    key = provider_api_key(provider, config)
+    if not key.strip():
+        env_name = {
+            "openai": "OPENAI_API_KEY",
+            "xai": "XAI_API_KEY",
+            "google_genai": "GEMINI_API_KEY",
+        }[provider]
+        raise ValueError(
+            f"{env_name} is required for VISION_SUMMARY_MODEL={config.VISION_SUMMARY_MODEL}"
+        )
+
+    return init_chat_model(
+        prefixed_id,
+        api_key=key,
+        timeout=config.MODEL_TIMEOUT,
+        max_retries=2,
+        **({"use_responses_api": True} if provider == "openai" else {}),
+    )
+
+
+def _build_vision_model(config):
+    """Fail-open wrapper: return the vision model or None if it can't be built."""
+    try:
+        return make_vision_summary_model(config)
+    except ValueError as exc:
+        logger.warning("Vision summary model unavailable: %s", exc)
+        return None
+
+
 @dataclass
 class AgentContext:
     """Per-invocation context read by middleware (not persisted)."""
