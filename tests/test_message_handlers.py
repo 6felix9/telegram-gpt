@@ -152,14 +152,78 @@ def test_photo_handler_passes_post_success_that_calls_persist_image():
     assert call["sender_name"] == "Alice"
 
 
-def test_photo_handler_ignores_non_triggering_caption():
-    agent = SimpleNamespace(persist_image=AsyncMock())
-    handlers_obj = _handlers(agent=agent)
+def test_photo_handler_passively_persists_non_triggering_photo():
+    agent = SimpleNamespace(persist_image=AsyncMock(return_value=5))
+    db = SimpleNamespace(add_message=Mock())
+    handlers_obj = _handlers(db=db, agent=agent)
     message = _photo_message(caption="just a plain caption")
     update = SimpleNamespace(message=message)
     context = SimpleNamespace()
 
     asyncio.run(handlers_obj.photo_handler(update, context))
 
-    agent.persist_image.assert_not_awaited()
+    # Stored for later retrieval, but no reply is sent.
+    db.add_message.assert_called_once()
+    assert db.add_message.call_args.kwargs["content"] == "[image] just a plain caption"
+    agent.persist_image.assert_awaited_once()
+    call = agent.persist_image.await_args.kwargs
+    assert call["telegram_message_id"] == message.message_id
+    assert call["image_data_url"].startswith("data:image/jpeg;base64,")
     message.reply_text.assert_not_awaited()
+
+
+def test_reply_to_photo_references_persisted_image():
+    image = SimpleNamespace(id=7, summary="a cup of frozen yogurt")
+    db = SimpleNamespace(
+        add_message=Mock(),
+        get_image_by_message_id=Mock(return_value=image),
+    )
+    agent = SimpleNamespace(run=AsyncMock(return_value="It's a dessert."),
+                            persist_image=AsyncMock())
+    prompt_builder = SimpleNamespace(to_lc_human_message=Mock(return_value="human"))
+    handlers_obj = _handlers(db=db, agent=agent, prompt_builder=prompt_builder)
+
+    message = _message(text="chatgpt what is this image about", user_id=1)
+    message.reply_to_message = SimpleNamespace(
+        message_id=42, text=None, caption=None, photo=[SimpleNamespace()],
+        from_user=SimpleNamespace(first_name="Bob"),
+    )
+    update = SimpleNamespace(message=message)
+    context = SimpleNamespace(bot=SimpleNamespace(send_chat_action=AsyncMock()))
+
+    asyncio.run(handlers_obj.message_handler(update, context))
+
+    db.get_image_by_message_id.assert_called_once_with("123", 42)
+    # The persisted image #7 is threaded to the agent as reply context.
+    assert agent.run.await_args.kwargs["reply_context"] == (
+        "Bob", "[image #7] a cup of frozen yogurt")
+
+
+def test_reply_to_photo_persists_when_not_yet_stored():
+    image = SimpleNamespace(id=9, summary="a plate of noodles")
+    db = SimpleNamespace(
+        add_message=Mock(),
+        get_image_by_message_id=Mock(side_effect=[None, image]),
+    )
+    agent = SimpleNamespace(run=AsyncMock(return_value="Noodles."),
+                            persist_image=AsyncMock(return_value=9))
+    prompt_builder = SimpleNamespace(to_lc_human_message=Mock(return_value="human"))
+    handlers_obj = _handlers(db=db, agent=agent, prompt_builder=prompt_builder)
+
+    photo_file = SimpleNamespace(
+        download_as_bytearray=AsyncMock(return_value=bytearray(b"\xff\xd8jpeg")))
+    message = _message(text="chatgpt what is this", user_id=1)
+    message.reply_to_message = SimpleNamespace(
+        message_id=88, text=None, caption=None,
+        photo=[SimpleNamespace(get_file=AsyncMock(return_value=photo_file))],
+        from_user=SimpleNamespace(first_name="Cara"),
+    )
+    update = SimpleNamespace(message=message)
+    context = SimpleNamespace(bot=SimpleNamespace(send_chat_action=AsyncMock()))
+
+    asyncio.run(handlers_obj.message_handler(update, context))
+
+    agent.persist_image.assert_awaited_once()
+    assert agent.persist_image.await_args.kwargs["telegram_message_id"] == 88
+    assert agent.run.await_args.kwargs["reply_context"] == (
+        "Cara", "[image #9] a plate of noodles")

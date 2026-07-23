@@ -57,20 +57,46 @@ class ImageRepository:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT chat_id, message_id, mime_type, caption, summary, image_bytes
+                    SELECT id, chat_id, message_id, mime_type, caption, summary, image_bytes
                     FROM images
                     WHERE id = %s AND chat_id = %s
                     """,
                     (image_id, chat_id),
                 )
                 row = cur.fetchone()
+        return self._row_to_record(row)
+
+    def get_image_by_message_id(
+        self, chat_id: str, message_id: int
+    ) -> ImageRecord | None:
+        """Fetch the image persisted for a given Telegram message, scoped to
+        chat_id. Used to resolve the [image #N] a user is replying to. Returns
+        the most recent match, or None if that message has no stored image."""
+        chat_id = str(chat_id)
+        with self._conn.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, chat_id, message_id, mime_type, caption, summary, image_bytes
+                    FROM images
+                    WHERE chat_id = %s AND message_id = %s
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (chat_id, message_id),
+                )
+                row = cur.fetchone()
+        return self._row_to_record(row)
+
+    @staticmethod
+    def _row_to_record(row) -> ImageRecord | None:
         if row is None:
             return None
         return ImageRecord(
-            id=image_id,
-            chat_id=row[0],
-            mime_type=row[2],
-            caption=row[3],
-            summary=row[4],
-            image_bytes=bytes(row[5]),
+            id=row[0],
+            chat_id=row[1],
+            mime_type=row[3],
+            caption=row[4],
+            summary=row[5],
+            image_bytes=bytes(row[6]),
         )
