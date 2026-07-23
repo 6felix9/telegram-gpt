@@ -90,3 +90,6 @@ class Database:
 
     def get_image(self, *args, **kwargs):
         return self._images.get_image(*args, **kwargs)
+
+    def get_image_by_message_id(self, *args, **kwargs):
+        return self._images.get_image_by_message_id(*args, **kwargs)

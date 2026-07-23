@@ -61,7 +61,7 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 ### Context Storage (Private and Group)
 
 - Non-triggering **text** messages are stored in both private DMs and groups (audit `messages` table + checkpoint via `append_context_message`), even when they do not trigger a reply.
-- This storage happens only for text messages; non-triggering photo posts are ignored in both chat types.
+- Non-triggering photo posts are no longer ignored: every photo is persisted on arrival (summarized and stored) so it can be referenced later — see Image Handling.
 - Group user messages are formatted as `[Name]: message` before model submission; private messages are stored as plain text.
 - Replies still require `chatgpt` or `@BOT_USERNAME`, and authorization is still checked before the model runs.
 - Stored messages in the application `messages` table currently have no retention limit. The previous probabilistic database cleanup remains disabled.
@@ -71,10 +71,11 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 
 ### Image Handling
 
-- `photo_handler()` only processes images when the caption activates the bot.
-- The `messages` audit table stores a text marker such as `[image] <caption>`.
-- The actual image bytes are converted to a data URL and sent to the reply model on the arrival turn at full fidelity.
-- After the reply is sent, a fail-open post-success hook (`Agent.persist_image`) describes the image with `VISION_SUMMARY_MODEL`, stores the raw bytes + summary in the `images` table, and rewrites the photo's checkpoint message in place (same message id) to a compact `[image #<id>] <summary>` marker. Any failure leaves the raw image in state unchanged and is never surfaced to the user.
+- `photo_handler()` runs on every photo. When the caption activates the bot, the image is sent to the reply model and answered on the arrival turn; when it does not, the photo is still persisted passively (no reply is sent).
+- The `messages` audit table stores a text marker such as `[image] <caption>` for both triggered and passive photos.
+- On a triggering photo, the actual image bytes are converted to a data URL and sent to the reply model on the arrival turn at full fidelity.
+- A fail-open path (`Agent.persist_image`) describes the image with `VISION_SUMMARY_MODEL`, stores the raw bytes + summary in the `images` table, and writes an `[image #<id>] <summary>` marker into the checkpoint. A triggered photo rewrites its raw-image message in place (same message id); a passively persisted photo appends the marker (fresh id). Any failure leaves state unchanged and is never surfaced to the user.
+- When a triggering message replies to an earlier photo, the handler resolves that photo's stored `[image #<id>]` (via `get_image_by_message_id`, persisting it on the fly if it was not stored yet) and passes it as reply context so the agent can call `get_image(<id>)`.
 - The agent can call the `get_image(image_id)` tool to pull a stored image back into context as a multimodal tool result when the summary is not enough. Retrieval is chat-scoped: a chat can only fetch its own images.
 - Persisted image bytes currently have no retention limit (deferred to the checkpoint/`messages` retention work).
 - For summary generation only, historical data-URL image blocks in the older partition are replaced with `[image omitted]` (captions and surrounding text are preserved). Recent raw checkpoint messages are not mutated by that sanitization.

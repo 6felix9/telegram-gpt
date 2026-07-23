@@ -422,14 +422,16 @@ class Agent:
         telegram_message_id: int | None,
         is_group: bool = False,
         sender_name: str | None = None,
-    ) -> None:
+    ) -> int | None:
         """Fail-open post-reply step: describe the image, store it durably, and
-        replace its checkpoint message in place with a compact [image #id]
-        marker. In groups the marker keeps the '[sender]:' prefix so later turns
-        can still attribute who shared the image. Never raises — a failure just
-        leaves the raw image as-is."""
+        write its [image #id] marker into the checkpoint. A brand-new
+        image_message_id appends the marker (passive photo ingest); reusing the
+        raw image's id rewrites it in place (triggered reply). In groups the
+        marker keeps the '[sender]:' prefix so later turns can still attribute
+        who shared the image. Never raises — a failure just leaves the raw image
+        as-is. Returns the stored image id, or None if nothing was persisted."""
         if self._graph is None or self._vision_summary_model is None or self._db is None:
-            return
+            return None
         try:
             summary = await asyncio.to_thread(
                 make_image_summary, self._vision_summary_model, image_data_url
@@ -439,7 +441,7 @@ class Agent:
                 logger.warning(
                     "Empty image summary for chat %s; skipping image persist", chat_id
                 )
-                return
+                return None
             raw = base64.b64decode(image_data_url.split(",", 1)[1])
             image_id = self._db.save_image(
                 chat_id=str(chat_id),
@@ -457,8 +459,10 @@ class Agent:
                 {"messages": [HumanMessage(id=image_message_id, content=marker)]},
             )
             logger.info("Persisted image %s for chat %s", image_id, chat_id)
+            return image_id
         except Exception:
             logger.exception("Failed to persist image for chat %s", chat_id)
+            return None
 
     def clear_thread(self, chat_id) -> None:
         self._checkpointer.delete_thread(str(chat_id))

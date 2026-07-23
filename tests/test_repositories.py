@@ -179,7 +179,7 @@ def test_save_image_inserts_and_returns_id():
 
 def test_get_image_returns_record_when_found():
     manager, conn = _fake_manager(
-        results=[("123", 7, "image/jpeg", "a cat", "summary", b"\x00\x01")])
+        results=[(42, "123", 7, "image/jpeg", "a cat", "summary", b"\x00\x01")])
     repo = ImageRepository(manager)
     record = repo.get_image("123", 42)
     assert isinstance(record, ImageRecord)
@@ -198,3 +198,23 @@ def test_get_image_returns_none_when_missing_or_other_chat():
     manager, conn = _fake_manager(results=[None])
     repo = ImageRepository(manager)
     assert repo.get_image("123", 999) is None
+
+
+def test_get_image_by_message_id_returns_latest_scoped_record():
+    manager, conn = _fake_manager(
+        results=[(9, "123", 88, "image/jpeg", None, "noodles", b"\x00\x01")])
+    repo = ImageRepository(manager)
+    record = repo.get_image_by_message_id("123", 88)
+    assert isinstance(record, ImageRecord)
+    assert record.id == 9
+    assert record.summary == "noodles"
+    sql, params = conn.executed[-1]
+    assert "FROM images" in sql and "message_id = %s" in sql
+    assert "ORDER BY id DESC" in sql
+    assert params == ("123", 88)
+
+
+def test_get_image_by_message_id_returns_none_when_missing():
+    manager, conn = _fake_manager(results=[None])
+    repo = ImageRepository(manager)
+    assert repo.get_image_by_message_id("123", 404) is None
