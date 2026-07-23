@@ -183,6 +183,8 @@ class MessageHandlers:
                 mime_type="image/jpeg",
                 caption=message.caption,
                 telegram_message_id=message.message_id,
+                is_group=is_group,
+                sender_name=sender_name,
             )
 
         await self._processor.process(

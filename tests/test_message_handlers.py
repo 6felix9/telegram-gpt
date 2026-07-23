@@ -148,6 +148,8 @@ def test_photo_handler_passes_post_success_that_calls_persist_image():
     assert call["mime_type"] == "image/jpeg"
     assert call["image_data_url"].startswith("data:image/jpeg;base64,")
     assert call["caption"] == "chatgpt look"
+    assert call["is_group"] is False
+    assert call["sender_name"] == "Alice"
 
 
 def test_photo_handler_ignores_non_triggering_caption():

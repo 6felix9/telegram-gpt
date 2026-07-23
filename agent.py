@@ -420,10 +420,14 @@ class Agent:
         mime_type: str,
         caption: str | None,
         telegram_message_id: int | None,
+        is_group: bool = False,
+        sender_name: str | None = None,
     ) -> None:
         """Fail-open post-reply step: describe the image, store it durably, and
         replace its checkpoint message in place with a compact [image #id]
-        marker. Never raises — a failure just leaves the raw image as-is."""
+        marker. In groups the marker keeps the '[sender]:' prefix so later turns
+        can still attribute who shared the image. Never raises — a failure just
+        leaves the raw image as-is."""
         if self._graph is None or self._vision_summary_model is None or self._db is None:
             return
         try:
@@ -445,12 +449,12 @@ class Agent:
                 summary=summary,
                 image_bytes=raw,
             )
+            marker = _image_marker(image_id, caption, summary)
+            if is_group and sender_name:
+                marker = f"[{sender_name}]: {marker}"
             self._graph.update_state(
                 self._config_for(chat_id),
-                {"messages": [HumanMessage(
-                    id=image_message_id,
-                    content=_image_marker(image_id, caption, summary),
-                )]},
+                {"messages": [HumanMessage(id=image_message_id, content=marker)]},
             )
             logger.info("Persisted image %s for chat %s", image_id, chat_id)
         except Exception:
