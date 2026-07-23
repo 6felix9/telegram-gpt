@@ -607,6 +607,24 @@ def test_persist_image_stores_and_rewrites_checkpoint(monkeypatch):
     assert rewritten.content == "[image #77] pets — A tabby cat."
 
 
+def test_persist_image_group_marker_keeps_sender_prefix(monkeypatch):
+    monkeypatch.setattr(agent_mod, "make_image_summary", lambda m, url: "A tabby cat.")
+    db = SimpleNamespace(save_image=Mock(return_value=77))
+    graph = SimpleNamespace(update_state=Mock())
+    a = _agent_for_persist(vision_model=object(), db=db, graph=graph)
+
+    asyncio.run(a.persist_image(
+        chat_id="123", image_message_id="mid-1",
+        image_data_url="data:image/jpeg;base64,AAAA",
+        mime_type="image/jpeg", caption="pets", telegram_message_id=9,
+        is_group=True, sender_name="Alice",
+    ))
+
+    _, rewrite = graph.update_state.call_args[0]
+    rewritten = rewrite["messages"][0]
+    assert rewritten.content == "[Alice]: [image #77] pets — A tabby cat."
+
+
 def test_persist_image_fail_open_when_no_vision_model():
     db = SimpleNamespace(save_image=Mock())
     graph = SimpleNamespace(update_state=Mock())
