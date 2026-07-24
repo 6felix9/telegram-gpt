@@ -452,17 +452,42 @@ class Agent:
                 image_bytes=raw,
             )
             marker = _image_marker(image_id, caption, summary)
-            if is_group and sender_name:
-                marker = f"[{sender_name}]: {marker}"
+            checkpoint_marker = (
+                f"[{sender_name}]: {marker}" if is_group and sender_name else marker
+            )
             self._graph.update_state(
                 self._config_for(chat_id),
-                {"messages": [HumanMessage(id=image_message_id, content=marker)]},
+                {"messages": [HumanMessage(id=image_message_id, content=checkpoint_marker)]},
             )
             logger.info("Persisted image %s for chat %s", image_id, chat_id)
+            self._backfill_audit_content(chat_id, telegram_message_id, marker)
             return image_id
         except Exception:
             logger.exception("Failed to persist image for chat %s", chat_id)
             return None
+
+    def _backfill_audit_content(
+        self, chat_id, telegram_message_id: int | None, marker: str
+    ) -> None:
+        """Rewrite the image's audit row to the same `[image #id] <summary>` marker
+        the checkpoint holds, now that the id exists. The group '[sender]:' prefix
+        is deliberately omitted — the audit table keeps sender_name in its own
+        column. Fail-open: a failure here never affects the checkpoint or the
+        caller, since the audit log is never read back into model context."""
+        if telegram_message_id is None:
+            return
+        try:
+            self._db.update_message_content(
+                chat_id=str(chat_id),
+                message_id=telegram_message_id,
+                content=marker,
+                token_count=count_tokens(marker),
+            )
+        except Exception:
+            logger.exception(
+                "Failed to backfill audit content for chat %s message %s",
+                chat_id, telegram_message_id,
+            )
 
     def clear_thread(self, chat_id) -> None:
         self._checkpointer.delete_thread(str(chat_id))

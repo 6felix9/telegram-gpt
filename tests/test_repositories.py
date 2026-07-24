@@ -109,6 +109,30 @@ def test_get_stats_returns_zeroed_dict_on_query_failure():
     assert stats["first_message"] == "N/A"
 
 
+def test_update_message_content_rewrites_row_scoped_to_chat_and_message():
+    manager, conn = _fake_manager(rowcount=1)
+    repo = MessageRepository(manager)
+
+    updated = repo.update_message_content(
+        chat_id=123, message_id=9,
+        content="[image #77] pets — A tabby cat.", token_count=11,
+    )
+
+    assert updated is True
+    sql, params = conn.executed[0]
+    assert "UPDATE messages" in sql
+    assert params == ("[image #77] pets — A tabby cat.", 11, "123", 9)
+
+
+def test_update_message_content_returns_false_when_no_row_matched():
+    manager, _ = _fake_manager(rowcount=0)
+    repo = MessageRepository(manager)
+
+    assert repo.update_message_content(
+        chat_id=123, message_id=404, content="[image #1] x", token_count=3,
+    ) is False
+
+
 # --- AccessRepository ------------------------------------------------------
 
 def test_is_user_granted_caches_result_and_skips_second_query():

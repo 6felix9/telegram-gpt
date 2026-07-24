@@ -152,7 +152,8 @@ The current `docker-compose.yml` still mounts `./data:/app/data`, but the bot's 
 
 - Photo messages only trigger a reply when the caption contains `chatgpt` or `@BOT_USERNAME`; on a triggering photo the image itself is sent to the model at request time
 - Every photo (triggering or not) is persisted on arrival: it is summarized with `VISION_SUMMARY_MODEL`, the raw bytes + summary are stored in the `images` table, and an `[image #<id>] <summary>` marker is written into the conversation so later turns can reference it
-- The `messages` audit table stores a lightweight text marker such as `[image] <caption>` instead of the raw image payload
+- The `messages` audit table stores a lightweight text marker instead of the raw image payload:
+  `[image] <caption>` on arrival, rewritten to `[image #<id>] <caption> — <summary>` once the image is persisted
 - The agent can call `get_image(<id>)` to pull a stored image back into context; replying to an earlier photo points the agent at that photo's `[image #<id>]`
 
 ## Commands

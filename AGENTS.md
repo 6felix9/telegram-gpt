@@ -72,7 +72,12 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 ### Image Handling
 
 - `photo_handler()` runs on every photo. When the caption activates the bot, the image is sent to the reply model and answered on the arrival turn; when it does not, the photo is still persisted passively (no reply is sent).
-- The `messages` audit table stores a text marker such as `[image] <caption>` for both triggered and passive photos.
+- The `messages` audit table stores a text marker such as `[image] <caption>` for both
+  triggered and passive photos. Once the image is persisted, that row is rewritten in
+  place to the same `[image #<id>] <caption> — <summary>` marker the checkpoint holds,
+  so the audit log mirrors what the model sees. The group `[sender]:` prefix is omitted
+  because the audit table keeps `sender_name` in its own column. The rewrite is
+  fail-open and the row keeps the plain `[image]` marker if it does not happen.
 - On a triggering photo, the actual image bytes are converted to a data URL and sent to the reply model on the arrival turn at full fidelity.
 - A fail-open path (`Agent.persist_image`) describes the image with `VISION_SUMMARY_MODEL`, stores the raw bytes + summary in the `images` table, and writes an `[image #<id>] <summary>` marker into the checkpoint. A triggered photo rewrites its raw-image message in place (same message id); a passively persisted photo appends the marker (fresh id). Any failure leaves state unchanged and is never surfaced to the user.
 - When a triggering message replies to an earlier photo, the handler resolves that photo's stored `[image #<id>]` (via `get_image_by_message_id`, persisting it on the fly if it was not stored yet) and passes it as reply context so the agent can call `get_image(<id>)`.

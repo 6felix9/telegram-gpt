@@ -34,6 +34,9 @@ class Database:
     def add_message(self, *args, **kwargs) -> int:
         return self._messages.add_message(*args, **kwargs)
 
+    def update_message_content(self, *args, **kwargs) -> bool:
+        return self._messages.update_message_content(*args, **kwargs)
+
     def get_stats(self, chat_id: str) -> dict:
         return self._messages.get_stats(chat_id)
 

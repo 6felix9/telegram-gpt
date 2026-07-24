@@ -586,7 +586,7 @@ def _agent_for_persist(vision_model, db, graph):
 
 def test_persist_image_stores_and_rewrites_checkpoint(monkeypatch):
     monkeypatch.setattr(agent_mod, "make_image_summary", lambda m, url: "A tabby cat.")
-    db = SimpleNamespace(save_image=Mock(return_value=77))
+    db = _persist_db()
     graph = SimpleNamespace(update_state=Mock())
     a = _agent_for_persist(vision_model=object(), db=db, graph=graph)
 
@@ -609,7 +609,7 @@ def test_persist_image_stores_and_rewrites_checkpoint(monkeypatch):
 
 def test_persist_image_returns_saved_id(monkeypatch):
     monkeypatch.setattr(agent_mod, "make_image_summary", lambda m, url: "A tabby cat.")
-    db = SimpleNamespace(save_image=Mock(return_value=77))
+    db = _persist_db()
     graph = SimpleNamespace(update_state=Mock())
     a = _agent_for_persist(vision_model=object(), db=db, graph=graph)
 
@@ -624,7 +624,7 @@ def test_persist_image_returns_saved_id(monkeypatch):
 
 def test_persist_image_group_marker_keeps_sender_prefix(monkeypatch):
     monkeypatch.setattr(agent_mod, "make_image_summary", lambda m, url: "A tabby cat.")
-    db = SimpleNamespace(save_image=Mock(return_value=77))
+    db = _persist_db()
     graph = SimpleNamespace(update_state=Mock())
     a = _agent_for_persist(vision_model=object(), db=db, graph=graph)
 
@@ -665,3 +665,87 @@ def test_persist_image_fail_open_on_empty_summary(monkeypatch):
     ))
     db.save_image.assert_not_called()
     graph.update_state.assert_not_called()
+
+
+# --- persist_image audit-row backfill ---------------------------------------
+
+def _persist_db(image_id=77):
+    return SimpleNamespace(
+        save_image=Mock(return_value=image_id),
+        update_message_content=Mock(return_value=True),
+    )
+
+
+def test_persist_image_backfills_audit_row_with_id_and_summary(monkeypatch):
+    monkeypatch.setattr(agent_mod, "make_image_summary", lambda m, url: "A tabby cat.")
+    db = _persist_db()
+    graph = SimpleNamespace(update_state=Mock())
+    a = _agent_for_persist(vision_model=object(), db=db, graph=graph)
+
+    asyncio.run(a.persist_image(
+        chat_id="123", image_message_id="mid-1",
+        image_data_url="data:image/jpeg;base64,AAAA",
+        mime_type="image/jpeg", caption="pets", telegram_message_id=9,
+    ))
+
+    db.update_message_content.assert_called_once()
+    kwargs = db.update_message_content.call_args.kwargs
+    assert kwargs["chat_id"] == "123"
+    assert kwargs["message_id"] == 9
+    assert kwargs["content"] == "[image #77] pets — A tabby cat."
+    assert kwargs["token_count"] > 0
+
+
+def test_persist_image_audit_row_omits_group_sender_prefix(monkeypatch):
+    # The audit table carries sender_name in its own column, so the stored
+    # content stays unprefixed even though the checkpoint marker is prefixed.
+    monkeypatch.setattr(agent_mod, "make_image_summary", lambda m, url: "A tabby cat.")
+    db = _persist_db()
+    graph = SimpleNamespace(update_state=Mock())
+    a = _agent_for_persist(vision_model=object(), db=db, graph=graph)
+
+    asyncio.run(a.persist_image(
+        chat_id="123", image_message_id="mid-1",
+        image_data_url="data:image/jpeg;base64,AAAA",
+        mime_type="image/jpeg", caption="pets", telegram_message_id=9,
+        is_group=True, sender_name="Alice",
+    ))
+
+    assert db.update_message_content.call_args.kwargs["content"] == (
+        "[image #77] pets — A tabby cat."
+    )
+    _, rewrite = graph.update_state.call_args[0]
+    assert rewrite["messages"][0].content == "[Alice]: [image #77] pets — A tabby cat."
+
+
+def test_persist_image_skips_audit_backfill_without_telegram_message_id(monkeypatch):
+    monkeypatch.setattr(agent_mod, "make_image_summary", lambda m, url: "A tabby cat.")
+    db = _persist_db()
+    graph = SimpleNamespace(update_state=Mock())
+    a = _agent_for_persist(vision_model=object(), db=db, graph=graph)
+
+    asyncio.run(a.persist_image(
+        chat_id="123", image_message_id="mid-1",
+        image_data_url="data:image/jpeg;base64,AAAA",
+        mime_type="image/jpeg", caption=None, telegram_message_id=None,
+    ))
+
+    db.update_message_content.assert_not_called()
+    graph.update_state.assert_called_once()
+
+
+def test_persist_image_audit_backfill_failure_keeps_checkpoint_and_id(monkeypatch):
+    monkeypatch.setattr(agent_mod, "make_image_summary", lambda m, url: "A tabby cat.")
+    db = _persist_db()
+    db.update_message_content.side_effect = RuntimeError("db down")
+    graph = SimpleNamespace(update_state=Mock())
+    a = _agent_for_persist(vision_model=object(), db=db, graph=graph)
+
+    image_id = asyncio.run(a.persist_image(
+        chat_id="123", image_message_id="mid-1",
+        image_data_url="data:image/jpeg;base64,AAAA",
+        mime_type="image/jpeg", caption=None, telegram_message_id=9,
+    ))
+
+    assert image_id == 77
+    graph.update_state.assert_called_once()
