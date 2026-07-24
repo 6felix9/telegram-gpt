@@ -239,7 +239,6 @@ All commands are main admin only (gated by `is_main_authorized_user()` in `handl
 - `/allowlist`
 - `/model [name]`
 - `/personality [name]`
-- `/list_personality`
 - `/help`
 
 ## Coding Style & Naming Conventions
@@ -271,7 +270,7 @@ For new pure logic (keyword parsing, prompt formatting, token trimming, model re
 
 ## Commit & Pull Request Guidelines
 
-- Follow the repository’s commit style: short, imperative subject lines (examples: `Fix /list_personality`, `Add VM auto-deploy workflow`, `Update db docs`).
+- Follow the repository’s commit style: short, imperative subject lines (examples: `Fold list into /personality`, `Add VM auto-deploy workflow`, `Update db docs`).
 - Keep commits scoped to one concern; avoid mixing feature work and cleanup.
 - PRs should include:
   - What changed and why

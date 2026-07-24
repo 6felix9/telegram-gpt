@@ -266,19 +266,40 @@ def test_allowlist_command_lists_users():
 
 
 def test_personality_command_shows_current_when_no_args():
-    db = SimpleNamespace(get_active_personality=Mock(return_value="villain"))
+    db = SimpleNamespace(
+        get_active_personality=Mock(return_value="villain"),
+        list_personalities=Mock(return_value=[("default", "…"), ("villain", "…")]),
+    )
     _init(db=db, config=_Cfg)
     update, context, message = _cmd_update(user_id=1, args=[])
     asyncio.run(handlers.personality_command(update, context))
-    assert "villain" in message.reply_text.call_args.args[0]
+    text = message.reply_text.call_args.args[0]
+    assert "villain" in text
+    assert "Available personalities:" in text
+    assert "`default`" in text
+    assert "`villain`" in text
 
 
 def test_personality_command_unknown_personality():
-    db = SimpleNamespace(personality_exists=Mock(return_value=False))
+    db = SimpleNamespace(
+        personality_exists=Mock(return_value=False),
+        list_personalities=Mock(return_value=[("default", "…"), ("villain", "…")]),
+    )
     _init(db=db, config=_Cfg)
     update, context, message = _cmd_update(user_id=1, args=["ghost"])
     asyncio.run(handlers.personality_command(update, context))
-    message.reply_text.assert_awaited_once_with("❌ No personality 'ghost' found.")
+    text = message.reply_text.call_args.args[0]
+    assert "No personality `ghost` found" in text
+    assert "Available personalities:" in text
+    assert "`villain`" in text
+
+
+def test_personality_command_empty_database():
+    db = SimpleNamespace(list_personalities=Mock(return_value=[]))
+    _init(db=db, config=_Cfg)
+    update, context, message = _cmd_update(user_id=1, args=[])
+    asyncio.run(handlers.personality_command(update, context))
+    message.reply_text.assert_awaited_once_with("No personalities found in database.")
 
 
 def test_model_command_shows_current_when_no_args():
