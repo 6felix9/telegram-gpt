@@ -2,6 +2,7 @@
 
 MODEL_PROVIDERS: dict[str, str] = {
     "gpt-4.1-mini": "openai",
+    "gpt-5.4-nano": "openai",
     "gpt-5.4-mini": "openai",
     "gpt-5.4": "openai",
     "gpt-5.6-luna": "openai",

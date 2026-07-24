@@ -41,7 +41,7 @@ The current model list is defined in `agent.py` via `MODEL_PROVIDERS`, which rou
 
 Supported today:
 
-- OpenAI: `gpt-4.1-mini`, `gpt-5.4-mini`, `gpt-5.4`, `gpt-5.6-luna`, `gpt-5.6-terra`
+- OpenAI: `gpt-4.1-mini`, `gpt-5.4-nano`, `gpt-5.4-mini`, `gpt-5.4`, `gpt-5.6-luna`, `gpt-5.6-terra`
 - xAI: `grok-4.20-0309-reasoning`, `grok-4.20-0309-non-reasoning`, `grok-4-1-fast-reasoning`
 - Gemini: `gemini-3.1-flash-lite-preview`, `gemini-3.5-flash`
 
@@ -196,6 +196,7 @@ Environment variables are loaded from `.env`.
 | `MAX_CONTEXT_TOKENS` | `16000` | Total history budget before reserve tokens |
 | `MAX_OUTPUT_TOKENS` | `2048` | Max tokens per reply; also the trimming middleware's reserve |
 | `SUMMARY_MODEL` | `gpt-4.1-mini` | Dedicated supported model used for rolling checkpoint summaries |
+| `VISION_SUMMARY_MODEL` | `gpt-5.4-nano` | Dedicated supported model used to describe images on ingest; independent of `/model` and `SUMMARY_MODEL` |
 | `SUMMARY_TRIGGER_TOKENS` | `10000` | Summarize older active messages on the next triggered request at this approximate token count |
 | `SUMMARY_KEEP_TOKENS` | `4000` | Approximate recent raw-message tokens retained after summarization |
 | `SUMMARY_CONTEXT_TOKENS` | `14000` | Input token budget for the summary model call itself, independent of `MAX_CONTEXT_TOKENS` |

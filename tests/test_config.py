@@ -36,7 +36,7 @@ def test_defaults_apply_when_optional_unset(monkeypatch):
     assert cfg.config.MAX_OUTPUT_TOKENS == 2048
     assert cfg.config.MAX_CONTEXT_TOKENS == 16000
     assert cfg.config.SUMMARY_MODEL == "gpt-4.1-mini"
-    assert cfg.config.VISION_SUMMARY_MODEL == "gpt-4.1-mini"
+    assert cfg.config.VISION_SUMMARY_MODEL == "gpt-5.4-nano"
     assert cfg.config.SUMMARY_TRIGGER_TOKENS == 10000
     assert cfg.config.SUMMARY_KEEP_TOKENS == 4000
     assert cfg.config.SUMMARY_CONTEXT_TOKENS == 14000

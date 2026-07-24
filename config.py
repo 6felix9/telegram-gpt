@@ -37,7 +37,7 @@ class Config:
     # Dedicated vision model that describes images on ingest so later turns
     # keep a text description. Fixed, independent of /model and SUMMARY_MODEL.
     # A missing provider key does not block startup (image persist fails open).
-    VISION_SUMMARY_MODEL = os.getenv("VISION_SUMMARY_MODEL", "gpt-4.1-mini")
+    VISION_SUMMARY_MODEL = os.getenv("VISION_SUMMARY_MODEL", "gpt-5.4-nano")
     SUMMARY_TRIGGER_TOKENS = int(os.getenv("SUMMARY_TRIGGER_TOKENS", "10000"))
     SUMMARY_KEEP_TOKENS = int(os.getenv("SUMMARY_KEEP_TOKENS", "4000"))
     # Input budget for the summary model call, independent of MAX_CONTEXT_TOKENS
