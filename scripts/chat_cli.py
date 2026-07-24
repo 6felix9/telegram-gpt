@@ -142,23 +142,26 @@ class ChatCLI:
             args: Command arguments (empty list or [personality_name])
         """
         try:
-            # If no args, show current active personality
-            if not args or len(args) == 0:
-                active_personality = self.db.get_active_personality()
-                print(f"\nCurrent personality: {active_personality}")
-                print("Usage: /personality <name>")
-                print("Example: /personality villain\n")
+            personalities = self.db.list_personalities()
+            if not personalities:
+                print("\nNo personalities found in database.\n")
                 return
 
-            # Parse personality name from argument
+            available = ", ".join(name for name, _preview in personalities)
+
+            if not args:
+                current = self.db.get_active_personality()
+                print(f"\nCurrent personality: {current}")
+                print(f"Available: {available}")
+                print("Usage: /personality <name>\n")
+                return
+
             personality_name = args[0].strip()
-
-            # Check if personality exists
             if not self.db.personality_exists(personality_name):
-                print(f"\n❌ No personality '{personality_name}' found.\n")
+                print(f"\n❌ No personality '{personality_name}' found.")
+                print(f"Available: {available}\n")
                 return
 
-            # Set active personality
             self.db.set_active_personality(personality_name)
             print(f"\n✅ Personality changed to '{personality_name}'\n")
             logger.info(f"Personality changed to {personality_name}")
@@ -166,28 +169,6 @@ class ChatCLI:
         except Exception as e:
             logger.error(f"Error handling personality command: {e}", exc_info=True)
             print(f"\n❌ Failed to change personality: {e}\n")
-
-    def handle_list_personality_command(self) -> None:
-        """Handle /list_personality command."""
-        try:
-            personalities = self.db.list_personalities()
-            active = self.db.get_active_personality()
-            
-            if not personalities:
-                print("\nNo custom personalities available.")
-                print(f"Currently using: {active} (default)\n")
-                return
-            
-            print(f"\n**Available Personalities:**")
-            print(f"Currently active: {active}\n")
-            
-            for name, prompt_preview in personalities:
-                marker = "✓" if name == active else "-"
-                print(f"{marker} {name}")
-                print(f"  {prompt_preview}\n")
-        except Exception as e:
-            logger.error(f"Error listing personalities: {e}", exc_info=True)
-            print(f"\n❌ Failed to list personalities: {e}\n")
 
     def handle_model_command(self, args: list[str]) -> None:
         """Handle /model command."""
@@ -231,7 +212,7 @@ class ChatCLI:
                   "checkpoint thread — use a throwaway chat_id to avoid polluting "
                   "a real conversation's memory\n")
 
-        print("Type your message (or /clear, /stats, /model [name], /personality [name], /list_personality, /exit to quit):\n")
+        print("Type your message (or /clear, /stats, /model [name], /personality [name], /exit to quit):\n")
 
         while True:
             try:
@@ -278,10 +259,6 @@ class ChatCLI:
                     parts = user_input.split(None, 1)
                     args = parts[1:] if len(parts) > 1 else []
                     self.handle_personality_command(args)
-                    continue
-
-                if user_input.lower().startswith("/list_personality"):
-                    self.handle_list_personality_command()
                     continue
 
                 # Process message

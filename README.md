@@ -166,8 +166,7 @@ All commands are restricted to the main admin (`AUTHORIZED_USER_ID`); granted us
 - `/revoke <user_id>` - Revoke access from a granted user
 - `/allowlist` - Show the current allowlist
 - `/model [name]` - Show or change the globally active model
-- `/personality [name]` - Show or change the active group personality
-- `/list_personality` - List personalities stored in the database
+- `/personality [name]` - Show available personalities, or change the active group personality
 - `/version` - Show the current bot version
 - `/help` - Show the command reference
 
@@ -246,7 +245,6 @@ CLI commands:
 - `/stats`
 - `/model [name]`
 - `/personality [name]`
-- `/list_personality`
 - `/exit`
 - `/quit`
 
