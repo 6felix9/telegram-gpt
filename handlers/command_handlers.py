@@ -220,14 +220,29 @@ class CommandHandlers:
             )
             return
 
-        if not context.args or len(context.args) == 0:
+        try:
+            personalities = self._deps.db.list_personalities()
+        except Exception as e:
+            logger.error(f"Error listing personalities: {e}", exc_info=True)
+            await update.message.reply_text(
+                "❌ Failed to list personalities. Please try again."
+            )
+            return
+
+        if not personalities:
+            await update.message.reply_text("No personalities found in database.")
+            return
+
+        available = "\n".join(f"  `{name}`" for name, _preview in personalities)
+
+        if not context.args:
             try:
-                active_personality = self._deps.db.get_active_personality()
+                current = self._deps.db.get_active_personality()
                 await update.message.reply_text(
-                    f"Current personality: **{active_personality}**\n\n"
-                    f"Usage: /personality <name>\n"
-                    f"Example: /personality villain",
-                    parse_mode="Markdown"
+                    f"Current personality: `{current}`\n\n"
+                    f"Available personalities:\n{available}\n\n"
+                    "Usage: `/personality <name>`",
+                    parse_mode="Markdown",
                 )
             except Exception as e:
                 logger.error(f"Error getting active personality: {e}", exc_info=True)
@@ -240,47 +255,23 @@ class CommandHandlers:
 
         try:
             if not self._deps.db.personality_exists(personality_name):
-                await update.message.reply_text(f"❌ No personality '{personality_name}' found.")
+                await update.message.reply_text(
+                    f"❌ No personality `{personality_name}` found.\n\n"
+                    f"Available personalities:\n{available}",
+                    parse_mode="Markdown",
+                )
                 return
 
             self._deps.db.set_active_personality(personality_name)
-            await update.message.reply_text(f"✅ Personality changed to '{personality_name}'")
+            await update.message.reply_text(
+                f"✅ Personality changed to `{personality_name}`",
+                parse_mode="Markdown",
+            )
             logger.info(f"User {user_id} changed personality to {personality_name}")
 
         except Exception as e:
             logger.error(f"Error changing personality: {e}", exc_info=True)
             await update.message.reply_text("❌ Failed to change personality. Please try again.")
-
-    async def list_personality_command(self, update, context):
-        user_id = update.message.from_user.id
-        if not is_main_authorized_user(user_id, self._deps.config):
-            await update.message.reply_text(
-                "Sorry, only the main authorized user can view personalities."
-            )
-            return
-
-        try:
-            personalities = self._deps.db.list_personalities()
-            active = self._deps.db.get_active_personality()
-
-            if not personalities:
-                await update.message.reply_text("No personalities found in database.")
-                return
-
-            message = "**Available Personalities:**\n"
-            message += f"Currently active: **{active}**\n\n"
-
-            for name, prompt_preview in personalities:
-                marker = "✓" if name == active else "-"
-                message += f"{marker} `{name}`\n"
-                message += f"  _{prompt_preview}_\n\n"
-
-            await update.message.reply_text(message, parse_mode="Markdown")
-            logger.info(f"Listed personalities for user {user_id}")
-
-        except Exception as e:
-            logger.error(f"Error listing personalities: {e}", exc_info=True)
-            await update.message.reply_text("❌ Failed to list personalities. Please try again.")
 
     async def model_command(self, update, context):
         user_id = update.message.from_user.id
@@ -337,8 +328,7 @@ class CommandHandlers:
             "/revoke <user\\_id> - Revoke bot access from a user\n"
             "/allowlist - Show all authorized users\n"
             "/model - View or change the active AI model\n"
-            "/personality <name> - View or change active personality\n"
-            "/list\\_personality - List all available personalities\n"
+            "/personality - View or change active personality\n"
             "/version - Show current bot version"
         )
 

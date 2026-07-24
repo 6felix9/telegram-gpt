@@ -102,13 +102,6 @@ async def personality_command(update, context):
     return await _command_handlers.personality_command(update, context)
 
 
-async def list_personality_command(update, context):
-    assert _command_handlers is not None, (
-        "init_handlers() must run before list_personality_command()"
-    )
-    return await _command_handlers.list_personality_command(update, context)
-
-
 async def model_command(update, context):
     assert _command_handlers is not None, "init_handlers() must run before model_command()"
     return await _command_handlers.model_command(update, context)

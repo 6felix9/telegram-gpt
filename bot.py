@@ -112,7 +112,6 @@ def main():
         application.add_handler(CommandHandler("version", handlers.version_command))
         application.add_handler(CommandHandler("model", handlers.model_command))
         application.add_handler(CommandHandler("personality", handlers.personality_command))
-        application.add_handler(CommandHandler("list_personality", handlers.list_personality_command))
         application.add_handler(CommandHandler("help", handlers.help_command))
 
         # Error handler
