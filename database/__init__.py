@@ -6,6 +6,7 @@ from cache import TTLCache
 
 from .access_repository import AccessRepository
 from .db_connection import ConnectionManager
+from .image_repository import ImageRepository
 from .message_repository import MessageRepository
 from .settings_repository import SettingsRepository
 from .summary_audit_repository import SummaryAuditRepository
@@ -24,6 +25,7 @@ class Database:
         self._access = AccessRepository(self._conn, self._cache)
         self._settings = SettingsRepository(self._conn, self._cache)
         self._summaries = SummaryAuditRepository(self._conn)
+        self._images = ImageRepository(self._conn)
 
     def close(self):
         self._conn.close()
@@ -31,6 +33,9 @@ class Database:
     # --- messages ------------------------------------------------------
     def add_message(self, *args, **kwargs) -> int:
         return self._messages.add_message(*args, **kwargs)
+
+    def update_message_content(self, *args, **kwargs) -> bool:
+        return self._messages.update_message_content(*args, **kwargs)
 
     def get_stats(self, chat_id: str) -> dict:
         return self._messages.get_stats(chat_id)
@@ -81,3 +86,13 @@ class Database:
     # --- summary audit ------------------------------------------------------
     def record_conversation_summary(self, *args, **kwargs) -> int:
         return self._summaries.record_conversation_summary(*args, **kwargs)
+
+    # --- images -------------------------------------------------------------
+    def save_image(self, *args, **kwargs) -> int:
+        return self._images.save_image(*args, **kwargs)
+
+    def get_image(self, *args, **kwargs):
+        return self._images.get_image(*args, **kwargs)
+
+    def get_image_by_message_id(self, *args, **kwargs):
+        return self._images.get_image_by_message_id(*args, **kwargs)

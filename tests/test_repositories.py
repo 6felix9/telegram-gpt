@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from cache import MISSING, TTLCache
 from database.access_repository import AccessRepository
 from database.db_connection import ConnectionManager
+from database.image_repository import ImageRecord, ImageRepository
 from database.message_repository import MessageRepository
 from database.settings_repository import SettingsRepository
 
@@ -108,6 +109,30 @@ def test_get_stats_returns_zeroed_dict_on_query_failure():
     assert stats["first_message"] == "N/A"
 
 
+def test_update_message_content_rewrites_row_scoped_to_chat_and_message():
+    manager, conn = _fake_manager(rowcount=1)
+    repo = MessageRepository(manager)
+
+    updated = repo.update_message_content(
+        chat_id=123, message_id=9,
+        content="[image #77] pets — A tabby cat.", token_count=11,
+    )
+
+    assert updated is True
+    sql, params = conn.executed[0]
+    assert "UPDATE messages" in sql
+    assert params == ("[image #77] pets — A tabby cat.", 11, "123", 9)
+
+
+def test_update_message_content_returns_false_when_no_row_matched():
+    manager, _ = _fake_manager(rowcount=0)
+    repo = MessageRepository(manager)
+
+    assert repo.update_message_content(
+        chat_id=123, message_id=404, content="[image #1] x", token_count=3,
+    ) is False
+
+
 # --- AccessRepository ------------------------------------------------------
 
 def test_is_user_granted_caches_result_and_skips_second_query():
@@ -159,3 +184,61 @@ def test_list_personalities_truncates_long_prompt_preview():
     personalities = repo.list_personalities()
     assert personalities[0] == ("villain", "x" * 100 + "...")
     assert personalities[1] == ("normal", "short")
+
+
+# --- ImageRepository --------------------------------------------------------
+
+def test_save_image_inserts_and_returns_id():
+    manager, conn = _fake_manager(results=[(42,)])
+    repo = ImageRepository(manager)
+    new_id = repo.save_image(
+        chat_id="123", message_id=7, mime_type="image/jpeg",
+        caption="a cat", summary="A tabby cat on a sofa.", image_bytes=b"\x00\x01",
+    )
+    assert new_id == 42
+    sql, params = conn.executed[-1]
+    assert "INSERT INTO images" in sql
+    assert params == ("123", 7, "image/jpeg", "a cat", "A tabby cat on a sofa.", b"\x00\x01")
+
+
+def test_get_image_returns_record_when_found():
+    manager, conn = _fake_manager(
+        results=[(42, "123", 7, "image/jpeg", "a cat", "summary", b"\x00\x01")])
+    repo = ImageRepository(manager)
+    record = repo.get_image("123", 42)
+    assert isinstance(record, ImageRecord)
+    assert record.id == 42
+    assert record.chat_id == "123"
+    assert record.mime_type == "image/jpeg"
+    assert record.caption == "a cat"
+    assert record.summary == "summary"
+    assert record.image_bytes == b"\x00\x01"
+    sql, params = conn.executed[-1]
+    assert "SELECT" in sql and "FROM images" in sql
+    assert params == (42, "123")
+
+
+def test_get_image_returns_none_when_missing_or_other_chat():
+    manager, conn = _fake_manager(results=[None])
+    repo = ImageRepository(manager)
+    assert repo.get_image("123", 999) is None
+
+
+def test_get_image_by_message_id_returns_latest_scoped_record():
+    manager, conn = _fake_manager(
+        results=[(9, "123", 88, "image/jpeg", None, "noodles", b"\x00\x01")])
+    repo = ImageRepository(manager)
+    record = repo.get_image_by_message_id("123", 88)
+    assert isinstance(record, ImageRecord)
+    assert record.id == 9
+    assert record.summary == "noodles"
+    sql, params = conn.executed[-1]
+    assert "FROM images" in sql and "message_id = %s" in sql
+    assert "ORDER BY id DESC" in sql
+    assert params == ("123", 88)
+
+
+def test_get_image_by_message_id_returns_none_when_missing():
+    manager, conn = _fake_manager(results=[None])
+    repo = ImageRepository(manager)
+    assert repo.get_image_by_message_id("123", 404) is None

@@ -57,6 +57,45 @@ class MessageRepository:
             logger.error(f"Failed to add message: {e}", exc_info=True)
             raise
 
+    def update_message_content(
+        self,
+        chat_id: str,
+        message_id: int,
+        content: str,
+        token_count: int = 0,
+    ) -> bool:
+        """Rewrite a stored user message's content in place, keyed by its Telegram
+        message id. Used to backfill an image row's `[image #N] <summary>` marker
+        once the image id exists, so the audit log mirrors the checkpoint.
+
+        Returns True when a row was updated, False when nothing matched.
+        """
+        try:
+            chat_id = str(chat_id)
+
+            with self._conn.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE messages
+                        SET content = %s, token_count = %s
+                        WHERE chat_id = %s AND message_id = %s AND role = 'user'
+                        """,
+                        (content, token_count, chat_id, message_id),
+                    )
+                    updated = cur.rowcount > 0
+
+            if not updated:
+                logger.warning(
+                    f"No message row to update for chat {chat_id} "
+                    f"message_id {message_id}"
+                )
+            return updated
+
+        except Exception as e:
+            logger.error(f"Failed to update message content: {e}", exc_info=True)
+            raise
+
     def get_stats(self, chat_id: str) -> dict:
         """Return statistics for monitoring."""
         try:

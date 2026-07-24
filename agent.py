@@ -3,13 +3,14 @@ Telegram-facing entry point. Replaces openai_client.py and token_manager.py."""
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 from dataclasses import dataclass, field
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import dynamic_prompt
+from langchain.agents.middleware import dynamic_prompt, wrap_model_call
 from langchain.chat_models import init_chat_model
-from langchain_core.messages import BaseMessage, RemoveMessage
+from langchain_core.messages import BaseMessage, HumanMessage, RemoveMessage
 
 from conversation_summary import (
     PendingSummaryAuditRecord,
@@ -17,6 +18,7 @@ from conversation_summary import (
     SUMMARY_PROMPT,
     SummaryAuditRecord,
 )
+from image_store import make_image_summary
 from prompt_builder import PromptBuilder
 from tools import build_tools
 from model_registry import (
@@ -38,23 +40,53 @@ from token_budget import (
 logger = logging.getLogger(__name__)
 
 
+# Persona only. PromptBuilder assembles the final system prompt as:
+#
+#     <persona>  ->  ## Tools  ->  ## Conventions
+#
+# and appends a ## Current context message after the history. The two generated
+# sections are always present, so transport rules (no Markdown, [Name]:
+# prefixes, [image #N] markers) live there rather than here.
+#
+# WRITING A /personality PROMPT (group chats only — private always uses
+# SYSTEM_PROMPT below):
+#
+# A personality row replaces this whole persona string. It does NOT replace the
+# Tools or Conventions sections, and it cannot override them — they come after
+# it, and the model resolves conflicts in favour of the later, more specific
+# text. So:
+#
+#   Do not restate  - formatting rules (Markdown is already banned)
+#                   - what tools exist or when to use them
+#                   - the [Name]: message format or [image #N] markers
+#                   - the date, or who is being replied to (## Current context
+#                     supplies these fresh on every call)
+#
+#   Do supply       - identity and voice
+#                   - verbosity, since "be direct and concise" below is gone
+#                   - "Never discuss which model or provider you are", which is
+#                     also gone once this string is replaced
+#                   - multi-participant awareness (personality is group-only
+#                     and is a single global setting, never per-chat)
+#
+# Avoid ## headers inside a personality prompt: they would sit alongside the
+# real generated sections. Prefer expressing a "dramatic" persona through word
+# choice, since asterisks and headers are stripped by the Conventions rule.
 SYSTEM_PROMPT = """You are Tze Foong's Assistant, an AI helper in Telegram.
 
 Key behaviors:
 - Be direct and concise - no unnecessary preambles
 - Provide clear, helpful responses
-- Never claim to be OpenAI or reference being a language model
-- Respond naturally as a personal assistant
-- Do not use Markdown formatting (no **bold**, *italics*, headers, or bullet asterisks)"""
+- Never discuss which model or provider you are
+- Respond naturally as a personal assistant"""
 
 SYSTEM_PROMPT_GROUP = """You are Tze Foong's Assistant, an AI helper in Telegram group chats.
 
 Key behaviors:
 - Be direct and concise - no unnecessary preambles
 - Provide clear, helpful responses
-- Never claim to be OpenAI or reference being a language model
-- Track conversation context from multiple participants
-- Messages are formatted as [Name]: content - reply naturally without mimicking this format"""
+- Never discuss which model or provider you are
+- Track conversation context from multiple participants"""
 
 SUMMARY_MAX_OUTPUT_TOKENS = 1024
 
@@ -138,6 +170,52 @@ def make_summary_model(config):
     )
 
 
+def make_vision_summary_model(config):
+    """Build and validate the fixed model used to describe images on ingest."""
+    try:
+        provider, prefixed_id = resolve_model(config.VISION_SUMMARY_MODEL)
+    except KeyError as exc:
+        raise ValueError(
+            f"Unsupported VISION_SUMMARY_MODEL: {config.VISION_SUMMARY_MODEL}"
+        ) from exc
+
+    key = provider_api_key(provider, config)
+    if not key.strip():
+        env_name = {
+            "openai": "OPENAI_API_KEY",
+            "xai": "XAI_API_KEY",
+            "google_genai": "GEMINI_API_KEY",
+        }[provider]
+        raise ValueError(
+            f"{env_name} is required for VISION_SUMMARY_MODEL={config.VISION_SUMMARY_MODEL}"
+        )
+
+    return init_chat_model(
+        prefixed_id,
+        api_key=key,
+        timeout=config.MODEL_TIMEOUT,
+        max_retries=2,
+        **({"use_responses_api": True} if provider == "openai" else {}),
+    )
+
+
+def _build_vision_model(config):
+    """Fail-open wrapper: return the vision model or None if it can't be built."""
+    try:
+        return make_vision_summary_model(config)
+    except ValueError as exc:
+        logger.warning("Vision summary model unavailable: %s", exc)
+        return None
+
+
+def _image_marker(image_id: int, caption: str | None, summary: str) -> str:
+    """Compact checkpoint marker that replaces a raw image after ingest."""
+    prefix = f"[image #{image_id}]"
+    if caption:
+        return f"{prefix} {caption} — {summary}"
+    return f"{prefix} {summary}"
+
+
 @dataclass
 class AgentContext:
     """Per-invocation context read by middleware (not persisted)."""
@@ -148,18 +226,52 @@ class AgentContext:
     summary_compacted: bool = False
 
 
-def _make_dynamic_prompt(prompt_builder):
-    """Build a @dynamic_prompt middleware that resolves the system prompt per call."""
+def _tool_names(tools) -> list[str]:
+    """Names of bound tools; entries may be BaseTool objects or raw schema dicts."""
+    names = []
+    for tool in tools or []:
+        name = getattr(tool, "name", None)
+        if name is None and isinstance(tool, dict):
+            name = tool.get("name") or tool.get("function", {}).get("name")
+        if name:
+            names.append(name)
+    return names
+
+
+def _make_dynamic_prompt(prompt_builder, tools):
+    """Build a @dynamic_prompt middleware that resolves the system prompt per call.
+
+    Tool names come from the request when available so the prompt describes the
+    tools actually bound for that call, falling back to the agent's own set.
+    """
 
     @dynamic_prompt
     def system_prompt(request) -> str:
         ctx = getattr(request.runtime, "context", None) or AgentContext()
         return prompt_builder.build_system_prompt(
             is_group=ctx.is_group,
-            reply_context=ctx.reply_context,
+            tool_names=_tool_names(getattr(request, "tools", None) or tools),
         )
 
     return system_prompt
+
+
+def _make_context_middleware(prompt_builder):
+    """Append the per-call context block after the history, non-destructively.
+
+    Registered last so it runs innermost — its message is added after trimming
+    and is never written back to the checkpoint.
+    """
+
+    @wrap_model_call
+    def add_context(request, handler):
+        ctx = getattr(request.runtime, "context", None) or AgentContext()
+        context_message = prompt_builder.build_context_message(ctx.reply_context)
+        return handler(
+            request.override(messages=[*request.messages, context_message])
+        )
+
+    return add_context
 
 
 class Agent:
@@ -178,9 +290,10 @@ class Agent:
         self._config = config
         self._prompt_builder = prompt_builder
         self._checkpointer = checkpointer
-        self._tools = build_tools(config)  # from tools.py
+        self._tools = build_tools(config, db)  # from tools.py
         self._db = db
         self._summary_model = summary_model or make_summary_model(config)
+        self._vision_summary_model = _build_vision_model(config)
         self._summary_middleware = ResilientSummarizationMiddleware(
             model=self._summary_model,
             summary_model_name=config.SUMMARY_MODEL,
@@ -192,9 +305,12 @@ class Agent:
             on_summary=self._record_summary if db is not None else None,
         )
         self._middleware = [
-            _make_dynamic_prompt(prompt_builder),
+            _make_dynamic_prompt(prompt_builder, self._tools),
             self._summary_middleware,
             make_trim_middleware(config.MAX_CONTEXT_TOKENS, config.MAX_OUTPUT_TOKENS),
+            # Last => innermost: the context block is appended after trimming,
+            # so it can never be trimmed away.
+            _make_context_middleware(prompt_builder),
         ]
         self.model_name = model_name
         self._provider = None
@@ -362,6 +478,83 @@ class Agent:
             )
         except Exception as e:
             logger.error("Failed to append context message: %s", e, exc_info=True)
+
+    async def persist_image(
+        self,
+        chat_id,
+        image_message_id: str,
+        image_data_url: str,
+        mime_type: str,
+        caption: str | None,
+        telegram_message_id: int | None,
+        is_group: bool = False,
+        sender_name: str | None = None,
+    ) -> int | None:
+        """Fail-open post-reply step: describe the image, store it durably, and
+        write its [image #id] marker into the checkpoint. A brand-new
+        image_message_id appends the marker (passive photo ingest); reusing the
+        raw image's id rewrites it in place (triggered reply). In groups the
+        marker keeps the '[sender]:' prefix so later turns can still attribute
+        who shared the image. Never raises — a failure just leaves the raw image
+        as-is. Returns the stored image id, or None if nothing was persisted."""
+        if self._graph is None or self._vision_summary_model is None or self._db is None:
+            return None
+        try:
+            summary = await asyncio.to_thread(
+                make_image_summary, self._vision_summary_model, image_data_url
+            )
+            summary = summary.strip() if summary else ""
+            if not summary:
+                logger.warning(
+                    "Empty image summary for chat %s; skipping image persist", chat_id
+                )
+                return None
+            raw = base64.b64decode(image_data_url.split(",", 1)[1])
+            image_id = self._db.save_image(
+                chat_id=str(chat_id),
+                message_id=telegram_message_id,
+                mime_type=mime_type,
+                caption=caption,
+                summary=summary,
+                image_bytes=raw,
+            )
+            marker = _image_marker(image_id, caption, summary)
+            checkpoint_marker = (
+                f"[{sender_name}]: {marker}" if is_group and sender_name else marker
+            )
+            self._graph.update_state(
+                self._config_for(chat_id),
+                {"messages": [HumanMessage(id=image_message_id, content=checkpoint_marker)]},
+            )
+            logger.info("Persisted image %s for chat %s", image_id, chat_id)
+            self._backfill_audit_content(chat_id, telegram_message_id, marker)
+            return image_id
+        except Exception:
+            logger.exception("Failed to persist image for chat %s", chat_id)
+            return None
+
+    def _backfill_audit_content(
+        self, chat_id, telegram_message_id: int | None, marker: str
+    ) -> None:
+        """Rewrite the image's audit row to the same `[image #id] <summary>` marker
+        the checkpoint holds, now that the id exists. The group '[sender]:' prefix
+        is deliberately omitted — the audit table keeps sender_name in its own
+        column. Fail-open: a failure here never affects the checkpoint or the
+        caller, since the audit log is never read back into model context."""
+        if telegram_message_id is None:
+            return
+        try:
+            self._db.update_message_content(
+                chat_id=str(chat_id),
+                message_id=telegram_message_id,
+                content=marker,
+                token_count=count_tokens(marker),
+            )
+        except Exception:
+            logger.exception(
+                "Failed to backfill audit content for chat %s message %s",
+                chat_id, telegram_message_id,
+            )
 
     def clear_thread(self, chat_id) -> None:
         self._checkpointer.delete_thread(str(chat_id))

@@ -10,6 +10,24 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
+def _int_env(name: str, default: int) -> int:
+    """Read an int setting, treating an empty value as unset.
+
+    os.getenv's default only applies when the variable is absent, but
+    .env.example ships these keys blank ("MODEL_TIMEOUT=") to mean "use the
+    default" — and Railway/Docker pass a set-but-empty var through the same
+    way. Without this, int("") crashes at import.
+    """
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("%s=%r is not an integer; using default %s", name, raw, default)
+        return default
+
+
 class Config:
     """Centralized configuration with validation."""
 
@@ -25,20 +43,24 @@ class Config:
     # Default model to use on first startup (persisted in DB after first run)
     DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gpt-5.4-mini")
 
-    MODEL_TIMEOUT = int(os.getenv("MODEL_TIMEOUT", "60"))
-    MAX_CONTEXT_TOKENS = int(os.getenv("MAX_CONTEXT_TOKENS", "16000"))
+    MODEL_TIMEOUT = _int_env("MODEL_TIMEOUT", 60)
+    MAX_CONTEXT_TOKENS = _int_env("MAX_CONTEXT_TOKENS", 16000)
 
     # Max tokens the model may generate per reply; also used as the trimming
     # middleware's reserve (history budget = MAX_CONTEXT_TOKENS - this).
-    MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "2048"))
+    MAX_OUTPUT_TOKENS = _int_env("MAX_OUTPUT_TOKENS", 2048)
 
     # Rolling checkpoint summary. Summarization runs only on triggered requests.
     SUMMARY_MODEL = os.getenv("SUMMARY_MODEL", "gpt-4.1-mini")
-    SUMMARY_TRIGGER_TOKENS = int(os.getenv("SUMMARY_TRIGGER_TOKENS", "10000"))
-    SUMMARY_KEEP_TOKENS = int(os.getenv("SUMMARY_KEEP_TOKENS", "4000"))
+    # Dedicated vision model that describes images on ingest so later turns
+    # keep a text description. Fixed, independent of /model and SUMMARY_MODEL.
+    # A missing provider key does not block startup (image persist fails open).
+    VISION_SUMMARY_MODEL = os.getenv("VISION_SUMMARY_MODEL", "gpt-5.4-nano")
+    SUMMARY_TRIGGER_TOKENS = _int_env("SUMMARY_TRIGGER_TOKENS", 10000)
+    SUMMARY_KEEP_TOKENS = _int_env("SUMMARY_KEEP_TOKENS", 4000)
     # Input budget for the summary model call, independent of MAX_CONTEXT_TOKENS
     # (which bounds the reply model instead).
-    SUMMARY_CONTEXT_TOKENS = int(os.getenv("SUMMARY_CONTEXT_TOKENS", "14000"))
+    SUMMARY_CONTEXT_TOKENS = _int_env("SUMMARY_CONTEXT_TOKENS", 14000)
 
     # Web search tool (Tavily); blank falls back to DuckDuckGo at runtime
     TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
@@ -50,7 +72,7 @@ class Config:
     DATABASE_URL = os.getenv("DATABASE_URL", "")
 
     # Group chat settings
-    MAX_GROUP_CONTEXT_MESSAGES = int(os.getenv("MAX_GROUP_CONTEXT_MESSAGES", "500"))
+    MAX_GROUP_CONTEXT_MESSAGES = _int_env("MAX_GROUP_CONTEXT_MESSAGES", 500)
 
     # Logging
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")

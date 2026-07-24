@@ -66,6 +66,7 @@ class _Cfg:
     MAX_CONTEXT_TOKENS = 16000
     MAX_OUTPUT_TOKENS = 2048
     SUMMARY_MODEL = "gpt-4.1-mini"
+    VISION_SUMMARY_MODEL = "gpt-4.1-mini"
     SUMMARY_TRIGGER_TOKENS = 10000
     SUMMARY_KEEP_TOKENS = 4000
     SUMMARY_CONTEXT_TOKENS = 14000
@@ -544,3 +545,258 @@ def test_audit_write_failure_does_not_block_reply():
     )
 
     assert out == "ok"
+
+
+# --- Vision summary model builders (Task 2) ---------------------------------
+
+class _CfgVision:
+    VISION_SUMMARY_MODEL = "gpt-4.1-mini"
+    OPENAI_API_KEY = ""
+    XAI_API_KEY = ""
+    GEMINI_API_KEY = ""
+    MODEL_TIMEOUT = 60
+
+
+def test_make_vision_summary_model_rejects_unsupported():
+    cfg = _CfgVision()
+    cfg.VISION_SUMMARY_MODEL = "not-a-real-model"
+    with pytest.raises(ValueError):
+        agent_mod.make_vision_summary_model(cfg)
+
+
+def test_build_vision_model_fail_open_on_missing_key():
+    # Supported model but no provider key -> None, no exception.
+    assert agent_mod._build_vision_model(_CfgVision()) is None
+
+
+# --- Agent.persist_image (Task 6) -------------------------------------------
+
+def test_image_marker_with_and_without_caption():
+    assert agent_mod._image_marker(5, None, "a cat") == "[image #5] a cat"
+    assert agent_mod._image_marker(5, "pets", "a cat") == "[image #5] pets — a cat"
+
+
+def _agent_for_persist(vision_model, db, graph):
+    a = agent_mod.Agent.__new__(agent_mod.Agent)
+    a._vision_summary_model = vision_model
+    a._db = db
+    a._graph = graph
+    return a
+
+
+def test_persist_image_stores_and_rewrites_checkpoint(monkeypatch):
+    monkeypatch.setattr(agent_mod, "make_image_summary", lambda m, url: "A tabby cat.")
+    db = _persist_db()
+    graph = SimpleNamespace(update_state=Mock())
+    a = _agent_for_persist(vision_model=object(), db=db, graph=graph)
+
+    asyncio.run(a.persist_image(
+        chat_id="123", image_message_id="mid-1",
+        image_data_url="data:image/jpeg;base64,AAAA",
+        mime_type="image/jpeg", caption="pets", telegram_message_id=9,
+    ))
+
+    db.save_image.assert_called_once()
+    _, kwargs = db.save_image.call_args
+    assert kwargs["summary"] == "A tabby cat."
+    assert kwargs["chat_id"] == "123"
+    graph.update_state.assert_called_once()
+    _, rewrite = graph.update_state.call_args[0]
+    rewritten = rewrite["messages"][0]
+    assert rewritten.id == "mid-1"
+    assert rewritten.content == "[image #77] pets — A tabby cat."
+
+
+def test_persist_image_returns_saved_id(monkeypatch):
+    monkeypatch.setattr(agent_mod, "make_image_summary", lambda m, url: "A tabby cat.")
+    db = _persist_db()
+    graph = SimpleNamespace(update_state=Mock())
+    a = _agent_for_persist(vision_model=object(), db=db, graph=graph)
+
+    image_id = asyncio.run(a.persist_image(
+        chat_id="123", image_message_id="mid-1",
+        image_data_url="data:image/jpeg;base64,AAAA",
+        mime_type="image/jpeg", caption="pets", telegram_message_id=9,
+    ))
+
+    assert image_id == 77
+
+
+def test_persist_image_group_marker_keeps_sender_prefix(monkeypatch):
+    monkeypatch.setattr(agent_mod, "make_image_summary", lambda m, url: "A tabby cat.")
+    db = _persist_db()
+    graph = SimpleNamespace(update_state=Mock())
+    a = _agent_for_persist(vision_model=object(), db=db, graph=graph)
+
+    asyncio.run(a.persist_image(
+        chat_id="123", image_message_id="mid-1",
+        image_data_url="data:image/jpeg;base64,AAAA",
+        mime_type="image/jpeg", caption="pets", telegram_message_id=9,
+        is_group=True, sender_name="Alice",
+    ))
+
+    _, rewrite = graph.update_state.call_args[0]
+    rewritten = rewrite["messages"][0]
+    assert rewritten.content == "[Alice]: [image #77] pets — A tabby cat."
+
+
+def test_persist_image_fail_open_when_no_vision_model():
+    db = SimpleNamespace(save_image=Mock())
+    graph = SimpleNamespace(update_state=Mock())
+    a = _agent_for_persist(vision_model=None, db=db, graph=graph)
+    asyncio.run(a.persist_image(
+        chat_id="123", image_message_id="mid-1",
+        image_data_url="data:image/jpeg;base64,AAAA",
+        mime_type="image/jpeg", caption=None, telegram_message_id=9,
+    ))
+    db.save_image.assert_not_called()
+    graph.update_state.assert_not_called()
+
+
+def test_persist_image_fail_open_on_empty_summary(monkeypatch):
+    monkeypatch.setattr(agent_mod, "make_image_summary", lambda m, url: "   ")
+    db = SimpleNamespace(save_image=Mock())
+    graph = SimpleNamespace(update_state=Mock())
+    a = _agent_for_persist(vision_model=object(), db=db, graph=graph)
+    asyncio.run(a.persist_image(
+        chat_id="123", image_message_id="mid-1",
+        image_data_url="data:image/jpeg;base64,AAAA",
+        mime_type="image/jpeg", caption=None, telegram_message_id=9,
+    ))
+    db.save_image.assert_not_called()
+    graph.update_state.assert_not_called()
+
+
+# --- persist_image audit-row backfill ---------------------------------------
+
+def _persist_db(image_id=77):
+    return SimpleNamespace(
+        save_image=Mock(return_value=image_id),
+        update_message_content=Mock(return_value=True),
+    )
+
+
+def test_persist_image_backfills_audit_row_with_id_and_summary(monkeypatch):
+    monkeypatch.setattr(agent_mod, "make_image_summary", lambda m, url: "A tabby cat.")
+    db = _persist_db()
+    graph = SimpleNamespace(update_state=Mock())
+    a = _agent_for_persist(vision_model=object(), db=db, graph=graph)
+
+    asyncio.run(a.persist_image(
+        chat_id="123", image_message_id="mid-1",
+        image_data_url="data:image/jpeg;base64,AAAA",
+        mime_type="image/jpeg", caption="pets", telegram_message_id=9,
+    ))
+
+    db.update_message_content.assert_called_once()
+    kwargs = db.update_message_content.call_args.kwargs
+    assert kwargs["chat_id"] == "123"
+    assert kwargs["message_id"] == 9
+    assert kwargs["content"] == "[image #77] pets — A tabby cat."
+    assert kwargs["token_count"] > 0
+
+
+def test_persist_image_audit_row_omits_group_sender_prefix(monkeypatch):
+    # The audit table carries sender_name in its own column, so the stored
+    # content stays unprefixed even though the checkpoint marker is prefixed.
+    monkeypatch.setattr(agent_mod, "make_image_summary", lambda m, url: "A tabby cat.")
+    db = _persist_db()
+    graph = SimpleNamespace(update_state=Mock())
+    a = _agent_for_persist(vision_model=object(), db=db, graph=graph)
+
+    asyncio.run(a.persist_image(
+        chat_id="123", image_message_id="mid-1",
+        image_data_url="data:image/jpeg;base64,AAAA",
+        mime_type="image/jpeg", caption="pets", telegram_message_id=9,
+        is_group=True, sender_name="Alice",
+    ))
+
+    assert db.update_message_content.call_args.kwargs["content"] == (
+        "[image #77] pets — A tabby cat."
+    )
+    _, rewrite = graph.update_state.call_args[0]
+    assert rewrite["messages"][0].content == "[Alice]: [image #77] pets — A tabby cat."
+
+
+def test_persist_image_skips_audit_backfill_without_telegram_message_id(monkeypatch):
+    monkeypatch.setattr(agent_mod, "make_image_summary", lambda m, url: "A tabby cat.")
+    db = _persist_db()
+    graph = SimpleNamespace(update_state=Mock())
+    a = _agent_for_persist(vision_model=object(), db=db, graph=graph)
+
+    asyncio.run(a.persist_image(
+        chat_id="123", image_message_id="mid-1",
+        image_data_url="data:image/jpeg;base64,AAAA",
+        mime_type="image/jpeg", caption=None, telegram_message_id=None,
+    ))
+
+    db.update_message_content.assert_not_called()
+    graph.update_state.assert_called_once()
+
+
+def test_persist_image_audit_backfill_failure_keeps_checkpoint_and_id(monkeypatch):
+    monkeypatch.setattr(agent_mod, "make_image_summary", lambda m, url: "A tabby cat.")
+    db = _persist_db()
+    db.update_message_content.side_effect = RuntimeError("db down")
+    graph = SimpleNamespace(update_state=Mock())
+    a = _agent_for_persist(vision_model=object(), db=db, graph=graph)
+
+    image_id = asyncio.run(a.persist_image(
+        chat_id="123", image_message_id="mid-1",
+        image_data_url="data:image/jpeg;base64,AAAA",
+        mime_type="image/jpeg", caption=None, telegram_message_id=9,
+    ))
+
+    assert image_id == 77
+    graph.update_state.assert_called_once()
+
+
+def test_context_middleware_runs_last_so_its_message_survives_trimming():
+    a = _agent_with_fake(_FakeChat(messages=iter([])))
+    # Order matters: the dynamic prompt is outermost, the context block innermost.
+    assert a._middleware[0].__class__.__name__ != "ResilientSummarizationMiddleware"
+    assert a._middleware[1] is a._summary_middleware
+    assert a._middleware[-1].name == "add_context"
+
+
+def test_system_prompt_names_the_bound_tools():
+    fake = _CapturingFakeChat(messages=iter([AIMessage(content="ok")]))
+    a = _agent_with_fake(fake)
+    asyncio.run(a.run("chat-tools", HumanMessage(content="hello"), is_group=False))
+
+    system = fake.seen_message_batches[0][0]
+    assert system.type == "system"
+    assert "## Tools" in system.content
+    for name in ("web_search", "fetch_url"):
+        assert name in system.content
+
+
+def test_context_message_is_appended_after_history_and_not_persisted():
+    fake = _CapturingFakeChat(messages=iter([AIMessage(content="ok")]))
+    a = _agent_with_fake(fake)
+    asyncio.run(a.run(
+        "chat-ctx", HumanMessage(content="hello"), is_group=False,
+        reply_context=("Alice", "earlier note"),
+    ))
+
+    sent = fake.seen_message_batches[0]
+    assert "## Current context" in sent[-1].content
+    assert "earlier note" in sent[-1].content
+    # The ephemeral block must not reach the checkpoint.
+    state = a._graph.get_state(a._config_for("chat-ctx"))
+    assert not any(
+        "## Current context" in str(m.content) for m in state.values["messages"]
+    )
+
+
+def test_tool_names_handles_objects_and_schema_dicts():
+    tools = [
+        SimpleNamespace(name="web_search"),
+        {"name": "raw_dict_tool"},
+        {"function": {"name": "openai_style_tool"}},
+        {"unnamed": True},
+    ]
+    assert agent_mod._tool_names(tools) == [
+        "web_search", "raw_dict_tool", "openai_style_tool",
+    ]
+    assert agent_mod._tool_names(None) == []

@@ -28,11 +28,11 @@ The bot is no longer "OpenAI only". `agent.py` routes requests by model name to 
 2. `config.py` loads `.env` and validates required settings.
 3. `database/` owns PostgreSQL persistence, cached lookups, and global settings such as active model and active personality (schema itself is Alembic-managed — see Database Schema below).
 4. `handlers/` implements Telegram message handlers and bot commands.
-5. `agent.py` builds the LangChain agent (`create_agent` + `init_chat_model`), maps the active model to a provider via `MODEL_PROVIDERS`, wires `ResilientSummarizationMiddleware` as a persistent state-compaction hook before request trimming, and applies the `wrap_model_call` trimming middleware before each reply-model call.
-6. `prompt_builder.py` builds system prompts and normalizes message payloads for the agent.
+5. `agent.py` builds the LangChain agent (`create_agent` + `init_chat_model`), maps the active model to a provider via `MODEL_PROVIDERS`, wires `ResilientSummarizationMiddleware` as a persistent state-compaction hook before request trimming, and applies the `wrap_model_call` trimming middleware before each reply-model call. A final `wrap_model_call` runs innermost to append the per-call context block after trimming.
+6. `prompt_builder.py` builds system prompts (persona, generated tool section, conventions), the per-call `## Current context` message, and normalizes message payloads for the agent.
 7. The checkpointer (`PostgresSaver`, keyed by chat_id thread) persists conversation state across turns as a rolling summary plus recent raw messages. The previous fixed 500→400 message-count prune has been removed; rolling summarization is the sole bound on active checkpoint state. Token counting and model-input trimming remain separate.
 8. `cache.py` provides a small TTL cache used by the database layer.
-9. `tools.py` builds the agent's tools: a web search tool (Tavily when `TAVILY_API_KEY` is set, else a DuckDuckGo fallback) and a page-fetch tool, wired into the agent via `create_agent`.
+9. `tools.py` builds the agent's tools: a web search tool always named `web_search` (Tavily when `TAVILY_API_KEY` is set, else a DuckDuckGo fallback — both wrapped to a single `query` argument) and a page-fetch tool, wired into the agent via `create_agent`.
 10. `conversation_summary.py` owns fail-open summary generation, historical image sanitization for the summary model, and the post-compaction audit callback.
 
 ### Provider / API Routing
@@ -54,14 +54,14 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 5. History is loaded from the checkpoint thread for the chat.
 6. On a triggered `Agent.run()`, `ResilientSummarizationMiddleware` may compact older active messages into a summary plus recent raw suffix (at most one successful compaction per triggered invocation/tool loop). Summary failure leaves checkpoint state unchanged.
 7. `agent.py`'s trimming middleware (`wrap_model_call`) keeps as much recent context as possible while reserving response tokens.
-8. `prompt_builder` builds the system prompt and provider-specific message format.
+8. `prompt_builder` builds the static system prompt and provider-specific message format; the context middleware then appends the `## Current context` block (date/time, reply context) after the trimmed history.
 9. `agent.run()` continues the LangChain agent reply/tool loop with the active provider.
 10. On success, the assistant response is stored and sent back to Telegram. API failures raise `CompletionError` and are shown to the user without persisting an assistant message.
 
 ### Context Storage (Private and Group)
 
 - Non-triggering **text** messages are stored in both private DMs and groups (audit `messages` table + checkpoint via `append_context_message`), even when they do not trigger a reply.
-- This storage happens only for text messages; non-triggering photo posts are ignored in both chat types.
+- Non-triggering photo posts are no longer ignored: every photo is persisted on arrival (summarized and stored) so it can be referenced later — see Image Handling.
 - Group user messages are formatted as `[Name]: message` before model submission; private messages are stored as plain text.
 - Replies still require `chatgpt` or `@BOT_USERNAME`, and authorization is still checked before the model runs.
 - Stored messages in the application `messages` table currently have no retention limit. The previous probabilistic database cleanup remains disabled.
@@ -71,9 +71,18 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 
 ### Image Handling
 
-- `photo_handler()` only processes images when the caption activates the bot.
-- The database stores a text marker such as `[image] <caption>`.
-- The actual image bytes are converted to a data URL and sent only in the outbound API request.
+- `photo_handler()` runs on every photo. When the caption activates the bot, the image is sent to the reply model and answered on the arrival turn; when it does not, the photo is still persisted passively (no reply is sent).
+- The `messages` audit table stores a text marker such as `[image] <caption>` for both
+  triggered and passive photos. Once the image is persisted, that row is rewritten in
+  place to the same `[image #<id>] <caption> — <summary>` marker the checkpoint holds,
+  so the audit log mirrors what the model sees. The group `[sender]:` prefix is omitted
+  because the audit table keeps `sender_name` in its own column. The rewrite is
+  fail-open and the row keeps the plain `[image]` marker if it does not happen.
+- On a triggering photo, the actual image bytes are converted to a data URL and sent to the reply model on the arrival turn at full fidelity.
+- A fail-open path (`Agent.persist_image`) describes the image with `VISION_SUMMARY_MODEL`, stores the raw bytes + summary in the `images` table, and writes an `[image #<id>] <summary>` marker into the checkpoint. A triggered photo rewrites its raw-image message in place (same message id); a passively persisted photo appends the marker (fresh id). Any failure leaves state unchanged and is never surfaced to the user.
+- When a triggering message replies to an earlier photo, the handler resolves that photo's stored `[image #<id>]` (via `get_image_by_message_id`, persisting it on the fly if it was not stored yet) and passes it as reply context so the agent can call `get_image(<id>)`.
+- The agent can call the `get_image(image_id)` tool to pull a stored image back into context as a multimodal tool result when the summary is not enough. Retrieval is chat-scoped: a chat can only fetch its own images.
+- Persisted image bytes currently have no retention limit (deferred to the checkpoint/`messages` retention work).
 - For summary generation only, historical data-URL image blocks in the older partition are replaced with `[image omitted]` (captions and surrounding text are preserved). Recent raw checkpoint messages are not mutated by that sanitization.
 
 ### Personality Behavior
@@ -82,6 +91,8 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 - Group chats can use a database-backed personality prompt.
 - `active_personality` is a single global setting, not per-chat.
 - If the active personality has no matching row in `personality`, the default group prompt is used.
+- A personality prompt replaces only the persona. The generated tool section and the conventions (no Markdown, `[Name]:` prefixes, `[image #N]` markers) are appended after it by `prompt_builder.py` and cannot be overridden.
+- Because it replaces the whole persona, a personality row also drops the default behavior bullets — including `Never discuss which model or provider you are` and the conciseness rule. Restate anything you want to keep. Full guidance for writing one is in the comment above `agent.SYSTEM_PROMPT`.
 
 ### Active Model Behavior
 
@@ -172,6 +183,7 @@ Expected tables:
 - `active_personality`
 - `active_model`
 - `conversation_summaries`
+- `images`
 
 Important details:
 
@@ -195,6 +207,7 @@ Relevant environment variables:
 - `MAX_CONTEXT_TOKENS`
 - `MAX_OUTPUT_TOKENS`
 - `SUMMARY_MODEL`
+- `VISION_SUMMARY_MODEL`
 - `SUMMARY_TRIGGER_TOKENS`
 - `SUMMARY_KEEP_TOKENS`
 - `SUMMARY_CONTEXT_TOKENS`
@@ -210,6 +223,7 @@ Important notes:
 - `config.py` validates the API key required by `DEFAULT_MODEL`
 - The running bot may use a different reply model if `/model` has changed `active_model`
 - `SUMMARY_MODEL` is the dedicated summarization model and is independent of `/model` / `active_model`
+- `VISION_SUMMARY_MODEL` is the dedicated model that describes images on ingest; it is fixed and independent of `/model` and `SUMMARY_MODEL`. A missing provider key does not block startup — image persistence simply fails open.
 - `SUMMARY_CONTEXT_TOKENS` bounds only the summary model's input and is independent of `MAX_CONTEXT_TOKENS`, which bounds the reply model's input
 - `TAVILY_API_KEY` is optional; when blank, `tools.py` falls back to a DuckDuckGo-backed web search tool instead of Tavily
 

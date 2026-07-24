@@ -12,6 +12,7 @@ def _fresh_config(monkeypatch, env: dict):
         "MAX_OUTPUT_TOKENS", "SUMMARY_MODEL", "SUMMARY_TRIGGER_TOKENS",
         "SUMMARY_KEEP_TOKENS", "SUMMARY_CONTEXT_TOKENS", "MAX_GROUP_CONTEXT_MESSAGES",
         "TAVILY_API_KEY", "AUTHORIZED_USER_ID", "DATABASE_URL", "LOG_LEVEL",
+        "VISION_SUMMARY_MODEL",
     ]:
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
@@ -35,6 +36,7 @@ def test_defaults_apply_when_optional_unset(monkeypatch):
     assert cfg.config.MAX_OUTPUT_TOKENS == 2048
     assert cfg.config.MAX_CONTEXT_TOKENS == 16000
     assert cfg.config.SUMMARY_MODEL == "gpt-4.1-mini"
+    assert cfg.config.VISION_SUMMARY_MODEL == "gpt-5.4-nano"
     assert cfg.config.SUMMARY_TRIGGER_TOKENS == 10000
     assert cfg.config.SUMMARY_KEEP_TOKENS == 4000
     assert cfg.config.SUMMARY_CONTEXT_TOKENS == 14000
@@ -90,3 +92,40 @@ def test_invalid_summary_limits_exit(monkeypatch, caplog, overrides, message):
     with pytest.raises(SystemExit):
         cfg.config.validate()
     assert message in caplog.text
+
+
+def test_blank_int_vars_fall_back_to_defaults(monkeypatch):
+    """.env.example ships these keys blank, so "" must mean "use the default".
+
+    os.getenv's default only fires when a var is absent; a set-but-empty var
+    (cp .env.example .env, or an empty Railway variable) used to crash import
+    with ValueError: invalid literal for int().
+    """
+    cfg = _fresh_config(monkeypatch, dict(
+        VALID,
+        MODEL_TIMEOUT="",
+        MAX_CONTEXT_TOKENS="",
+        MAX_OUTPUT_TOKENS="",
+        SUMMARY_TRIGGER_TOKENS="",
+        SUMMARY_KEEP_TOKENS="",
+        SUMMARY_CONTEXT_TOKENS="  ",
+        MAX_GROUP_CONTEXT_MESSAGES="",
+    ))
+    assert cfg.config.MODEL_TIMEOUT == 60
+    assert cfg.config.MAX_CONTEXT_TOKENS == 16000
+    assert cfg.config.MAX_OUTPUT_TOKENS == 2048
+    assert cfg.config.SUMMARY_TRIGGER_TOKENS == 10000
+    assert cfg.config.SUMMARY_KEEP_TOKENS == 4000
+    assert cfg.config.SUMMARY_CONTEXT_TOKENS == 14000
+    assert cfg.config.MAX_GROUP_CONTEXT_MESSAGES == 500
+    cfg.config.validate()  # blank optionals must not fail validation
+
+
+def test_non_numeric_int_var_falls_back_to_default(monkeypatch):
+    cfg = _fresh_config(monkeypatch, dict(VALID, MODEL_TIMEOUT="banana"))
+    assert cfg.config.MODEL_TIMEOUT == 60
+
+
+def test_explicit_int_var_still_wins(monkeypatch):
+    cfg = _fresh_config(monkeypatch, dict(VALID, MODEL_TIMEOUT="90"))
+    assert cfg.config.MODEL_TIMEOUT == 90

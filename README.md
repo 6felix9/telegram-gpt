@@ -41,7 +41,7 @@ The current model list is defined in `agent.py` via `MODEL_PROVIDERS`, which rou
 
 Supported today:
 
-- OpenAI: `gpt-4.1-mini`, `gpt-5.4-mini`, `gpt-5.4`, `gpt-5.6-luna`, `gpt-5.6-terra`
+- OpenAI: `gpt-4.1-mini`, `gpt-5.4-nano`, `gpt-5.4-mini`, `gpt-5.4`, `gpt-5.6-luna`, `gpt-5.6-terra`
 - xAI: `grok-4.20-0309-reasoning`, `grok-4.20-0309-non-reasoning`, `grok-4-1-fast-reasoning`
 - Gemini: `gemini-3.1-flash-lite-preview`, `gemini-3.5-flash`
 
@@ -150,9 +150,11 @@ The current `docker-compose.yml` still mounts `./data:/app/data`, but the bot's 
 
 ### Images
 
-- Photo messages only trigger when the caption contains `chatgpt` or `@BOT_USERNAME`
-- The image itself is sent to the model at request time
-- The database stores a lightweight text marker such as `[image] <caption>` instead of the raw image payload
+- Photo messages only trigger a reply when the caption contains `chatgpt` or `@BOT_USERNAME`; on a triggering photo the image itself is sent to the model at request time
+- Every photo (triggering or not) is persisted on arrival: it is summarized with `VISION_SUMMARY_MODEL`, the raw bytes + summary are stored in the `images` table, and an `[image #<id>] <summary>` marker is written into the conversation so later turns can reference it
+- The `messages` audit table stores a lightweight text marker instead of the raw image payload:
+  `[image] <caption>` on arrival, rewritten to `[image #<id>] <caption> — <summary>` once the image is persisted
+- The agent can call `get_image(<id>)` to pull a stored image back into context; replying to an earlier photo points the agent at that photo's `[image #<id>]`
 
 ## Commands
 
@@ -195,6 +197,7 @@ Environment variables are loaded from `.env`.
 | `MAX_CONTEXT_TOKENS` | `16000` | Total history budget before reserve tokens |
 | `MAX_OUTPUT_TOKENS` | `2048` | Max tokens per reply; also the trimming middleware's reserve |
 | `SUMMARY_MODEL` | `gpt-4.1-mini` | Dedicated supported model used for rolling checkpoint summaries |
+| `VISION_SUMMARY_MODEL` | `gpt-5.4-nano` | Dedicated supported model used to describe images on ingest; independent of `/model` and `SUMMARY_MODEL` |
 | `SUMMARY_TRIGGER_TOKENS` | `10000` | Summarize older active messages on the next triggered request at this approximate token count |
 | `SUMMARY_KEEP_TOKENS` | `4000` | Approximate recent raw-message tokens retained after summarization |
 | `SUMMARY_CONTEXT_TOKENS` | `14000` | Input token budget for the summary model call itself, independent of `MAX_CONTEXT_TOKENS` |
@@ -257,8 +260,8 @@ Core modules:
 - `handlers/` - Telegram handlers, authorization checks, command implementations
 - `agent.py` - LangChain agent construction (`create_agent` + `init_chat_model`), provider/model routing (`MODEL_PROVIDERS`), rolling conversation summarization (`ResilientSummarizationMiddleware`), and the token-trimming middleware
 - `conversation_summary.py` - Fail-open summarization middleware, image sanitization for summary generation, and post-compaction audit callback wiring
-- `tools.py` - Agent tools
-- `prompt_builder.py` - System prompt assembly and outbound message formatting
+- `tools.py` - Agent tools: `web_search` (Tavily or DuckDuckGo behind one stable name) and `fetch_url`
+- `prompt_builder.py` - System prompt assembly (persona, generated tool section, conventions), the per-call context message, and outbound message formatting
 - `cache.py` - Small in-memory TTL cache used by the database layer
 - `scripts/chat_cli.py` - Local chat simulator
 
@@ -270,7 +273,7 @@ High-level flow:
 4. Store the incoming message or image marker in PostgreSQL.
 5. On a triggered request, `ResilientSummarizationMiddleware` may compact active checkpoint history at or above `SUMMARY_TRIGGER_TOKENS` (at most one successful compaction per `Agent.run`/tool loop).
 6. Request-time trimming keeps the reply-model input within the configured reserve.
-7. Build the system prompt and provider-specific message payload.
+7. Build the static system prompt (persona, then tools, then conventions), the provider-specific message payload, and append the per-call `## Current context` block after the trimmed history.
 8. Call the active model provider (reply/tool loop).
 9. Store the assistant response.
 10. Reply back to Telegram.
