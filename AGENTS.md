@@ -92,6 +92,7 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 - `active_personality` is a single global setting, not per-chat.
 - If the active personality has no matching row in `personality`, the default group prompt is used.
 - A personality prompt replaces only the persona. The generated tool section and the conventions (no Markdown, `[Name]:` prefixes, `[image #N]` markers) are appended after it by `prompt_builder.py` and cannot be overridden.
+- Because it replaces the whole persona, a personality row also drops the default behavior bullets — including `Never discuss which model or provider you are` and the conciseness rule. Restate anything you want to keep. Full guidance for writing one is in the comment above `agent.SYSTEM_PROMPT`.
 
 ### Active Model Behavior
 

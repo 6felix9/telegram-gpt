@@ -40,9 +40,38 @@ from token_budget import (
 logger = logging.getLogger(__name__)
 
 
-# Persona only. Transport rules (no Markdown, [Name]: prefixes, [image #N]
-# markers) live in PromptBuilder's Conventions section so that a custom
-# /personality prompt replaces the persona without dropping them.
+# Persona only. PromptBuilder assembles the final system prompt as:
+#
+#     <persona>  ->  ## Tools  ->  ## Conventions
+#
+# and appends a ## Current context message after the history. The two generated
+# sections are always present, so transport rules (no Markdown, [Name]:
+# prefixes, [image #N] markers) live there rather than here.
+#
+# WRITING A /personality PROMPT (group chats only — private always uses
+# SYSTEM_PROMPT below):
+#
+# A personality row replaces this whole persona string. It does NOT replace the
+# Tools or Conventions sections, and it cannot override them — they come after
+# it, and the model resolves conflicts in favour of the later, more specific
+# text. So:
+#
+#   Do not restate  - formatting rules (Markdown is already banned)
+#                   - what tools exist or when to use them
+#                   - the [Name]: message format or [image #N] markers
+#                   - the date, or who is being replied to (## Current context
+#                     supplies these fresh on every call)
+#
+#   Do supply       - identity and voice
+#                   - verbosity, since "be direct and concise" below is gone
+#                   - "Never discuss which model or provider you are", which is
+#                     also gone once this string is replaced
+#                   - multi-participant awareness (personality is group-only
+#                     and is a single global setting, never per-chat)
+#
+# Avoid ## headers inside a personality prompt: they would sit alongside the
+# real generated sections. Prefer expressing a "dramatic" persona through word
+# choice, since asterisks and headers are stripped by the Conventions rule.
 SYSTEM_PROMPT = """You are Tze Foong's Assistant, an AI helper in Telegram.
 
 Key behaviors:

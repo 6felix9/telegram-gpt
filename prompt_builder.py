@@ -72,7 +72,12 @@ class PromptBuilder:
             return datetime.now(ZoneInfo(self.fallback_timezone_name)).isoformat(timespec="seconds")
 
     def _resolve_group_personality_prompt(self) -> str | None:
-        """Resolve active group personality prompt from storage if available."""
+        """Resolve active group personality prompt from storage if available.
+
+        The returned prompt replaces the persona only; the Tools and Conventions
+        sections are still appended after it. See the comment above
+        agent.SYSTEM_PROMPT for what a personality row should and shouldn't say.
+        """
         if not self._get_active_personality or not self._get_personality_prompt:
             logger.debug("PromptBuilder: no personality resolvers configured")
             return None
