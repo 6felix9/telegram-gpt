@@ -28,11 +28,11 @@ The bot is no longer "OpenAI only". `agent.py` routes requests by model name to 
 2. `config.py` loads `.env` and validates required settings.
 3. `database/` owns PostgreSQL persistence, cached lookups, and global settings such as active model and active personality (schema itself is Alembic-managed — see Database Schema below).
 4. `handlers/` implements Telegram message handlers and bot commands.
-5. `agent.py` builds the LangChain agent (`create_agent` + `init_chat_model`), maps the active model to a provider via `MODEL_PROVIDERS`, wires `ResilientSummarizationMiddleware` as a persistent state-compaction hook before request trimming, and applies the `wrap_model_call` trimming middleware before each reply-model call.
-6. `prompt_builder.py` builds system prompts and normalizes message payloads for the agent.
+5. `agent.py` builds the LangChain agent (`create_agent` + `init_chat_model`), maps the active model to a provider via `MODEL_PROVIDERS`, wires `ResilientSummarizationMiddleware` as a persistent state-compaction hook before request trimming, and applies the `wrap_model_call` trimming middleware before each reply-model call. A final `wrap_model_call` runs innermost to append the per-call context block after trimming.
+6. `prompt_builder.py` builds system prompts (persona, generated tool section, conventions), the per-call `## Current context` message, and normalizes message payloads for the agent.
 7. The checkpointer (`PostgresSaver`, keyed by chat_id thread) persists conversation state across turns as a rolling summary plus recent raw messages. The previous fixed 500→400 message-count prune has been removed; rolling summarization is the sole bound on active checkpoint state. Token counting and model-input trimming remain separate.
 8. `cache.py` provides a small TTL cache used by the database layer.
-9. `tools.py` builds the agent's tools: a web search tool (Tavily when `TAVILY_API_KEY` is set, else a DuckDuckGo fallback) and a page-fetch tool, wired into the agent via `create_agent`.
+9. `tools.py` builds the agent's tools: a web search tool always named `web_search` (Tavily when `TAVILY_API_KEY` is set, else a DuckDuckGo fallback — both wrapped to a single `query` argument) and a page-fetch tool, wired into the agent via `create_agent`.
 10. `conversation_summary.py` owns fail-open summary generation, historical image sanitization for the summary model, and the post-compaction audit callback.
 
 ### Provider / API Routing
@@ -54,7 +54,7 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 5. History is loaded from the checkpoint thread for the chat.
 6. On a triggered `Agent.run()`, `ResilientSummarizationMiddleware` may compact older active messages into a summary plus recent raw suffix (at most one successful compaction per triggered invocation/tool loop). Summary failure leaves checkpoint state unchanged.
 7. `agent.py`'s trimming middleware (`wrap_model_call`) keeps as much recent context as possible while reserving response tokens.
-8. `prompt_builder` builds the system prompt and provider-specific message format.
+8. `prompt_builder` builds the static system prompt and provider-specific message format; the context middleware then appends the `## Current context` block (date/time, reply context) after the trimmed history.
 9. `agent.run()` continues the LangChain agent reply/tool loop with the active provider.
 10. On success, the assistant response is stored and sent back to Telegram. API failures raise `CompletionError` and are shown to the user without persisting an assistant message.
 
@@ -91,6 +91,7 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 - Group chats can use a database-backed personality prompt.
 - `active_personality` is a single global setting, not per-chat.
 - If the active personality has no matching row in `personality`, the default group prompt is used.
+- A personality prompt replaces only the persona. The generated tool section and the conventions (no Markdown, `[Name]:` prefixes, `[image #N]` markers) are appended after it by `prompt_builder.py` and cannot be overridden.
 
 ### Active Model Behavior
 
