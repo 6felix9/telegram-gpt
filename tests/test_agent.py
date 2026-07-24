@@ -749,3 +749,54 @@ def test_persist_image_audit_backfill_failure_keeps_checkpoint_and_id(monkeypatc
 
     assert image_id == 77
     graph.update_state.assert_called_once()
+
+
+def test_context_middleware_runs_last_so_its_message_survives_trimming():
+    a = _agent_with_fake(_FakeChat(messages=iter([])))
+    # Order matters: the dynamic prompt is outermost, the context block innermost.
+    assert a._middleware[0].__class__.__name__ != "ResilientSummarizationMiddleware"
+    assert a._middleware[1] is a._summary_middleware
+    assert a._middleware[-1].name == "add_context"
+
+
+def test_system_prompt_names_the_bound_tools():
+    fake = _CapturingFakeChat(messages=iter([AIMessage(content="ok")]))
+    a = _agent_with_fake(fake)
+    asyncio.run(a.run("chat-tools", HumanMessage(content="hello"), is_group=False))
+
+    system = fake.seen_message_batches[0][0]
+    assert system.type == "system"
+    assert "## Tools" in system.content
+    for name in ("web_search", "fetch_url"):
+        assert name in system.content
+
+
+def test_context_message_is_appended_after_history_and_not_persisted():
+    fake = _CapturingFakeChat(messages=iter([AIMessage(content="ok")]))
+    a = _agent_with_fake(fake)
+    asyncio.run(a.run(
+        "chat-ctx", HumanMessage(content="hello"), is_group=False,
+        reply_context=("Alice", "earlier note"),
+    ))
+
+    sent = fake.seen_message_batches[0]
+    assert "## Current context" in sent[-1].content
+    assert "earlier note" in sent[-1].content
+    # The ephemeral block must not reach the checkpoint.
+    state = a._graph.get_state(a._config_for("chat-ctx"))
+    assert not any(
+        "## Current context" in str(m.content) for m in state.values["messages"]
+    )
+
+
+def test_tool_names_handles_objects_and_schema_dicts():
+    tools = [
+        SimpleNamespace(name="web_search"),
+        {"name": "raw_dict_tool"},
+        {"function": {"name": "openai_style_tool"}},
+        {"unnamed": True},
+    ]
+    assert agent_mod._tool_names(tools) == [
+        "web_search", "raw_dict_tool", "openai_style_tool",
+    ]
+    assert agent_mod._tool_names(None) == []

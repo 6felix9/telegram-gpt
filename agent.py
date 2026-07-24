@@ -8,7 +8,7 @@ import logging
 from dataclasses import dataclass, field
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import dynamic_prompt
+from langchain.agents.middleware import dynamic_prompt, wrap_model_call
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import BaseMessage, HumanMessage, RemoveMessage
 
@@ -40,23 +40,53 @@ from token_budget import (
 logger = logging.getLogger(__name__)
 
 
+# Persona only. PromptBuilder assembles the final system prompt as:
+#
+#     <persona>  ->  ## Tools  ->  ## Conventions
+#
+# and appends a ## Current context message after the history. The two generated
+# sections are always present, so transport rules (no Markdown, [Name]:
+# prefixes, [image #N] markers) live there rather than here.
+#
+# WRITING A /personality PROMPT (group chats only — private always uses
+# SYSTEM_PROMPT below):
+#
+# A personality row replaces this whole persona string. It does NOT replace the
+# Tools or Conventions sections, and it cannot override them — they come after
+# it, and the model resolves conflicts in favour of the later, more specific
+# text. So:
+#
+#   Do not restate  - formatting rules (Markdown is already banned)
+#                   - what tools exist or when to use them
+#                   - the [Name]: message format or [image #N] markers
+#                   - the date, or who is being replied to (## Current context
+#                     supplies these fresh on every call)
+#
+#   Do supply       - identity and voice
+#                   - verbosity, since "be direct and concise" below is gone
+#                   - "Never discuss which model or provider you are", which is
+#                     also gone once this string is replaced
+#                   - multi-participant awareness (personality is group-only
+#                     and is a single global setting, never per-chat)
+#
+# Avoid ## headers inside a personality prompt: they would sit alongside the
+# real generated sections. Prefer expressing a "dramatic" persona through word
+# choice, since asterisks and headers are stripped by the Conventions rule.
 SYSTEM_PROMPT = """You are Tze Foong's Assistant, an AI helper in Telegram.
 
 Key behaviors:
 - Be direct and concise - no unnecessary preambles
 - Provide clear, helpful responses
-- Never claim to be OpenAI or reference being a language model
-- Respond naturally as a personal assistant
-- Do not use Markdown formatting (no **bold**, *italics*, headers, or bullet asterisks)"""
+- Never discuss which model or provider you are
+- Respond naturally as a personal assistant"""
 
 SYSTEM_PROMPT_GROUP = """You are Tze Foong's Assistant, an AI helper in Telegram group chats.
 
 Key behaviors:
 - Be direct and concise - no unnecessary preambles
 - Provide clear, helpful responses
-- Never claim to be OpenAI or reference being a language model
-- Track conversation context from multiple participants
-- Messages are formatted as [Name]: content - reply naturally without mimicking this format"""
+- Never discuss which model or provider you are
+- Track conversation context from multiple participants"""
 
 SUMMARY_MAX_OUTPUT_TOKENS = 1024
 
@@ -196,18 +226,52 @@ class AgentContext:
     summary_compacted: bool = False
 
 
-def _make_dynamic_prompt(prompt_builder):
-    """Build a @dynamic_prompt middleware that resolves the system prompt per call."""
+def _tool_names(tools) -> list[str]:
+    """Names of bound tools; entries may be BaseTool objects or raw schema dicts."""
+    names = []
+    for tool in tools or []:
+        name = getattr(tool, "name", None)
+        if name is None and isinstance(tool, dict):
+            name = tool.get("name") or tool.get("function", {}).get("name")
+        if name:
+            names.append(name)
+    return names
+
+
+def _make_dynamic_prompt(prompt_builder, tools):
+    """Build a @dynamic_prompt middleware that resolves the system prompt per call.
+
+    Tool names come from the request when available so the prompt describes the
+    tools actually bound for that call, falling back to the agent's own set.
+    """
 
     @dynamic_prompt
     def system_prompt(request) -> str:
         ctx = getattr(request.runtime, "context", None) or AgentContext()
         return prompt_builder.build_system_prompt(
             is_group=ctx.is_group,
-            reply_context=ctx.reply_context,
+            tool_names=_tool_names(getattr(request, "tools", None) or tools),
         )
 
     return system_prompt
+
+
+def _make_context_middleware(prompt_builder):
+    """Append the per-call context block after the history, non-destructively.
+
+    Registered last so it runs innermost — its message is added after trimming
+    and is never written back to the checkpoint.
+    """
+
+    @wrap_model_call
+    def add_context(request, handler):
+        ctx = getattr(request.runtime, "context", None) or AgentContext()
+        context_message = prompt_builder.build_context_message(ctx.reply_context)
+        return handler(
+            request.override(messages=[*request.messages, context_message])
+        )
+
+    return add_context
 
 
 class Agent:
@@ -241,9 +305,12 @@ class Agent:
             on_summary=self._record_summary if db is not None else None,
         )
         self._middleware = [
-            _make_dynamic_prompt(prompt_builder),
+            _make_dynamic_prompt(prompt_builder, self._tools),
             self._summary_middleware,
             make_trim_middleware(config.MAX_CONTEXT_TOKENS, config.MAX_OUTPUT_TOKENS),
+            # Last => innermost: the context block is appended after trimming,
+            # so it can never be trimmed away.
+            _make_context_middleware(prompt_builder),
         ]
         self.model_name = model_name
         self._provider = None

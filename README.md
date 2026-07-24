@@ -260,8 +260,8 @@ Core modules:
 - `handlers/` - Telegram handlers, authorization checks, command implementations
 - `agent.py` - LangChain agent construction (`create_agent` + `init_chat_model`), provider/model routing (`MODEL_PROVIDERS`), rolling conversation summarization (`ResilientSummarizationMiddleware`), and the token-trimming middleware
 - `conversation_summary.py` - Fail-open summarization middleware, image sanitization for summary generation, and post-compaction audit callback wiring
-- `tools.py` - Agent tools
-- `prompt_builder.py` - System prompt assembly and outbound message formatting
+- `tools.py` - Agent tools: `web_search` (Tavily or DuckDuckGo behind one stable name) and `fetch_url`
+- `prompt_builder.py` - System prompt assembly (persona, generated tool section, conventions), the per-call context message, and outbound message formatting
 - `cache.py` - Small in-memory TTL cache used by the database layer
 - `scripts/chat_cli.py` - Local chat simulator
 
@@ -273,7 +273,7 @@ High-level flow:
 4. Store the incoming message or image marker in PostgreSQL.
 5. On a triggered request, `ResilientSummarizationMiddleware` may compact active checkpoint history at or above `SUMMARY_TRIGGER_TOKENS` (at most one successful compaction per `Agent.run`/tool loop).
 6. Request-time trimming keeps the reply-model input within the configured reserve.
-7. Build the system prompt and provider-specific message payload.
+7. Build the static system prompt (persona, then tools, then conventions), the provider-specific message payload, and append the per-call `## Current context` block after the trimmed history.
 8. Call the active model provider (reply/tool loop).
 9. Store the assistant response.
 10. Reply back to Telegram.
