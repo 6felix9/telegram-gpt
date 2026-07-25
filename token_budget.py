@@ -50,6 +50,11 @@ def count_messages_tokens(messages: Iterable[BaseMessage]) -> int:
     return sum(count_message_tokens(message) for message in messages)
 
 
+def _is_summary_message(message: BaseMessage) -> bool:
+    """True for the rolling-summary HumanMessage inserted by summarization middleware."""
+    return message.additional_kwargs.get("lc_source") == "summarization"
+
+
 def trim_messages(
     messages: list[AnyMessage],
     max_context_tokens: int,
@@ -57,23 +62,34 @@ def trim_messages(
 ) -> list[AnyMessage]:
     """Keep as much recent history as fits the budget, newest-first.
 
-    Non-destructive: returns a new list. Always keeps the last message.
-    Never returns a list beginning with a ToolMessage orphaned from its
-    AIMessage tool call.
+    Non-destructive: returns a new list. Always keeps the last message and
+    any summarization-tagged rolling-summary messages (even if their combined
+    cost exceeds the budget). Never returns a list beginning with a
+    ToolMessage orphaned from its AIMessage tool call.
     """
     if not messages:
         return []
 
     available = max(0, max_context_tokens - reserve)
 
-    kept: list[AnyMessage] = [messages[-1]]
-    total = count_message_tokens(messages[-1])
-    for message in reversed(messages[:-1]):
-        cost = count_message_tokens(message)
+    always_keep = {len(messages) - 1}
+    for i, message in enumerate(messages):
+        if _is_summary_message(message):
+            always_keep.add(i)
+
+    total = sum(count_message_tokens(messages[i]) for i in always_keep)
+    selected = set(always_keep)
+
+    for i in range(len(messages) - 2, -1, -1):
+        if i in selected:
+            continue
+        cost = count_message_tokens(messages[i])
         if total + cost > available:
             break
-        kept.insert(0, message)
+        selected.add(i)
         total += cost
+
+    kept = [messages[i] for i in range(len(messages)) if i in selected]
 
     # Drop a leading orphaned ToolMessage (its AIMessage tool_call was trimmed).
     # Guard with len(kept) > 1 so the most-recent message is never removed.
