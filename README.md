@@ -186,11 +186,12 @@ Environment variables are loaded from `.env`.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Required | Bot token from BotFather |
-| `BOT_USERNAME` | Required | Bot username, with or without `@` |
+| `AUTHORIZED_USER_ID` | Required | Main admin Telegram user ID |
 | `OPENAI_API_KEY` | Required | OpenAI API key (always required for config validation) |
+| `DATABASE_URL` | Required | PostgreSQL / Neon connection string |
+| `BOT_USERNAME` | Empty | Optional; bot username, with or without `@` |
 | `XAI_API_KEY` | Empty | Required for Grok models |
 | `GEMINI_API_KEY` | Empty | Required for Gemini models |
-| `TAVILY_API_KEY` | Empty | Optional; powers the agent's web search tool. If blank, the search tool falls back to DuckDuckGo at runtime |
 | `DEFAULT_MODEL` | `gpt-5.4-mini` | Initial model used to seed `active_model` on first run |
 | `MODEL_TIMEOUT` | `60` | API timeout in seconds |
 | `MAX_CONTEXT_TOKENS` | `16000` | Total history budget before reserve tokens |
@@ -201,9 +202,12 @@ Environment variables are loaded from `.env`.
 | `SUMMARY_KEEP_TOKENS` | `4000` | Approximate recent raw-message tokens retained after summarization |
 | `SUMMARY_CONTEXT_TOKENS` | `14000` | Input token budget for the summary model call itself, independent of `MAX_CONTEXT_TOKENS` |
 | `MAX_GROUP_CONTEXT_MESSAGES` | `500` | Reserved for future group message retention; cleanup is currently disabled |
-| `AUTHORIZED_USER_ID` | Required | Main admin Telegram user ID |
-| `DATABASE_URL` | Required | PostgreSQL / Neon connection string |
+| `TAVILY_API_KEY` | Empty | Optional; powers the agent's web search tool. If blank, the search tool falls back to DuckDuckGo at runtime |
 | `LOG_LEVEL` | `INFO` | Python logging level |
+| `LANGSMITH_TRACING` | Empty | Optional; set to `true` to enable automatic LangSmith agent tracing |
+| `LANGSMITH_ENDPOINT` | Empty | Optional; LangSmith API endpoint URL |
+| `LANGSMITH_API_KEY` | Empty | Optional; LangSmith API key for telemetry |
+| `LANGSMITH_PROJECT` | Empty | Optional; LangSmith project name for environment isolation (e.g., `telegram-gpt-dev`, `telegram-gpt-prod`) |
 
 Notes:
 
