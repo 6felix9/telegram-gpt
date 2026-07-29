@@ -324,6 +324,24 @@ def test_voice_over_duration_cap_skips_download_and_stores_bare_marker(monkeypat
     assert db.add_message.call_args.kwargs["content"] == "[voice]"
 
 
+def test_voice_at_exact_duration_cap_is_transcribed_not_skipped(monkeypatch):
+    """Pins the inclusive boundary: a note of exactly MAX_VOICE_DURATION_SECONDS
+    is transcribed, not skipped. Only `duration > max_seconds` should skip."""
+    stub = AsyncMock(return_value="hi i am jack")
+    monkeypatch.setattr("handlers.message_handlers.transcribe", stub)
+    db = SimpleNamespace(add_message=Mock())
+    agent = SimpleNamespace(append_context_message=Mock())
+    prompt_builder = SimpleNamespace(to_lc_human_message=Mock(return_value="human"))
+    handlers_obj = _voice_handlers(db, agent, prompt_builder)
+
+    message = _voice_message(duration=_VoiceCfg.MAX_VOICE_DURATION_SECONDS)
+    asyncio.run(handlers_obj.voice_handler(SimpleNamespace(message=message), SimpleNamespace()))
+
+    stub.assert_awaited_once()
+    message.voice.get_file.assert_awaited_once()
+    assert db.add_message.call_args.kwargs["content"] == "[voice] hi i am jack"
+
+
 def test_failed_transcription_stores_bare_marker(monkeypatch):
     monkeypatch.setattr(
         "handlers.message_handlers.transcribe", AsyncMock(return_value=None)
@@ -383,6 +401,28 @@ def test_agent_append_context_message_failure_does_not_raise(monkeypatch):
 
     db.add_message.assert_called_once()
     agent.append_context_message.assert_called_once()
+
+
+def test_voice_message_with_no_from_user_does_not_raise(monkeypatch):
+    """A voice note with from_user=None must never escape voice_handler — if it
+    did, PTB's global error handler would reply_text() to it, violating the
+    passive-only constraint."""
+    monkeypatch.setattr(
+        "handlers.message_handlers.transcribe", AsyncMock(return_value="hi")
+    )
+    db = SimpleNamespace(add_message=Mock())
+    agent = SimpleNamespace(append_context_message=Mock())
+    prompt_builder = SimpleNamespace(to_lc_human_message=Mock(return_value="human"))
+    handlers_obj = _voice_handlers(db, agent, prompt_builder)
+
+    message = _voice_message()
+    message.from_user = None
+
+    # Must not raise.
+    asyncio.run(handlers_obj.voice_handler(SimpleNamespace(message=message), SimpleNamespace()))
+
+    db.add_message.assert_not_called()
+    agent.append_context_message.assert_not_called()
 
 
 def test_non_voice_update_is_ignored():

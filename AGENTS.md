@@ -66,7 +66,7 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 - Group user messages are formatted as `[Name]: message` before model submission; private messages are stored as plain text.
 - Replies still require `chatgpt` or `@BOT_USERNAME`, and authorization is still checked before the model runs.
 - Stored messages in the application `messages` table are retained for `MESSAGE_RETENTION_DAYS` (default 30 days) via a global age-based delete run by `scripts/cleanup_retention.py`; set `MESSAGE_RETENTION_DAYS=0` to disable. `/stats`'s reported "Since" date reflects the oldest row currently retained, not necessarily the chat's true first message, once retention has pruned older rows.
-- Latest LangGraph checkpoint state is a rolling summary plus at most the last exchange. Compaction runs before every checkpoint update — triggered or passive — so a purely passive chat is bounded too. Historical checkpoint rows are pruned to the newest checkpoint per thread by a global sweep in `scripts/cleanup_retention.py` (same preDeployCommand step); a chat whose compaction keeps failing open can still grow its *active* checkpoint state without limit, since the sweep only removes superseded historical rows, not the current one.
+- Latest LangGraph checkpoint state is a rolling summary plus at most the last exchange. Compaction runs before every checkpoint update — triggered or passive — so a purely passive chat is bounded too, including one that only ever receives passive voice notes. Historical checkpoint rows are pruned to the newest checkpoint per thread by a global sweep in `scripts/cleanup_retention.py` (same preDeployCommand step); a chat whose compaction keeps failing open can still grow its *active* checkpoint state without limit, since the sweep only removes superseded historical rows, not the current one.
 - `/clear` removes the current checkpoint's summary and recent messages; it does not delete `messages` or `conversation_summaries` audit rows.
 - A `conversation_summaries` audit row is inserted after the compacting `update_state` succeeds. Audit failures are logged and never block compaction or replies.
 
@@ -94,6 +94,7 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 - The transcript is stored as a `[voice] <transcript>` marker in both the `messages` audit table and the checkpoint, via the same `add_message` + `append_context_message` path non-triggering text uses. The group `[Name]: ` prefix is applied by `prompt_builder`, so a DM shows a bare `[voice] ...`.
 - Raw audio is not persisted — only the transcript.
 - Everything fails open. Over the duration cap, an API failure, or a silent recording all yield a bare `[voice]` marker; a Telegram download failure stores nothing. None of it is surfaced to the user.
+- A caption attached to a voice note is currently not preserved — only the transcript is stored; the caption text itself is dropped.
 
 ### Personality Behavior
 

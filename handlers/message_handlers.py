@@ -84,7 +84,7 @@ def build_voice_marker(transcript: str | None) -> str:
 
 
 class MessageHandlers:
-    """Text and photo Telegram handlers, bound to an explicit dependency set."""
+    """Text, photo, and voice Telegram handlers, bound to an explicit dependency set."""
 
     def __init__(self, deps: HandlerDependencies, processor: RequestProcessor):
         self._deps = deps
@@ -304,12 +304,14 @@ class MessageHandlers:
         if not message or not message.voice:
             return
 
-        chat_id = str(message.chat_id)
-        is_group = message.chat.type in ["group", "supergroup"]
-        sender_name = message.from_user.first_name or "Unknown"
+        chat_id = str(getattr(message, "chat_id", "?"))
 
         try:
-            marker = build_voice_marker(await self._voice_transcript(message))
+            chat_id = str(message.chat_id)
+            is_group = message.chat.type in ["group", "supergroup"]
+            sender_name = message.from_user.first_name or "Unknown"
+
+            marker = build_voice_marker(await self._voice_transcript(message, chat_id))
             self._deps.db.add_message(
                 chat_id=chat_id, role="user", content=marker,
                 user_id=message.from_user.id, message_id=message.message_id,
@@ -326,7 +328,7 @@ class MessageHandlers:
         except Exception:
             logger.exception("Failed to persist voice message for chat %s", chat_id)
 
-    async def _voice_transcript(self, message) -> str | None:
+    async def _voice_transcript(self, message, chat_id: str) -> str | None:
         """Download and transcribe a voice note.
 
         Returns None when the note is over the duration cap — checked against
@@ -344,4 +346,4 @@ class MessageHandlers:
             return None
         voice_file = await message.voice.get_file()
         audio_bytes = bytes(await voice_file.download_as_bytearray())
-        return await transcribe(audio_bytes, "voice.ogg", self._deps.config)
+        return await transcribe(audio_bytes, "voice.ogg", self._deps.config, chat_id=chat_id)

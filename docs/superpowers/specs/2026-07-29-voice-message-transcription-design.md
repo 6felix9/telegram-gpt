@@ -152,3 +152,4 @@ question about it.
   problem the `images` table already has)
 - Replying directly to a voice note
 - Re-transcription of stored notes
+- Known gap: a caption attached to a voice note is not preserved — only the transcript is stored, and the caption text itself is silently dropped
