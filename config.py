@@ -63,6 +63,15 @@ class Config:
     # Hard output cap for one generated summary.
     MAX_SUMMARY_OUTPUT = _int_env("MAX_SUMMARY_OUTPUT", 1000)
 
+    # Dedicated speech-to-text model for voice notes. Uses OpenAI's audio
+    # transcription endpoint, not init_chat_model — deliberately absent from
+    # MODEL_PROVIDERS. Fixed and independent of /model and SUMMARY_MODEL.
+    TRANSCRIPTION_MODEL = os.getenv("TRANSCRIPTION_MODEL", "gpt-transcribe")
+    # Voice notes longer than this are skipped before download, so an
+    # over-limit note costs nothing. At gpt-transcribe's $0.0045/min this caps
+    # a single note at roughly $0.045.
+    MAX_VOICE_DURATION_SECONDS = _int_env("MAX_VOICE_DURATION_SECONDS", 600)
+
     # Web search tool (Tavily); blank falls back to DuckDuckGo at runtime
     TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 
@@ -108,6 +117,7 @@ class Config:
             "MAX_OUTPUT_TOKENS",
             "SUMMARIZATION_TRIGGER",
             "MAX_SUMMARY_OUTPUT",
+            "MAX_VOICE_DURATION_SECONDS",
         ):
             if getattr(cls, name) <= 0:
                 errors.append(f"{name} must be positive")
