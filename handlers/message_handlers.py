@@ -1,4 +1,4 @@
-"""Telegram-facing text/photo intake: activation parsing, auth gate, and
+"""Telegram-facing text/photo/voice intake: activation parsing, auth gate, and
 handing off to the shared request processor."""
 import base64
 import logging
@@ -6,6 +6,7 @@ import re
 import uuid
 
 from agent import count_tokens
+from transcription import transcribe
 
 from .authorization import is_authorized
 from .handler_deps import HandlerDependencies
@@ -66,6 +67,20 @@ def extract_reply_data(message) -> tuple[str, str] | None:
 
     sender = reply.from_user.first_name if reply.from_user else "Unknown"
     return (sender, content)
+
+
+VOICE_MARKER = "[voice]"
+
+
+def build_voice_marker(transcript: str | None) -> str:
+    """Context marker for a voice note.
+
+    Bare when there is no transcript, so context still records that a voice
+    note happened. The group '[Name]: ' prefix is added later by
+    PromptBuilder.to_lc_human_message, never here.
+    """
+    text = (transcript or "").strip()
+    return f"{VOICE_MARKER} {text}" if text else VOICE_MARKER
 
 
 class MessageHandlers:
@@ -276,3 +291,57 @@ class MessageHandlers:
         except Exception:
             logger.exception("Failed to resolve replied image for chat %s", chat_id)
             return None
+
+    async def voice_handler(self, update, context):
+        """Passively transcribe a voice note into context.
+
+        Voice notes never trigger a reply — the user follows up with a normal
+        text message, by which point the transcript is already in history. No
+        auth gate for the same reason non-triggering text has none: nothing is
+        being asked of the bot. Fully fail-open, mirroring _passive_persist.
+        """
+        message = update.message
+        if not message or not message.voice:
+            return
+
+        chat_id = str(message.chat_id)
+        is_group = message.chat.type in ["group", "supergroup"]
+        sender_name = message.from_user.first_name or "Unknown"
+
+        try:
+            marker = build_voice_marker(await self._voice_transcript(message))
+            self._deps.db.add_message(
+                chat_id=chat_id, role="user", content=marker,
+                user_id=message.from_user.id, message_id=message.message_id,
+                token_count=count_tokens(marker),
+                sender_name=sender_name,
+                sender_username=message.from_user.username,
+                is_group_chat=is_group,
+            )
+            self._deps.agent.append_context_message(
+                chat_id,
+                self._deps.prompt_builder.to_lc_human_message(
+                    text=marker, is_group=is_group, sender_name=sender_name),
+            )
+        except Exception:
+            logger.exception("Failed to persist voice message for chat %s", chat_id)
+
+    async def _voice_transcript(self, message) -> str | None:
+        """Download and transcribe a voice note.
+
+        Returns None when the note is over the duration cap — checked against
+        the duration Telegram ships in the update, so an over-limit note is
+        skipped before any download and costs nothing. A download failure
+        raises, which the caller turns into "store nothing".
+        """
+        max_seconds = self._deps.config.MAX_VOICE_DURATION_SECONDS
+        duration = message.voice.duration or 0
+        if duration > max_seconds:
+            logger.info(
+                "Voice note is %ss, over the %ss cap; storing a bare marker",
+                duration, max_seconds,
+            )
+            return None
+        voice_file = await message.voice.get_file()
+        audio_bytes = bytes(await voice_file.download_as_bytearray())
+        return await transcribe(audio_bytes, "voice.ogg", self._deps.config)
