@@ -355,6 +355,36 @@ def test_download_failure_stores_nothing_and_does_not_raise(monkeypatch):
     agent.append_context_message.assert_not_called()
 
 
+def test_db_add_message_failure_does_not_raise(monkeypatch):
+    monkeypatch.setattr("handlers.message_handlers.transcribe", AsyncMock(return_value="x"))
+    db = SimpleNamespace(add_message=Mock(side_effect=RuntimeError("db down")))
+    agent = SimpleNamespace(append_context_message=Mock())
+    prompt_builder = SimpleNamespace(to_lc_human_message=Mock(return_value="human"))
+    handlers_obj = _voice_handlers(db, agent, prompt_builder)
+
+    message = _voice_message()
+    asyncio.run(handlers_obj.voice_handler(SimpleNamespace(message=message), SimpleNamespace()))
+
+    db.add_message.assert_called_once()
+    agent.append_context_message.assert_not_called()
+
+
+def test_agent_append_context_message_failure_does_not_raise(monkeypatch):
+    monkeypatch.setattr("handlers.message_handlers.transcribe", AsyncMock(return_value="x"))
+    db = SimpleNamespace(add_message=Mock())
+    agent = SimpleNamespace(
+        append_context_message=Mock(side_effect=RuntimeError("checkpoint down"))
+    )
+    prompt_builder = SimpleNamespace(to_lc_human_message=Mock(return_value="human"))
+    handlers_obj = _voice_handlers(db, agent, prompt_builder)
+
+    message = _voice_message()
+    asyncio.run(handlers_obj.voice_handler(SimpleNamespace(message=message), SimpleNamespace()))
+
+    db.add_message.assert_called_once()
+    agent.append_context_message.assert_called_once()
+
+
 def test_non_voice_update_is_ignored():
     db = SimpleNamespace(add_message=Mock())
     agent = SimpleNamespace(append_context_message=Mock())
