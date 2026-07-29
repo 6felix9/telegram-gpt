@@ -99,8 +99,8 @@ bot for anything.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `TRANSCRIPTION_MODEL` | `gpt-4o-transcribe` | Alternatives: `gpt-4o-mini-transcribe` (cheaper), `whisper-1` (legacy). Fixed and independent of `/model` and `SUMMARY_MODEL`, like `VISION_SUMMARY_MODEL`. |
-| `MAX_VOICE_DURATION_SECONDS` | `600` | Notes longer than this are skipped before download. |
+| `TRANSCRIPTION_MODEL` | `gpt-transcribe` | OpenAI's current transcription model ($0.0045/min, `v1/audio/transcriptions`). Fixed and independent of `/model` and `SUMMARY_MODEL`, like `VISION_SUMMARY_MODEL`. |
+| `MAX_VOICE_DURATION_SECONDS` | `600` | Notes longer than this are skipped before download. At `gpt-transcribe` pricing this caps a single note at roughly $0.045. |
 
 Neither blocks startup if unusable — transcription fails open. `OPENAI_API_KEY` is
 already required by `config.validate()`, so a missing key cannot occur in practice.
