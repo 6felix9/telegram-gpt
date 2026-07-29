@@ -37,6 +37,9 @@ GROUP_PREFIX_CONVENTION = (
 IMAGE_MARKER_CONVENTION = (
     '"[image #N] caption — description" stands in for an image shared earlier.'
 )
+VOICE_MARKER_CONVENTION = (
+    '"[voice] text" is the transcript of a voice message someone sent.'
+)
 
 
 class PromptBuilder:
@@ -124,6 +127,7 @@ class PromptBuilder:
         if is_group:
             lines.append(f"- {GROUP_PREFIX_CONVENTION}")
         lines.append(f"- {IMAGE_MARKER_CONVENTION}")
+        lines.append(f"- {VOICE_MARKER_CONVENTION}")
         return "\n".join(lines)
 
     def build_system_prompt(
