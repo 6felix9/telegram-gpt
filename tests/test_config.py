@@ -12,7 +12,7 @@ def _fresh_config(monkeypatch, env: dict):
         "MAX_OUTPUT_TOKENS", "SUMMARY_MODEL", "SUMMARY_TRIGGER_TOKENS",
         "SUMMARY_KEEP_TOKENS", "SUMMARY_CONTEXT_TOKENS", "MAX_GROUP_CONTEXT_MESSAGES",
         "TAVILY_API_KEY", "AUTHORIZED_USER_ID", "DATABASE_URL", "LOG_LEVEL",
-        "VISION_SUMMARY_MODEL",
+        "VISION_SUMMARY_MODEL", "MESSAGE_RETENTION_DAYS",
     ]:
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
@@ -44,6 +44,7 @@ def test_defaults_apply_when_optional_unset(monkeypatch):
     assert cfg.config.MODEL_TIMEOUT == 60
     assert cfg.config.BOT_USERNAME == ""
     assert cfg.config.TAVILY_API_KEY == ""
+    assert cfg.config.MESSAGE_RETENTION_DAYS == 30
 
 
 def test_validate_passes_with_only_required(monkeypatch):
@@ -92,6 +93,17 @@ def test_invalid_summary_limits_exit(monkeypatch, caplog, overrides, message):
     with pytest.raises(SystemExit):
         cfg.config.validate()
     assert message in caplog.text
+
+
+def test_negative_message_retention_days_fails_validation(monkeypatch):
+    cfg = _fresh_config(monkeypatch, dict(VALID, MESSAGE_RETENTION_DAYS="-1"))
+    with pytest.raises(SystemExit):
+        cfg.config.validate()
+
+
+def test_zero_message_retention_days_is_valid(monkeypatch):
+    cfg = _fresh_config(monkeypatch, dict(VALID, MESSAGE_RETENTION_DAYS="0"))
+    cfg.config.validate()  # 0 disables cleanup, must not raise
 
 
 def test_blank_int_vars_fall_back_to_defaults(monkeypatch):

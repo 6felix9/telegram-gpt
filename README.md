@@ -202,6 +202,7 @@ Environment variables are loaded from `.env`.
 | `SUMMARY_KEEP_TOKENS` | `4000` | Approximate recent raw-message tokens retained after summarization |
 | `SUMMARY_CONTEXT_TOKENS` | `14000` | Input token budget for the summary model call itself, independent of `MAX_CONTEXT_TOKENS` |
 | `MAX_GROUP_CONTEXT_MESSAGES` | `500` | Reserved for future group message retention; cleanup is currently disabled |
+| `MESSAGE_RETENTION_DAYS` | `30` | Age-based retention for the `messages` audit table; rows older than this many days are deleted by `scripts/cleanup_retention.py`. `0` disables cleanup |
 | `TAVILY_API_KEY` | Empty | Optional; powers the agent's web search tool. If blank, the search tool falls back to DuckDuckGo at runtime |
 | `LOG_LEVEL` | `INFO` | Python logging level |
 | `LANGSMITH_TRACING` | Empty | Optional; set to `true` to enable automatic LangSmith agent tracing |
@@ -282,7 +283,7 @@ High-level flow:
 
 ## Database
 
-Schema is managed with Alembic migrations in `alembic/versions/`. Run `alembic upgrade head` to apply pending migrations — this is done automatically by `start.sh` locally and by the Railway `preDeployCommand` in each environment.
+Schema is managed with Alembic migrations in `alembic/versions/`. Run `alembic upgrade head` to apply pending migrations — this, along with checkpointer setup and retention cleanup, is done automatically by `start.sh` locally and by the Railway `preDeployCommand` in each environment.
 
 Primary tables:
 
@@ -308,29 +309,30 @@ state; the previous fixed 500→400 message prune has been removed. A chat
 whose summarization keeps failing open, or one that stays purely passive and
 never triggers a reply, can grow its active checkpoint state without limit —
 there is no message-count fallback. This is monitored via the "summary failed
-open" structured log rather than enforced with a hard ceiling. Historical
-checkpoint rows still accumulate regardless, and the application `messages`
-audit table remains unbounded. Rolling summaries compact the latest logical
-state; they do not physically delete historical checkpoint rows.
+open" structured log rather than enforced with a hard ceiling. Rolling
+summaries compact the latest logical state; they do not by themselves
+physically delete historical checkpoint rows — that's handled by the sweep
+described below.
 
-Current storage-growth limitations:
+Current storage-growth handling:
 
-- LangGraph's historical checkpoint rows continue accumulating even though the bot only reads the latest state.
-- The application `messages` audit-log table is also unbounded while its database cleanup remains disabled.
-- `conversation_summaries` audit rows are also unbounded; audit insertion happens only after the exact generated summary ID is confirmed in result/checkpoint state, and audit failures never block compaction or replies.
+- `scripts/cleanup_retention.py` prunes LangGraph's historical checkpoint rows down to the newest checkpoint per thread on every deploy, since the bot only ever reads the latest state.
+- The same script deletes `messages` audit-log rows older than `MESSAGE_RETENTION_DAYS` (default 30 days; `0` disables it). `/stats`'s reported "Since" date reflects the oldest row currently retained, not necessarily the chat's true first message, once older rows have been pruned.
+- `conversation_summaries` audit rows are still unbounded; audit insertion happens only after the exact generated summary ID is confirmed in result/checkpoint state, and audit failures never block compaction or replies.
 - `/clear` removes the current checkpoint's summary and recent messages; it does not delete `messages` or `conversation_summaries` audit rows.
 
-Run this once per environment, after `alembic upgrade head` and before the bot starts (it is idempotent — safe to re-run):
+Run these once per environment, after `alembic upgrade head` and before the bot starts (both are idempotent — safe to re-run):
 
 ```bash
 python scripts/setup_checkpointer.py
+python scripts/cleanup_retention.py
 ```
 
-- Locally, `start.sh` already runs this step for you after migrations.
-- On Railway, add it to each environment's `preDeployCommand` so it runs before every deploy:
+- Locally, `start.sh` already runs these steps for you after migrations.
+- On Railway, add them to each environment's `preDeployCommand` so they run before every deploy:
 
   ```
-  alembic upgrade head && python scripts/setup_checkpointer.py
+  alembic upgrade head && python scripts/setup_checkpointer.py && python scripts/cleanup_retention.py
   ```
 
 ## Validation

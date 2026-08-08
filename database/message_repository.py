@@ -178,3 +178,23 @@ class MessageRepository:
 
         except Exception as e:
             logger.error(f"Failed to cleanup old messages: {e}", exc_info=True)
+
+    def delete_messages_older_than(self, days: int) -> int:
+        """Delete `messages` rows older than `days`, across all chats.
+        Returns the number of rows deleted.
+        """
+        try:
+            with self._conn.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "DELETE FROM messages WHERE timestamp < NOW() - %s * INTERVAL '1 day'",
+                        (days,),
+                    )
+                    deleted = cur.rowcount
+
+            logger.info(f"Deleted {deleted} messages older than {days} days")
+            return deleted
+
+        except Exception as e:
+            logger.error(f"Failed to delete old messages: {e}", exc_info=True)
+            raise
