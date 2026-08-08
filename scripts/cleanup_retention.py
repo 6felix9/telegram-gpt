@@ -69,8 +69,9 @@ def cleanup_messages() -> None:
             config.MESSAGE_RETENTION_DAYS,
         )
         return
-    db = Database(config.DATABASE_URL)
+    db = None
     try:
+        db = Database(config.DATABASE_URL)
         deleted = db.delete_messages_older_than(config.MESSAGE_RETENTION_DAYS)
         logger.info(
             "messages retention: deleted %d rows older than %d days",
@@ -79,7 +80,8 @@ def cleanup_messages() -> None:
     except Exception:
         logger.exception("messages retention cleanup failed; continuing")
     finally:
-        db.close()
+        if db is not None:
+            db.close()
 
 
 def cleanup_checkpoints() -> None:
