@@ -43,6 +43,9 @@ class Database:
     def cleanup_old_group_messages(self, chat_id: str, keep_recent: int = 100):
         return self._messages.cleanup_old_group_messages(chat_id, keep_recent)
 
+    def delete_messages_older_than(self, days: int) -> int:
+        return self._messages.delete_messages_older_than(days)
+
     # --- access ----------------------------------------------------------
     def grant_access(
         self, user_id: int, first_name: str | None = None, username: str | None = None

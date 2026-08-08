@@ -26,5 +26,8 @@ alembic upgrade head || exit 1
 echo "Setting up LangGraph checkpointer tables..."
 python scripts/setup_checkpointer.py || exit 1
 
+echo "Running retention cleanup..."
+python scripts/cleanup_retention.py || exit 1
+
 echo "Starting bot with fresh instance..."
 python bot.py

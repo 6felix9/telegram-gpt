@@ -421,6 +421,7 @@ class Agent:
                     {"messages": [human_message]},
                     config=self._config_for(chat_id),
                     context=context,
+                    durability="exit",
                 )
                 last_message = result["messages"][-1]
                 response = _message_text(last_message)
