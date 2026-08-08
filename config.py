@@ -74,6 +74,11 @@ class Config:
     # Group chat settings
     MAX_GROUP_CONTEXT_MESSAGES = _int_env("MAX_GROUP_CONTEXT_MESSAGES", 500)
 
+    # Retention: age-based deletion of `messages` audit rows, run out-of-band by
+    # scripts/cleanup_retention.py (wired into Railway preDeployCommand). 0 means
+    # "disabled" (skip the delete).
+    MESSAGE_RETENTION_DAYS = _int_env("MESSAGE_RETENTION_DAYS", 30)
+
     # Logging
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
@@ -109,6 +114,9 @@ class Config:
         ):
             if getattr(cls, name) <= 0:
                 errors.append(f"{name} must be positive")
+
+        if cls.MESSAGE_RETENTION_DAYS < 0:
+            errors.append("MESSAGE_RETENTION_DAYS must be >= 0 (0 disables retention cleanup)")
 
         if cls.SUMMARY_KEEP_TOKENS >= cls.SUMMARY_TRIGGER_TOKENS:
             errors.append(

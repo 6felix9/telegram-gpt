@@ -64,8 +64,8 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 - Non-triggering photo posts are no longer ignored: every photo is persisted on arrival (summarized and stored) so it can be referenced later — see Image Handling.
 - Group user messages are formatted as `[Name]: message` before model submission; private messages are stored as plain text.
 - Replies still require `chatgpt` or `@BOT_USERNAME`, and authorization is still checked before the model runs.
-- Stored messages in the application `messages` table currently have no retention limit. The previous probabilistic database cleanup remains disabled.
-- Latest LangGraph checkpoint state is a rolling summary plus recent raw messages. The previous 500→400 message-count prune has been removed; rolling summarization is the sole bound on active checkpoint state. Historical checkpoint rows still accumulate unbounded, and a chat whose summarization keeps failing open — or one that stays purely passive and never triggers a reply — can grow its active checkpoint state without limit.
+- Stored messages in the application `messages` table are retained for `MESSAGE_RETENTION_DAYS` (default 30 days) via a global age-based delete run by `scripts/cleanup_retention.py`; set `MESSAGE_RETENTION_DAYS=0` to disable. The previous probabilistic per-chat database cleanup (`cleanup_old_group_messages`) remains unused. `/stats`'s reported "Since" date reflects the oldest row currently retained, not necessarily the chat's true first message, once retention has pruned older rows.
+- Latest LangGraph checkpoint state is a rolling summary plus recent raw messages. The previous 500→400 message-count prune has been removed; rolling summarization is the sole bound on active checkpoint state. Historical checkpoint rows are pruned to the newest checkpoint per thread by a global sweep in `scripts/cleanup_retention.py` (same preDeployCommand step); a chat whose summarization keeps failing open — or one that stays purely passive and never triggers a reply — can still grow its *active* checkpoint state without limit, since the sweep only removes superseded historical rows, not the current one.
 - `/clear` removes the current checkpoint's summary and recent messages; it does not delete `messages` or `conversation_summaries` audit rows.
 - A `conversation_summaries` audit row is inserted only after the exact generated summary ID is confirmed in result/checkpoint state. Audit failures are logged and never block compaction or replies.
 
@@ -82,7 +82,7 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 - A fail-open path (`Agent.persist_image`) describes the image with `VISION_SUMMARY_MODEL`, stores the raw bytes + summary in the `images` table, and writes an `[image #<id>] <summary>` marker into the checkpoint. A triggered photo rewrites its raw-image message in place (same message id); a passively persisted photo appends the marker (fresh id). Any failure leaves state unchanged and is never surfaced to the user.
 - When a triggering message replies to an earlier photo, the handler resolves that photo's stored `[image #<id>]` (via `get_image_by_message_id`, persisting it on the fly if it was not stored yet) and passes it as reply context so the agent can call `get_image(<id>)`.
 - The agent can call the `get_image(image_id)` tool to pull a stored image back into context as a multimodal tool result when the summary is not enough. Retrieval is chat-scoped: a chat can only fetch its own images.
-- Persisted image bytes currently have no retention limit (deferred to the checkpoint/`messages` retention work).
+- Persisted image bytes currently have no retention limit (the checkpoint/`messages` retention work landed separately — see `MESSAGE_RETENTION_DAYS` and `scripts/cleanup_retention.py` — image bytes are not yet covered).
 - For summary generation only, historical data-URL image blocks in the older partition are replaced with `[image omitted]` (captions and surrounding text are preserved). Recent raw checkpoint messages are not mutated by that sanitization.
 
 ### Personality Behavior
@@ -164,7 +164,7 @@ CI runs the same compile and pytest steps on pull requests and pushes to `main` 
 
 - Two Railway environments: `production` (tracks the `main` branch) and `dev` (tracks the `dev` branch), each with its own Telegram bot and Neon database branch.
 - `.github/workflows/deploy-railway.yml` auto-deploys on push: `dev` → the Railway `dev` environment, `main` → `production`. No manual `railway up` needed for normal development.
-- Each environment's Railway `preDeployCommand` runs `alembic upgrade head && python scripts/setup_checkpointer.py` before the bot starts — the first applies the Alembic-managed app schema, the second (idempotent) creates/upgrades the LangGraph checkpointer tables, which are versioned by `langgraph-checkpoint-postgres` and intentionally not part of Alembic.
+- Each environment's Railway `preDeployCommand` runs `alembic upgrade head && python scripts/setup_checkpointer.py && python scripts/cleanup_retention.py` before the bot starts — the first applies the Alembic-managed app schema, the second (idempotent) creates/upgrades the LangGraph checkpointer tables (versioned by `langgraph-checkpoint-postgres`, intentionally not part of Alembic), and the third (idempotent, fail-open) prunes old `messages` rows and superseded historical checkpoint rows.
 
 ## Branching & Release Workflow
 
@@ -214,6 +214,7 @@ Relevant environment variables:
 - `SUMMARY_KEEP_TOKENS`
 - `SUMMARY_CONTEXT_TOKENS`
 - `MAX_GROUP_CONTEXT_MESSAGES`
+- `MESSAGE_RETENTION_DAYS`
 - `TAVILY_API_KEY`
 - `LOG_LEVEL`
 - `LANGSMITH_TRACING`
@@ -230,6 +231,7 @@ Important notes:
 - `VISION_SUMMARY_MODEL` is the dedicated model that describes images on ingest; it is fixed and independent of `/model` and `SUMMARY_MODEL`. A missing provider key does not block startup — image persistence simply fails open.
 - `SUMMARY_CONTEXT_TOKENS` bounds only the summary model's input and is independent of `MAX_CONTEXT_TOKENS`, which bounds the reply model's input
 - `TAVILY_API_KEY` is optional; when blank, `tools.py` falls back to a DuckDuckGo-backed web search tool instead of Tavily
+- `MESSAGE_RETENTION_DAYS` bounds only the `messages` audit table via `scripts/cleanup_retention.py`; it does not affect checkpoint state or `/stats` beyond changing which rows remain to aggregate. `0` disables the delete.
 
 ## Commands
 
