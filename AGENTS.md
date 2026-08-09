@@ -172,6 +172,7 @@ CI runs the same compile and pytest steps on pull requests and pushes to `main` 
 - Pushing to `dev` auto-deploys to the Railway `dev` environment (its own bot + Neon database branch) — use this to verify changes against a real bot before they reach users.
 - Promote `dev` → `main` via a pull request (`gh pr create --base main --head dev`), not a local merge and direct push. This keeps a reviewable diff and CI status visible before anything reaches production.
 - `main` is a protected branch: direct pushes are blocked and the `CI` workflow must pass before a PR can merge.
+- Merge method is a manual choice at merge time (GitHub has no per-base-branch enforcement for this): squash-and-merge feature branches into `dev`, but use a plain merge commit for `dev` → `main` promotion PRs so `main`'s history stays a readable sequence of releases rather than one flattened commit.
 
 ## Database Schema
 
