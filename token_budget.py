@@ -65,11 +65,10 @@ def _drop_orphaned_tool_messages(messages: list[AnyMessage]) -> list[AnyMessage]
 
     for message in messages:
         if isinstance(message, AIMessage):
-            retained_tool_call_ids.update(
-                tool_call["id"]
-                for tool_call in message.tool_calls
-                if tool_call.get("id")
-            )
+            for tool_call in message.tool_calls:
+                tool_call_id = tool_call.get("id")
+                if tool_call_id:
+                    retained_tool_call_ids.add(tool_call_id)
             valid_messages.append(message)
         elif isinstance(message, ToolMessage):
             if message.tool_call_id in retained_tool_call_ids:
