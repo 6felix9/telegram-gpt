@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import Callable
 from zoneinfo import ZoneInfo
@@ -36,6 +37,9 @@ GROUP_PREFIX_CONVENTION = (
 )
 IMAGE_MARKER_CONVENTION = (
     '"[image #N] caption — description" stands in for an image shared earlier.'
+)
+VOICE_MARKER_CONVENTION = (
+    '"[voice] text" is the transcript of a voice message someone sent.'
 )
 
 
@@ -124,6 +128,7 @@ class PromptBuilder:
         if is_group:
             lines.append(f"- {GROUP_PREFIX_CONVENTION}")
         lines.append(f"- {IMAGE_MARKER_CONVENTION}")
+        lines.append(f"- {VOICE_MARKER_CONVENTION}")
         return "\n".join(lines)
 
     def build_system_prompt(
@@ -188,9 +193,16 @@ class PromptBuilder:
             logger.debug("PromptBuilder: added reply context to context message")
         return SystemMessage(content="\n".join(lines))
 
-    @staticmethod
-    def _group_prefix(text: str, sender_name: str) -> str:
-        if text.startswith("["):
+    # Matches an already-applied "[Name]: " sender prefix, so re-formatting
+    # history is idempotent. Content markers like "[voice] ..." or
+    # "[image #7] ..." do NOT match this (no colon right after the bracket),
+    # so they still get the sender prefix — see the marker table in
+    # docs/superpowers/specs/2026-07-29-voice-message-transcription-design.md.
+    _ALREADY_PREFIXED_RE = re.compile(r"^\[[^\]]*\]: ")
+
+    @classmethod
+    def _group_prefix(cls, text: str, sender_name: str) -> str:
+        if cls._ALREADY_PREFIXED_RE.match(text):
             return text
         return f"[{sender_name}]: {text}"
 

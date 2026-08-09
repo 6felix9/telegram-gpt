@@ -156,6 +156,10 @@ The current `docker-compose.yml` still mounts `./data:/app/data`, but the bot's 
   `[image] <caption>` on arrival, rewritten to `[image #<id>] <caption> — <summary>` once the image is persisted
 - The agent can call `get_image(<id>)` to pull a stored image back into context; replying to an earlier photo points the agent at that photo's `[image #<id>]`
 
+### Voice Notes
+
+- Voice notes are transcribed with `TRANSCRIPTION_MODEL` and stored as a `[voice] <transcript>` marker so later turns can reference what was said. They never trigger a reply on their own — ask about one with a normal `chatgpt` message
+
 ## Commands
 
 All commands are restricted to the main admin (`AUTHORIZED_USER_ID`); granted users can chat with the bot but cannot run commands:
@@ -201,6 +205,8 @@ Environment variables are loaded from `.env`.
 | `SUMMARIZATION_TRIGGER` | `8000` | Compact the checkpoint when active message state reaches this approximate token count |
 | `MAX_SUMMARY_OUTPUT` | `1000` | Hard output cap for one generated summary; must be less than `SUMMARIZATION_TRIGGER` |
 | `MESSAGE_RETENTION_DAYS` | `30` | Age-based retention for the `messages` audit table; rows older than this many days are deleted by `scripts/cleanup_retention.py`. `0` disables cleanup |
+| `TRANSCRIPTION_MODEL` | `gpt-transcribe` | Speech-to-text model for voice notes; uses OpenAI's audio endpoint, independent of `/model` and `SUMMARY_MODEL` |
+| `MAX_VOICE_DURATION_SECONDS` | `600` | Voice notes longer than this are skipped before download and stored as a bare `[voice]` marker |
 | `TAVILY_API_KEY` | Empty | Optional; powers the agent's web search tool. If blank, the search tool falls back to DuckDuckGo at runtime |
 | `LOG_LEVEL` | `INFO` | Python logging level |
 | `LANGSMITH_TRACING` | Empty | Optional; set to `true` to enable automatic LangSmith agent tracing |
@@ -262,13 +268,14 @@ Core modules:
 - `agent.py` - LangChain agent construction (`create_agent` + `init_chat_model`), provider/model routing (`MODEL_PROVIDERS`), checkpoint compaction (`_compact_if_needed`), and the token-trimming middleware
 - `conversation_summary.py` - Fail-open summarization middleware, image sanitization for summary generation, and post-compaction audit callback wiring
 - `tools.py` - Agent tools: `web_search` (Tavily or DuckDuckGo behind one stable name) and `fetch_url`
+- `transcription.py` - Wraps OpenAI's audio transcription endpoint for passive voice-note handling
 - `prompt_builder.py` - System prompt assembly (persona, generated tool section, conventions), the per-call context message, and outbound message formatting
 - `cache.py` - Small in-memory TTL cache used by the database layer
 - `scripts/chat_cli.py` - Local chat simulator
 
 High-level flow:
 
-1. Receive Telegram text or photo update.
+1. Receive Telegram text, photo, or voice update.
 2. Detect activation via `chatgpt` or `@BOT_USERNAME`.
 3. Authorize the user.
 4. Store the incoming message or image marker in PostgreSQL.

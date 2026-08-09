@@ -47,7 +47,7 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 
 ### Message Flow
 
-1. A text or photo message arrives.
+1. A text, photo, or voice message arrives.
 2. `handlers.extract_keyword()` checks for `chatgpt` and optional `@BOT_USERNAME`.
 3. Authorization is checked.
 4. The incoming user message is stored in `messages`.
@@ -62,10 +62,11 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 
 - Non-triggering **text** messages are stored in both private DMs and groups (audit `messages` table + checkpoint via `append_context_message`), even when they do not trigger a reply.
 - Non-triggering photo posts are no longer ignored: every photo is persisted on arrival (summarized and stored) so it can be referenced later — see Image Handling.
+- Voice notes are always passive context: they never trigger a reply, and every voice note is transcribed and stored on arrival regardless of who sent it — see Voice Handling.
 - Group user messages are formatted as `[Name]: message` before model submission; private messages are stored as plain text.
 - Replies still require `chatgpt` or `@BOT_USERNAME`, and authorization is still checked before the model runs.
 - Stored messages in the application `messages` table are retained for `MESSAGE_RETENTION_DAYS` (default 30 days) via a global age-based delete run by `scripts/cleanup_retention.py`; set `MESSAGE_RETENTION_DAYS=0` to disable. `/stats`'s reported "Since" date reflects the oldest row currently retained, not necessarily the chat's true first message, once retention has pruned older rows.
-- Latest LangGraph checkpoint state is a rolling summary plus at most the last exchange. Compaction runs before every checkpoint update — triggered or passive — so a purely passive chat is bounded too. Historical checkpoint rows are pruned to the newest checkpoint per thread by a global sweep in `scripts/cleanup_retention.py` (same preDeployCommand step); a chat whose compaction keeps failing open can still grow its *active* checkpoint state without limit, since the sweep only removes superseded historical rows, not the current one.
+- Latest LangGraph checkpoint state is a rolling summary plus at most the last exchange. Compaction runs before every checkpoint update — triggered or passive — so a purely passive chat is bounded too, including one that only ever receives passive voice notes. Historical checkpoint rows are pruned to the newest checkpoint per thread by a global sweep in `scripts/cleanup_retention.py` (same preDeployCommand step); a chat whose compaction keeps failing open can still grow its *active* checkpoint state without limit, since the sweep only removes superseded historical rows, not the current one.
 - `/clear` removes the current checkpoint's summary and recent messages; it does not delete `messages` or `conversation_summaries` audit rows.
 - A `conversation_summaries` audit row is inserted after the compacting `update_state` succeeds. Audit failures are logged and never block compaction or replies.
 
@@ -84,6 +85,16 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 - The agent can call the `get_image(image_id)` tool to pull a stored image back into context as a multimodal tool result when the summary is not enough. Retrieval is chat-scoped: a chat can only fetch its own images.
 - Persisted image bytes currently have no retention limit (the checkpoint/`messages` retention work landed separately — see `MESSAGE_RETENTION_DAYS` and `scripts/cleanup_retention.py` — image bytes are not yet covered).
 - For summary generation only, historical data-URL image blocks are replaced with `[image omitted]` (captions and surrounding text are preserved). The checkpoint messages themselves are never mutated by that sanitization.
+
+### Voice Handling
+
+- `voice_handler()` runs on every voice note (`filters.VOICE`). Voice notes are **passive context only** — the bot never replies to one. To ask about a voice note, send a normal `chatgpt` message; the transcript is already in history.
+- Like non-triggering text, voice notes are stored from anyone in the chat; no authorization check runs, because nothing is being asked of the bot.
+- `transcription.transcribe()` owns the sole call to OpenAI's audio endpoint. It is not a LangChain chat model and is absent from `MODEL_PROVIDERS`.
+- The transcript is stored as a `[voice] <transcript>` marker in both the `messages` audit table and the checkpoint, via the same `add_message` + `append_context_message` path non-triggering text uses. The group `[Name]: ` prefix is applied by `prompt_builder`, so a DM shows a bare `[voice] ...`.
+- Raw audio is not persisted — only the transcript.
+- Everything fails open. Over the duration cap, an API failure, or a silent recording all yield a bare `[voice]` marker; a Telegram download failure stores nothing. None of it is surfaced to the user.
+- A caption attached to a voice note is currently not preserved — only the transcript is stored; the caption text itself is dropped.
 
 ### Personality Behavior
 
@@ -158,7 +169,7 @@ Tests cover pure logic only (no Telegram, database, or live API calls):
 - `conversation_summary.ConversationCompactor.plan()` / `select_keep_suffix()` — checkpoint compaction planning (`tests/test_conversation_summary.py`)
 - `conversation_summary.ConversationCompactor.plan()` / `select_keep_suffix()` — checkpoint compaction planning (`tests/test_conversation_summary.py`)
 - `agent.resolve_model()` / `MODEL_PROVIDERS` — model/provider validation used by `/model` (`tests/test_model_resolution.py`)
-- `tests/test_config.py`, `tests/test_prompt_builder.py`, `tests/test_tools.py`, `tests/test_agent.py`, `tests/test_extract_keyword.py` cover config validation, prompt formatting, tools, agent wiring, and keyword extraction respectively
+- `tests/test_config.py`, `tests/test_prompt_builder.py`, `tests/test_tools.py`, `tests/test_agent.py`, `tests/test_extract_keyword.py`, `tests/test_transcription.py` cover config validation, prompt formatting, tools, agent wiring, keyword extraction, and voice transcription respectively
 
 CI runs the same compile and pytest steps on pull requests and pushes to `main` (`.github/workflows/ci.yml`).
 
@@ -216,6 +227,8 @@ Relevant environment variables:
 - `SUMMARIZATION_TRIGGER`
 - `MAX_SUMMARY_OUTPUT`
 - `MESSAGE_RETENTION_DAYS`
+- `TRANSCRIPTION_MODEL`
+- `MAX_VOICE_DURATION_SECONDS`
 - `TAVILY_API_KEY`
 - `LOG_LEVEL`
 - `LANGSMITH_TRACING`
@@ -231,6 +244,8 @@ Important notes:
 - `SUMMARY_MODEL` is the dedicated summarization model and is independent of `/model` / `active_model`
 - `VISION_SUMMARY_MODEL` is the dedicated model that describes images on ingest; it is fixed and independent of `/model` and `SUMMARY_MODEL`. A missing provider key does not block startup — image persistence simply fails open.
 - `SUMMARIZATION_TRIGGER` is the only threshold governing checkpoint size, and is independent of `MAX_CONTEXT_TOKENS`, which bounds a single reply-model call. `MAX_SUMMARY_OUTPUT` must be less than `SUMMARIZATION_TRIGGER`
+- `TRANSCRIPTION_MODEL` is the dedicated speech-to-text model for voice notes. It calls OpenAI's audio transcription endpoint directly and is deliberately *not* in `MODEL_PROVIDERS`; it is fixed and independent of `/model` and `SUMMARY_MODEL`
+- `MAX_VOICE_DURATION_SECONDS` bounds transcription cost: a longer note is skipped before download and recorded as a bare `[voice]` marker
 - `TAVILY_API_KEY` is optional; when blank, `tools.py` falls back to a DuckDuckGo-backed web search tool instead of Tavily
 - `MESSAGE_RETENTION_DAYS` bounds only the `messages` audit table via `scripts/cleanup_retention.py`; it does not affect checkpoint state or `/stats` beyond changing which rows remain to aggregate. `0` disables the delete.
 
