@@ -13,6 +13,7 @@ def _fresh_config(monkeypatch, env: dict):
         "MAX_SUMMARY_OUTPUT",
         "TAVILY_API_KEY", "AUTHORIZED_USER_ID", "DATABASE_URL", "LOG_LEVEL",
         "VISION_SUMMARY_MODEL", "MESSAGE_RETENTION_DAYS",
+        "TRANSCRIPTION_MODEL", "MAX_VOICE_DURATION_SECONDS",
     ]:
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
@@ -133,3 +134,29 @@ def test_non_numeric_int_var_falls_back_to_default(monkeypatch):
 def test_explicit_int_var_still_wins(monkeypatch):
     cfg = _fresh_config(monkeypatch, dict(VALID, MODEL_TIMEOUT="90"))
     assert cfg.config.MODEL_TIMEOUT == 90
+
+
+def test_voice_defaults_apply_when_unset(monkeypatch):
+    cfg = _fresh_config(monkeypatch, VALID)
+    assert cfg.config.TRANSCRIPTION_MODEL == "gpt-transcribe"
+    assert cfg.config.MAX_VOICE_DURATION_SECONDS == 600
+
+
+def test_voice_settings_read_from_env(monkeypatch):
+    cfg = _fresh_config(
+        monkeypatch,
+        {**VALID, "TRANSCRIPTION_MODEL": "whisper-1", "MAX_VOICE_DURATION_SECONDS": "90"},
+    )
+    assert cfg.config.TRANSCRIPTION_MODEL == "whisper-1"
+    assert cfg.config.MAX_VOICE_DURATION_SECONDS == 90
+
+
+def test_blank_max_voice_duration_falls_back_to_default(monkeypatch):
+    cfg = _fresh_config(monkeypatch, {**VALID, "MAX_VOICE_DURATION_SECONDS": ""})
+    assert cfg.config.MAX_VOICE_DURATION_SECONDS == 600
+
+
+def test_non_positive_max_voice_duration_is_rejected(monkeypatch):
+    cfg = _fresh_config(monkeypatch, {**VALID, "MAX_VOICE_DURATION_SECONDS": "0"})
+    with pytest.raises(SystemExit):
+        cfg.config.validate()

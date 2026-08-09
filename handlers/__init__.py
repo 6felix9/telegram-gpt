@@ -67,6 +67,11 @@ async def photo_handler(update, context):
     return await _message_handlers.photo_handler(update, context)
 
 
+async def voice_handler(update, context):
+    assert _message_handlers is not None, "init_handlers() must run before voice_handler()"
+    return await _message_handlers.voice_handler(update, context)
+
+
 async def clear_command(update, context):
     assert _command_handlers is not None, "init_handlers() must run before clear_command()"
     return await _command_handlers.clear_command(update, context)

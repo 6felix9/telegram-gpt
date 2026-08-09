@@ -112,3 +112,25 @@ def test_context_message_omits_reply_line_when_absent():
     msg = _pb().build_context_message()
     assert "Date/time:" in msg.content
     assert "Replying to" not in msg.content
+
+
+def test_conventions_explain_the_voice_marker():
+    out = _pb().build_system_prompt(is_group=False)
+    assert "[voice]" in out
+
+
+def test_voice_convention_present_in_groups_too():
+    out = _pb().build_system_prompt(is_group=True)
+    assert "[voice]" in out
+
+
+def test_voice_marker_renders_with_group_prefix():
+    msg = _pb().to_lc_human_message(
+        text="[voice] hi i am jack", is_group=True, sender_name="Jack")
+    assert msg.content == "[Jack]: [voice] hi i am jack"
+
+
+def test_voice_marker_renders_bare_in_dm():
+    msg = _pb().to_lc_human_message(
+        text="[voice] hi i am jack", is_group=False, sender_name="Jack")
+    assert msg.content == "[voice] hi i am jack"
