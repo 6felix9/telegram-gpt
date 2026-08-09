@@ -507,7 +507,8 @@ class Agent:
         sender_name: str | None = None,
     ) -> int | None:
         """Fail-open post-reply step: describe the image, store it durably, and
-        write its [image #id] marker into the checkpoint. A brand-new
+        write its [image #id] marker into the checkpoint. Compaction runs first,
+        so the marker always lands on already-compacted state. A brand-new
         image_message_id appends the marker (passive photo ingest); reusing the
         raw image's id rewrites it in place (triggered reply). In groups the
         marker keeps the '[sender]:' prefix so later turns can still attribute
@@ -515,6 +516,7 @@ class Agent:
         as-is. Returns the stored image id, or None if nothing was persisted."""
         if self._graph is None or self._vision_summary_model is None or self._db is None:
             return None
+        await self._compact_if_needed(chat_id)
         try:
             summary = await asyncio.to_thread(
                 make_image_summary, self._vision_summary_model, image_data_url

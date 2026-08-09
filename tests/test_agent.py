@@ -473,6 +473,9 @@ def _agent_for_persist(vision_model, db, graph):
     a._vision_summary_model = vision_model
     a._db = db
     a._graph = graph
+    a._compactor = SimpleNamespace(plan=lambda *args, **kwargs: None)
+    if not hasattr(graph, "get_state"):
+        graph.get_state = Mock(return_value=SimpleNamespace(values={"messages": []}))
     return a
 
 
@@ -497,6 +500,25 @@ def test_persist_image_stores_and_rewrites_checkpoint(monkeypatch):
     rewritten = rewrite["messages"][0]
     assert rewritten.id == "mid-1"
     assert rewritten.content == "[image #77] pets — A tabby cat."
+
+
+def test_persist_image_compacts_before_writing_marker(monkeypatch):
+    # Passive photo ingest is persist_image's only checkpoint write, so it must
+    # compact itself rather than relying on run()/append_context_message().
+    monkeypatch.setattr(agent_mod, "make_image_summary", lambda m, url: "A tabby cat.")
+    db = _persist_db()
+    graph = SimpleNamespace(update_state=Mock())
+    a = _agent_for_persist(vision_model=object(), db=db, graph=graph)
+    calls = []
+    a._compactor = SimpleNamespace(plan=lambda *args, **kwargs: calls.append("planned") or None)
+
+    asyncio.run(a.persist_image(
+        chat_id="123", image_message_id="mid-1",
+        image_data_url="data:image/jpeg;base64,AAAA",
+        mime_type="image/jpeg", caption="pets", telegram_message_id=9,
+    ))
+
+    assert calls == ["planned"]
 
 
 def test_persist_image_returns_saved_id(monkeypatch):
