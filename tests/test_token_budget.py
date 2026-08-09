@@ -59,3 +59,25 @@ def test_trim_messages_keeps_summary_and_last_even_over_budget():
     messages = [summary, latest]
     kept = token_budget.trim_messages(messages, max_context_tokens=1, reserve=0)
     assert kept == [summary, latest]
+
+
+def test_trim_messages_keeps_heading_summary_under_pressure():
+    summary = HumanMessage(content="## Conversation summary\n\nearlier conversation summary")
+    big = "word " * 200
+    messages = [
+        summary,
+        HumanMessage(content=big),
+        HumanMessage(content=big),
+        HumanMessage(content="latest"),
+    ]
+    max_context = (
+        token_budget.count_message_tokens(summary)
+        + token_budget.count_message_tokens(messages[-1])
+        + 5
+    )
+    kept = token_budget.trim_messages(messages, max_context_tokens=max_context, reserve=0)
+    assert kept[0] is summary
+    assert kept[-1] is messages[-1]
+    assert summary in kept
+    assert len(kept) == 2
+

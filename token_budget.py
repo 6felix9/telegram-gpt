@@ -51,8 +51,11 @@ def count_messages_tokens(messages: Iterable[BaseMessage]) -> int:
 
 
 def _is_summary_message(message: BaseMessage) -> bool:
-    """True for the rolling-summary HumanMessage inserted by summarization middleware."""
-    return message.additional_kwargs.get("lc_source") == "summarization"
+    """True for the rolling-summary HumanMessage inserted by checkpoint compaction."""
+    if message.additional_kwargs.get("lc_source") == "summarization":
+        return True
+    text = _message_text(message)
+    return text.startswith("## Conversation summary")
 
 
 def trim_messages(
