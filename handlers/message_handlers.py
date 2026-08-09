@@ -1,5 +1,6 @@
 """Telegram-facing text/photo/voice intake: activation parsing, auth gate, and
 handing off to the shared request processor."""
+import asyncio
 import base64
 import logging
 import re
@@ -105,7 +106,8 @@ class MessageHandlers:
 
         if not has_keyword:
             try:
-                self._deps.db.add_message(
+                await asyncio.to_thread(
+                    self._deps.db.add_message,
                     chat_id=chat_id, role="user", content=message.text,
                     user_id=user_id, message_id=message.message_id,
                     token_count=count_tokens(message.text),
@@ -238,7 +240,8 @@ class MessageHandlers:
             caption_marker = (
                 f"[image] {message.caption}" if message.caption else "[image]"
             )
-            self._deps.db.add_message(
+            await asyncio.to_thread(
+                self._deps.db.add_message,
                 chat_id=chat_id, role="user", content=caption_marker,
                 user_id=user_id, message_id=message.message_id,
                 token_count=count_tokens(caption_marker),
@@ -312,7 +315,8 @@ class MessageHandlers:
             sender_name = message.from_user.first_name or "Unknown"
 
             marker = build_voice_marker(await self._voice_transcript(message, chat_id))
-            self._deps.db.add_message(
+            await asyncio.to_thread(
+                self._deps.db.add_message,
                 chat_id=chat_id, role="user", content=marker,
                 user_id=message.from_user.id, message_id=message.message_id,
                 token_count=count_tokens(marker),
