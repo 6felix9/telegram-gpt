@@ -103,6 +103,14 @@ def main():
             )
         )
 
+        # Voice handler (voice notes — transcribed passively, never replied to)
+        application.add_handler(
+            MessageHandler(
+                filters.VOICE,
+                handlers.voice_handler
+            )
+        )
+
         # Command handlers
         application.add_handler(CommandHandler("clear", handlers.clear_command))
         application.add_handler(CommandHandler("stats", handlers.stats_command))

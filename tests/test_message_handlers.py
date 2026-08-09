@@ -6,7 +6,9 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from handlers.handler_deps import HandlerDependencies
-from handlers.message_handlers import MessageHandlers, extract_keyword, extract_reply_data
+from handlers.message_handlers import (
+    MessageHandlers, build_voice_marker, extract_keyword, extract_reply_data,
+)
 from handlers.request_processor import RequestProcessor
 
 
@@ -55,7 +57,7 @@ def _message(text=None, chat_id=123, chat_type="private", user_id=7):
 
 def test_non_triggering_message_stores_context_without_reply():
     db = SimpleNamespace(add_message=Mock())
-    agent = SimpleNamespace(append_context_message=Mock(), run=AsyncMock())
+    agent = SimpleNamespace(append_context_message=AsyncMock(), run=AsyncMock())
     prompt_builder = SimpleNamespace(to_lc_human_message=Mock(return_value="human"))
     handlers_obj = _handlers(db=db, agent=agent, prompt_builder=prompt_builder)
 
@@ -66,7 +68,7 @@ def test_non_triggering_message_stores_context_without_reply():
     asyncio.run(handlers_obj.message_handler(update, context))
 
     db.add_message.assert_called_once()
-    agent.append_context_message.assert_called_once_with("123", "human")
+    agent.append_context_message.assert_awaited_once_with("123", "human")
     agent.run.assert_not_awaited()
 
 
@@ -227,3 +229,212 @@ def test_reply_to_photo_persists_when_not_yet_stored():
     assert agent.persist_image.await_args.kwargs["telegram_message_id"] == 88
     assert agent.run.await_args.kwargs["reply_context"] == (
         "Cara", "[image #9] a plate of noodles")
+
+
+def _voice_message(duration=5, chat_id=123, chat_type="private", user_id=7):
+    voice_file = SimpleNamespace(
+        download_as_bytearray=AsyncMock(return_value=bytearray(b"ogg-bytes"))
+    )
+    voice = SimpleNamespace(duration=duration, get_file=AsyncMock(return_value=voice_file))
+    return SimpleNamespace(
+        text=None, photo=None, caption=None, voice=voice, chat_id=chat_id,
+        chat=SimpleNamespace(type=chat_type),
+        from_user=SimpleNamespace(id=user_id, first_name="Jack", username="jack"),
+        message_id=1, reply_to_message=None, reply_text=AsyncMock(),
+    )
+
+
+class _VoiceCfg:
+    AUTHORIZED_USER_ID = "1"
+    MAX_VOICE_DURATION_SECONDS = 600
+
+
+def _voice_handlers(db, agent, prompt_builder):
+    deps = HandlerDependencies(
+        config=_VoiceCfg, db=db, agent=agent,
+        prompt_builder=prompt_builder, bot_username="mybot",
+    )
+    return MessageHandlers(deps, RequestProcessor(deps))
+
+
+def test_build_voice_marker_with_transcript():
+    assert build_voice_marker("hi i am jack") == "[voice] hi i am jack"
+
+
+def test_build_voice_marker_strips_whitespace():
+    assert build_voice_marker("  hi i am jack  ") == "[voice] hi i am jack"
+
+
+def test_build_voice_marker_bare_without_transcript():
+    assert build_voice_marker(None) == "[voice]"
+    assert build_voice_marker("") == "[voice]"
+    assert build_voice_marker("   ") == "[voice]"
+
+
+def test_voice_message_stores_transcript_and_never_replies(monkeypatch):
+    monkeypatch.setattr(
+        "handlers.message_handlers.transcribe", AsyncMock(return_value="hi i am jack")
+    )
+    db = SimpleNamespace(add_message=Mock())
+    agent = SimpleNamespace(append_context_message=AsyncMock(), run=AsyncMock())
+    prompt_builder = SimpleNamespace(to_lc_human_message=Mock(return_value="human"))
+    handlers_obj = _voice_handlers(db, agent, prompt_builder)
+
+    message = _voice_message()
+    asyncio.run(handlers_obj.voice_handler(SimpleNamespace(message=message), SimpleNamespace()))
+
+    assert db.add_message.call_args.kwargs["content"] == "[voice] hi i am jack"
+    agent.append_context_message.assert_awaited_once_with("123", "human")
+    assert prompt_builder.to_lc_human_message.call_args.kwargs["text"] == "[voice] hi i am jack"
+    agent.run.assert_not_awaited()
+    message.reply_text.assert_not_awaited()
+
+
+def test_voice_message_in_group_passes_sender_for_prefix(monkeypatch):
+    monkeypatch.setattr(
+        "handlers.message_handlers.transcribe", AsyncMock(return_value="hi i am jack")
+    )
+    db = SimpleNamespace(add_message=Mock())
+    agent = SimpleNamespace(append_context_message=AsyncMock())
+    prompt_builder = SimpleNamespace(to_lc_human_message=Mock(return_value="human"))
+    handlers_obj = _voice_handlers(db, agent, prompt_builder)
+
+    message = _voice_message(chat_type="group")
+    asyncio.run(handlers_obj.voice_handler(SimpleNamespace(message=message), SimpleNamespace()))
+
+    kwargs = prompt_builder.to_lc_human_message.call_args.kwargs
+    assert kwargs["is_group"] is True
+    assert kwargs["sender_name"] == "Jack"
+    assert db.add_message.call_args.kwargs["is_group_chat"] is True
+    agent.append_context_message.assert_awaited_once_with("123", "human")
+
+
+def test_voice_over_duration_cap_skips_download_and_stores_bare_marker(monkeypatch):
+    stub = AsyncMock(return_value="should not be called")
+    monkeypatch.setattr("handlers.message_handlers.transcribe", stub)
+    db = SimpleNamespace(add_message=Mock())
+    agent = SimpleNamespace(append_context_message=AsyncMock())
+    prompt_builder = SimpleNamespace(to_lc_human_message=Mock(return_value="human"))
+    handlers_obj = _voice_handlers(db, agent, prompt_builder)
+
+    message = _voice_message(duration=601)
+    asyncio.run(handlers_obj.voice_handler(SimpleNamespace(message=message), SimpleNamespace()))
+
+    stub.assert_not_awaited()
+    message.voice.get_file.assert_not_awaited()
+    assert db.add_message.call_args.kwargs["content"] == "[voice]"
+    agent.append_context_message.assert_awaited_once_with("123", "human")
+
+
+def test_voice_at_exact_duration_cap_is_transcribed_not_skipped(monkeypatch):
+    """Pins the inclusive boundary: a note of exactly MAX_VOICE_DURATION_SECONDS
+    is transcribed, not skipped. Only `duration > max_seconds` should skip."""
+    stub = AsyncMock(return_value="hi i am jack")
+    monkeypatch.setattr("handlers.message_handlers.transcribe", stub)
+    db = SimpleNamespace(add_message=Mock())
+    agent = SimpleNamespace(append_context_message=AsyncMock())
+    prompt_builder = SimpleNamespace(to_lc_human_message=Mock(return_value="human"))
+    handlers_obj = _voice_handlers(db, agent, prompt_builder)
+
+    message = _voice_message(duration=_VoiceCfg.MAX_VOICE_DURATION_SECONDS)
+    asyncio.run(handlers_obj.voice_handler(SimpleNamespace(message=message), SimpleNamespace()))
+
+    stub.assert_awaited_once()
+    message.voice.get_file.assert_awaited_once()
+    assert db.add_message.call_args.kwargs["content"] == "[voice] hi i am jack"
+    agent.append_context_message.assert_awaited_once_with("123", "human")
+
+
+def test_failed_transcription_stores_bare_marker(monkeypatch):
+    monkeypatch.setattr(
+        "handlers.message_handlers.transcribe", AsyncMock(return_value=None)
+    )
+    db = SimpleNamespace(add_message=Mock())
+    agent = SimpleNamespace(append_context_message=AsyncMock())
+    prompt_builder = SimpleNamespace(to_lc_human_message=Mock(return_value="human"))
+    handlers_obj = _voice_handlers(db, agent, prompt_builder)
+
+    asyncio.run(handlers_obj.voice_handler(
+        SimpleNamespace(message=_voice_message()), SimpleNamespace()))
+
+    assert db.add_message.call_args.kwargs["content"] == "[voice]"
+    agent.append_context_message.assert_awaited_once_with("123", "human")
+
+
+def test_download_failure_stores_nothing_and_does_not_raise(monkeypatch):
+    monkeypatch.setattr("handlers.message_handlers.transcribe", AsyncMock(return_value="x"))
+    db = SimpleNamespace(add_message=Mock())
+    agent = SimpleNamespace(append_context_message=AsyncMock())
+    prompt_builder = SimpleNamespace(to_lc_human_message=Mock(return_value="human"))
+    handlers_obj = _voice_handlers(db, agent, prompt_builder)
+
+    message = _voice_message()
+    message.voice.get_file = AsyncMock(side_effect=RuntimeError("telegram down"))
+
+    asyncio.run(handlers_obj.voice_handler(SimpleNamespace(message=message), SimpleNamespace()))
+
+    db.add_message.assert_not_called()
+    agent.append_context_message.assert_not_awaited()
+
+
+def test_db_add_message_failure_does_not_raise(monkeypatch):
+    monkeypatch.setattr("handlers.message_handlers.transcribe", AsyncMock(return_value="x"))
+    db = SimpleNamespace(add_message=Mock(side_effect=RuntimeError("db down")))
+    agent = SimpleNamespace(append_context_message=AsyncMock())
+    prompt_builder = SimpleNamespace(to_lc_human_message=Mock(return_value="human"))
+    handlers_obj = _voice_handlers(db, agent, prompt_builder)
+
+    message = _voice_message()
+    asyncio.run(handlers_obj.voice_handler(SimpleNamespace(message=message), SimpleNamespace()))
+
+    db.add_message.assert_called_once()
+    agent.append_context_message.assert_not_awaited()
+
+
+def test_agent_append_context_message_failure_does_not_raise(monkeypatch):
+    monkeypatch.setattr("handlers.message_handlers.transcribe", AsyncMock(return_value="x"))
+    db = SimpleNamespace(add_message=Mock())
+    agent = SimpleNamespace(
+        append_context_message=AsyncMock(side_effect=RuntimeError("checkpoint down"))
+    )
+    prompt_builder = SimpleNamespace(to_lc_human_message=Mock(return_value="human"))
+    handlers_obj = _voice_handlers(db, agent, prompt_builder)
+
+    message = _voice_message()
+    asyncio.run(handlers_obj.voice_handler(SimpleNamespace(message=message), SimpleNamespace()))
+
+    db.add_message.assert_called_once()
+    agent.append_context_message.assert_awaited_once()
+
+
+def test_voice_message_with_no_from_user_does_not_raise(monkeypatch):
+    """A voice note with from_user=None must never escape voice_handler — if it
+    did, PTB's global error handler would reply_text() to it, violating the
+    passive-only constraint."""
+    monkeypatch.setattr(
+        "handlers.message_handlers.transcribe", AsyncMock(return_value="hi")
+    )
+    db = SimpleNamespace(add_message=Mock())
+    agent = SimpleNamespace(append_context_message=AsyncMock())
+    prompt_builder = SimpleNamespace(to_lc_human_message=Mock(return_value="human"))
+    handlers_obj = _voice_handlers(db, agent, prompt_builder)
+
+    message = _voice_message()
+    message.from_user = None
+
+    # Must not raise.
+    asyncio.run(handlers_obj.voice_handler(SimpleNamespace(message=message), SimpleNamespace()))
+
+    db.add_message.assert_not_called()
+    agent.append_context_message.assert_not_awaited()
+
+
+def test_non_voice_update_is_ignored():
+    db = SimpleNamespace(add_message=Mock())
+    agent = SimpleNamespace(append_context_message=AsyncMock())
+    handlers_obj = _voice_handlers(db, agent, SimpleNamespace())
+
+    message = SimpleNamespace(voice=None)
+    asyncio.run(handlers_obj.voice_handler(SimpleNamespace(message=message), SimpleNamespace()))
+
+    db.add_message.assert_not_called()

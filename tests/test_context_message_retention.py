@@ -1,22 +1,19 @@
 """Non-triggering text context retention for group and private chats."""
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import handlers
 
 
 def _run_message_handler(message):
-    database = SimpleNamespace(
-        add_message=Mock(),
-        cleanup_old_group_messages=Mock(),
-    )
+    database = SimpleNamespace(add_message=Mock())
     bot_agent = SimpleNamespace(
-        append_context_message=Mock(),
+        append_context_message=AsyncMock(),
         run=Mock(),
     )
     prompt_builder = SimpleNamespace(to_lc_human_message=Mock(return_value="human"))
-    config = SimpleNamespace(MAX_GROUP_CONTEXT_MESSAGES=500, AUTHORIZED_USER_ID="1")
+    config = SimpleNamespace(AUTHORIZED_USER_ID="1")
 
     handlers.init_handlers(config, database, bot_agent, prompt_builder, "mybot")
 
@@ -29,7 +26,7 @@ def _run_message_handler(message):
     return database, bot_agent, prompt_builder
 
 
-def test_non_triggering_group_message_stores_context_without_cleanup():
+def test_non_triggering_group_message_stores_context():
     message = SimpleNamespace(
         text="ordinary group message",
         chat_id=-123,
@@ -46,9 +43,8 @@ def test_non_triggering_group_message_stores_context_without_cleanup():
     prompt_builder.to_lc_human_message.assert_called_once_with(
         text="ordinary group message", is_group=True, sender_name="Alice",
     )
-    bot_agent.append_context_message.assert_called_once_with("-123", "human")
+    bot_agent.append_context_message.assert_awaited_once_with("-123", "human")
     bot_agent.run.assert_not_called()
-    database.cleanup_old_group_messages.assert_not_called()
 
 
 def test_non_triggering_private_message_stores_context():
@@ -68,5 +64,5 @@ def test_non_triggering_private_message_stores_context():
     prompt_builder.to_lc_human_message.assert_called_once_with(
         text="flight is at 6", is_group=False, sender_name="Alice",
     )
-    bot_agent.append_context_message.assert_called_once_with("99", "human")
+    bot_agent.append_context_message.assert_awaited_once_with("99", "human")
     bot_agent.run.assert_not_called()

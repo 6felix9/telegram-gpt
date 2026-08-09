@@ -13,7 +13,7 @@ The bot is no longer "OpenAI only". `agent.py` routes requests by model name to 
 
 ## Project Structure & Module Organization
 
-- Core runtime files at repo root: `bot.py` (entrypoint), `agent.py` (LangChain agent construction, provider/model routing via `MODEL_PROVIDERS`, summarization middleware wiring, and request-time trimming), `conversation_summary.py` (`ResilientSummarizationMiddleware` and summary helpers), `tools.py` (agent tools: web search and page fetch), `prompt_builder.py` (system prompt construction and message formatting), `cache.py` (TTL cache helpers), `config.py` (env-driven settings), `app_factory.py` (composition for `bot.py` / `scripts/chat_cli.py`), `model_registry.py`, and `token_budget.py`.
+- Core runtime files at repo root: `bot.py` (entrypoint), `agent.py` (LangChain agent construction, provider/model routing via `MODEL_PROVIDERS`, checkpoint compaction, and request-time trimming), `conversation_summary.py` (`ConversationCompactor` and summary helpers), `tools.py` (agent tools: web search and page fetch), `prompt_builder.py` (system prompt construction and message formatting), `cache.py` (TTL cache helpers), `config.py` (env-driven settings), `app_factory.py` (composition for `bot.py` / `scripts/chat_cli.py`), `model_registry.py`, and `token_budget.py`.
 - `handlers/` is a package for Telegram handlers and commands (`handlers/__init__.py` facade plus `handler_deps`, `authorization`, `request_processor`, `message_handlers`, `command_handlers`).
 - `database/` is a package for PostgreSQL/Neon persistence (`database/__init__.py` `Database` facade plus `db_connection`, `message_repository`, `access_repository`, `settings_repository`, `summary_audit_repository`).
 - Operational docs live in `README.md` and `AGENTS.md`.
@@ -28,16 +28,16 @@ The bot is no longer "OpenAI only". `agent.py` routes requests by model name to 
 2. `config.py` loads `.env` and validates required settings.
 3. `database/` owns PostgreSQL persistence, cached lookups, and global settings such as active model and active personality (schema itself is Alembic-managed — see Database Schema below).
 4. `handlers/` implements Telegram message handlers and bot commands.
-5. `agent.py` builds the LangChain agent (`create_agent` + `init_chat_model`), maps the active model to a provider via `MODEL_PROVIDERS`, wires `ResilientSummarizationMiddleware` as a persistent state-compaction hook before request trimming, and applies the `wrap_model_call` trimming middleware before each reply-model call. A final `wrap_model_call` runs innermost to append the per-call context block after trimming.
+5. `agent.py` builds the LangChain agent (`create_agent` + `init_chat_model`), maps the active model to a provider via `MODEL_PROVIDERS`, applies the `wrap_model_call` trimming middleware before each reply-model call, and calls `_compact_if_needed()` before every checkpoint update. A final `wrap_model_call` runs innermost to append the per-call context block after trimming.
 6. `prompt_builder.py` builds system prompts (persona, generated tool section, conventions), the per-call `## Current context` message, and normalizes message payloads for the agent.
-7. The checkpointer (`PostgresSaver`, keyed by chat_id thread) persists conversation state across turns as a rolling summary plus recent raw messages. The previous fixed 500→400 message-count prune has been removed; rolling summarization is the sole bound on active checkpoint state. Token counting and model-input trimming remain separate.
+7. The checkpointer (`PostgresSaver`, keyed by chat_id thread) persists conversation state as a rolling summary plus at most the last exchange. Compaction is the sole bound on active checkpoint state. Token counting and model-input trimming remain separate.
 8. `cache.py` provides a small TTL cache used by the database layer.
 9. `tools.py` builds the agent's tools: a web search tool always named `web_search` (Tavily when `TAVILY_API_KEY` is set, else a DuckDuckGo fallback — both wrapped to a single `query` argument) and a page-fetch tool, wired into the agent via `create_agent`.
-10. `conversation_summary.py` owns fail-open summary generation, historical image sanitization for the summary model, and the post-compaction audit callback.
+10. `conversation_summary.py` owns pure compaction logic: the summary prompt, historical image sanitization, summary validation, keep-suffix selection, and `ConversationCompactor.plan()`. It holds no graph reference — `agent.Agent` owns checkpoint access and the fail-open boundary.
 
 ### Provider / API Routing
 
-`agent.py` is the source of truth: `MODEL_PROVIDERS` maps each supported model name to its provider, and `resolve_model()` turns that into the provider-prefixed id (`"<provider>:<model>"`) passed to LangChain's `init_chat_model()`, which builds the actual chat model per provider. `openai_client.py` and `token_manager.py` have been retired — the agent (`agent.py`, built on `create_agent`) and its middleware now own model routing, rolling summarization, and context trimming.
+`agent.py` is the source of truth: `MODEL_PROVIDERS` maps each supported model name to its provider, and `resolve_model()` turns that into the provider-prefixed id (`"<provider>:<model>"`) passed to LangChain's `init_chat_model()`, which builds the actual chat model per provider. `openai_client.py` and `token_manager.py` have been retired — the agent (`agent.py`, built on `create_agent`) now owns model routing, checkpoint compaction, and context trimming.
 
 - OpenAI models use `init_chat_model` with the `openai` provider
 - xAI models use the `xai` provider
@@ -47,12 +47,12 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 
 ### Message Flow
 
-1. A text or photo message arrives.
+1. A text, photo, or voice message arrives.
 2. `handlers.extract_keyword()` checks for `chatgpt` and optional `@BOT_USERNAME`.
 3. Authorization is checked.
 4. The incoming user message is stored in `messages`.
 5. History is loaded from the checkpoint thread for the chat.
-6. On a triggered `Agent.run()`, `ResilientSummarizationMiddleware` may compact older active messages into a summary plus recent raw suffix (at most one successful compaction per triggered invocation/tool loop). Summary failure leaves checkpoint state unchanged.
+6. Before the incoming message is appended, `Agent._compact_if_needed()` replaces active state with a summary plus the last exchange if it has reached `SUMMARIZATION_TRIGGER`. This runs on triggered and passive messages alike. Compaction failure leaves checkpoint state unchanged.
 7. `agent.py`'s trimming middleware (`wrap_model_call`) keeps as much recent context as possible while reserving response tokens.
 8. `prompt_builder` builds the static system prompt and provider-specific message format; the context middleware then appends the `## Current context` block (date/time, reply context) after the trimmed history.
 9. `agent.run()` continues the LangChain agent reply/tool loop with the active provider.
@@ -62,12 +62,13 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 
 - Non-triggering **text** messages are stored in both private DMs and groups (audit `messages` table + checkpoint via `append_context_message`), even when they do not trigger a reply.
 - Non-triggering photo posts are no longer ignored: every photo is persisted on arrival (summarized and stored) so it can be referenced later — see Image Handling.
+- Voice notes are always passive context: they never trigger a reply, and every voice note is transcribed and stored on arrival regardless of who sent it — see Voice Handling.
 - Group user messages are formatted as `[Name]: message` before model submission; private messages are stored as plain text.
 - Replies still require `chatgpt` or `@BOT_USERNAME`, and authorization is still checked before the model runs.
-- Stored messages in the application `messages` table currently have no retention limit. The previous probabilistic database cleanup remains disabled.
-- Latest LangGraph checkpoint state is a rolling summary plus recent raw messages. The previous 500→400 message-count prune has been removed; rolling summarization is the sole bound on active checkpoint state. Historical checkpoint rows still accumulate unbounded, and a chat whose summarization keeps failing open — or one that stays purely passive and never triggers a reply — can grow its active checkpoint state without limit.
+- Stored messages in the application `messages` table are retained for `MESSAGE_RETENTION_DAYS` (default 30 days) via a global age-based delete run by `scripts/cleanup_retention.py`; set `MESSAGE_RETENTION_DAYS=0` to disable. `/stats`'s reported "Since" date reflects the oldest row currently retained, not necessarily the chat's true first message, once retention has pruned older rows.
+- Latest LangGraph checkpoint state is a rolling summary plus at most the last exchange. Compaction runs before every checkpoint update — triggered or passive — so a purely passive chat is bounded too, including one that only ever receives passive voice notes. Historical checkpoint rows are pruned to the newest checkpoint per thread by a global sweep in `scripts/cleanup_retention.py` (same preDeployCommand step); a chat whose compaction keeps failing open can still grow its *active* checkpoint state without limit, since the sweep only removes superseded historical rows, not the current one.
 - `/clear` removes the current checkpoint's summary and recent messages; it does not delete `messages` or `conversation_summaries` audit rows.
-- A `conversation_summaries` audit row is inserted only after the exact generated summary ID is confirmed in result/checkpoint state. Audit failures are logged and never block compaction or replies.
+- A `conversation_summaries` audit row is inserted after the compacting `update_state` succeeds. Audit failures are logged and never block compaction or replies.
 
 ### Image Handling
 
@@ -82,8 +83,18 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 - A fail-open path (`Agent.persist_image`) describes the image with `VISION_SUMMARY_MODEL`, stores the raw bytes + summary in the `images` table, and writes an `[image #<id>] <summary>` marker into the checkpoint. A triggered photo rewrites its raw-image message in place (same message id); a passively persisted photo appends the marker (fresh id). Any failure leaves state unchanged and is never surfaced to the user.
 - When a triggering message replies to an earlier photo, the handler resolves that photo's stored `[image #<id>]` (via `get_image_by_message_id`, persisting it on the fly if it was not stored yet) and passes it as reply context so the agent can call `get_image(<id>)`.
 - The agent can call the `get_image(image_id)` tool to pull a stored image back into context as a multimodal tool result when the summary is not enough. Retrieval is chat-scoped: a chat can only fetch its own images.
-- Persisted image bytes currently have no retention limit (deferred to the checkpoint/`messages` retention work).
-- For summary generation only, historical data-URL image blocks in the older partition are replaced with `[image omitted]` (captions and surrounding text are preserved). Recent raw checkpoint messages are not mutated by that sanitization.
+- Persisted image bytes currently have no retention limit (the checkpoint/`messages` retention work landed separately — see `MESSAGE_RETENTION_DAYS` and `scripts/cleanup_retention.py` — image bytes are not yet covered).
+- For summary generation only, historical data-URL image blocks are replaced with `[image omitted]` (captions and surrounding text are preserved). The checkpoint messages themselves are never mutated by that sanitization.
+
+### Voice Handling
+
+- `voice_handler()` runs on every voice note (`filters.VOICE`). Voice notes are **passive context only** — the bot never replies to one. To ask about a voice note, send a normal `chatgpt` message; the transcript is already in history.
+- Like non-triggering text, voice notes are stored from anyone in the chat; no authorization check runs, because nothing is being asked of the bot.
+- `transcription.transcribe()` owns the sole call to OpenAI's audio endpoint. It is not a LangChain chat model and is absent from `MODEL_PROVIDERS`.
+- The transcript is stored as a `[voice] <transcript>` marker in both the `messages` audit table and the checkpoint, via the same `add_message` + `append_context_message` path non-triggering text uses. The group `[Name]: ` prefix is applied by `prompt_builder`, so a DM shows a bare `[voice] ...`.
+- Raw audio is not persisted — only the transcript.
+- Everything fails open. Over the duration cap, an API failure, or a silent recording all yield a bare `[voice]` marker; a Telegram download failure stores nothing. None of it is surfaced to the user.
+- A caption attached to a voice note is currently not preserved — only the transcript is stored; the caption text itself is dropped.
 
 ### Personality Behavior
 
@@ -155,8 +166,10 @@ Tests cover pure logic only (no Telegram, database, or live API calls):
 - `handlers.extract_keyword()` — activation keyword and `@mention` stripping
 - `prompt_builder.PromptBuilder.format_messages()` — group prefixes and vision payload formatting
 - `agent.trim_messages()` / `agent.count_message_tokens()` — context window trimming (`tests/test_trimming.py`)
+- `conversation_summary.ConversationCompactor.plan()` / `select_keep_suffix()` — checkpoint compaction planning (`tests/test_conversation_summary.py`)
+- `conversation_summary.ConversationCompactor.plan()` / `select_keep_suffix()` — checkpoint compaction planning (`tests/test_conversation_summary.py`)
 - `agent.resolve_model()` / `MODEL_PROVIDERS` — model/provider validation used by `/model` (`tests/test_model_resolution.py`)
-- `tests/test_config.py`, `tests/test_prompt_builder.py`, `tests/test_tools.py`, `tests/test_agent.py`, `tests/test_extract_keyword.py` cover config validation, prompt formatting, tools, agent wiring, and keyword extraction respectively
+- `tests/test_config.py`, `tests/test_prompt_builder.py`, `tests/test_tools.py`, `tests/test_agent.py`, `tests/test_extract_keyword.py`, `tests/test_transcription.py` cover config validation, prompt formatting, tools, agent wiring, keyword extraction, and voice transcription respectively
 
 CI runs the same compile and pytest steps on pull requests and pushes to `main` (`.github/workflows/ci.yml`).
 
@@ -164,7 +177,7 @@ CI runs the same compile and pytest steps on pull requests and pushes to `main` 
 
 - Two Railway environments: `production` (tracks the `main` branch) and `dev` (tracks the `dev` branch), each with its own Telegram bot and Neon database branch.
 - `.github/workflows/deploy-railway.yml` auto-deploys on push: `dev` → the Railway `dev` environment, `main` → `production`. No manual `railway up` needed for normal development.
-- Each environment's Railway `preDeployCommand` runs `alembic upgrade head && python scripts/setup_checkpointer.py` before the bot starts — the first applies the Alembic-managed app schema, the second (idempotent) creates/upgrades the LangGraph checkpointer tables, which are versioned by `langgraph-checkpoint-postgres` and intentionally not part of Alembic.
+- Each environment's Railway `preDeployCommand` runs `alembic upgrade head && python scripts/setup_checkpointer.py && python scripts/cleanup_retention.py` before the bot starts — the first applies the Alembic-managed app schema, the second (idempotent) creates/upgrades the LangGraph checkpointer tables (versioned by `langgraph-checkpoint-postgres`, intentionally not part of Alembic), and the third (idempotent, fail-open) prunes old `messages` rows and superseded historical checkpoint rows.
 
 ## Branching & Release Workflow
 
@@ -172,6 +185,7 @@ CI runs the same compile and pytest steps on pull requests and pushes to `main` 
 - Pushing to `dev` auto-deploys to the Railway `dev` environment (its own bot + Neon database branch) — use this to verify changes against a real bot before they reach users.
 - Promote `dev` → `main` via a pull request (`gh pr create --base main --head dev`), not a local merge and direct push. This keeps a reviewable diff and CI status visible before anything reaches production.
 - `main` is a protected branch: direct pushes are blocked and the `CI` workflow must pass before a PR can merge.
+- Merge method is a manual choice at merge time (GitHub has no per-base-branch enforcement for this): squash-and-merge feature branches into `dev`, but use a plain merge commit for `dev` → `main` promotion PRs so `main`'s history stays a readable sequence of releases rather than one flattened commit.
 
 ## Database Schema
 
@@ -198,8 +212,10 @@ Important details:
 Relevant environment variables:
 
 - `TELEGRAM_BOT_TOKEN`
-- `BOT_USERNAME`
+- `AUTHORIZED_USER_ID`
 - `OPENAI_API_KEY`
+- `DATABASE_URL`
+- `BOT_USERNAME`
 - `XAI_API_KEY`
 - `GEMINI_API_KEY`
 - `DEFAULT_MODEL`
@@ -208,14 +224,17 @@ Relevant environment variables:
 - `MAX_OUTPUT_TOKENS`
 - `SUMMARY_MODEL`
 - `VISION_SUMMARY_MODEL`
-- `SUMMARY_TRIGGER_TOKENS`
-- `SUMMARY_KEEP_TOKENS`
-- `SUMMARY_CONTEXT_TOKENS`
+- `SUMMARIZATION_TRIGGER`
+- `MAX_SUMMARY_OUTPUT`
+- `MESSAGE_RETENTION_DAYS`
+- `TRANSCRIPTION_MODEL`
+- `MAX_VOICE_DURATION_SECONDS`
 - `TAVILY_API_KEY`
-- `MAX_GROUP_CONTEXT_MESSAGES`
-- `AUTHORIZED_USER_ID`
-- `DATABASE_URL`
 - `LOG_LEVEL`
+- `LANGSMITH_TRACING`
+- `LANGSMITH_ENDPOINT`
+- `LANGSMITH_API_KEY`
+- `LANGSMITH_PROJECT`
 
 Important notes:
 
@@ -224,8 +243,11 @@ Important notes:
 - The running bot may use a different reply model if `/model` has changed `active_model`
 - `SUMMARY_MODEL` is the dedicated summarization model and is independent of `/model` / `active_model`
 - `VISION_SUMMARY_MODEL` is the dedicated model that describes images on ingest; it is fixed and independent of `/model` and `SUMMARY_MODEL`. A missing provider key does not block startup — image persistence simply fails open.
-- `SUMMARY_CONTEXT_TOKENS` bounds only the summary model's input and is independent of `MAX_CONTEXT_TOKENS`, which bounds the reply model's input
+- `SUMMARIZATION_TRIGGER` is the only threshold governing checkpoint size, and is independent of `MAX_CONTEXT_TOKENS`, which bounds a single reply-model call. `MAX_SUMMARY_OUTPUT` must be less than `SUMMARIZATION_TRIGGER`
+- `TRANSCRIPTION_MODEL` is the dedicated speech-to-text model for voice notes. It calls OpenAI's audio transcription endpoint directly and is deliberately *not* in `MODEL_PROVIDERS`; it is fixed and independent of `/model` and `SUMMARY_MODEL`
+- `MAX_VOICE_DURATION_SECONDS` bounds transcription cost: a longer note is skipped before download and recorded as a bare `[voice]` marker
 - `TAVILY_API_KEY` is optional; when blank, `tools.py` falls back to a DuckDuckGo-backed web search tool instead of Tavily
+- `MESSAGE_RETENTION_DAYS` bounds only the `messages` audit table via `scripts/cleanup_retention.py`; it does not affect checkpoint state or `/stats` beyond changing which rows remain to aggregate. `0` disables the delete.
 
 ## Commands
 

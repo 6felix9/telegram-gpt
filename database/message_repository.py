@@ -135,46 +135,22 @@ class MessageRepository:
                 "last_message": "N/A",
             }
 
-    def cleanup_old_group_messages(self, chat_id: str, keep_recent: int = 100):
-        """
-        Remove old messages from group chats to prevent unlimited growth.
-        Keeps only the most recent N messages. Currently unused in the
-        message-handling path (see CLAUDE.md Context Storage notes: the
-        probabilistic cleanup call is intentionally disabled); kept for an
-        eventual coordinated retention policy.
-
-        Args:
-            chat_id: Chat ID to clean up
-            keep_recent: Number of recent messages to keep (default 100)
+    def delete_messages_older_than(self, days: int) -> int:
+        """Delete `messages` rows older than `days`, across all chats.
+        Returns the number of rows deleted.
         """
         try:
-            chat_id = str(chat_id)
-
             with self._conn.connection() as conn:
-                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                with conn.cursor() as cur:
                     cur.execute(
-                        "SELECT COUNT(*) as count FROM messages "
-                        "WHERE chat_id = %s AND is_group_chat = TRUE",
-                        (chat_id,),
+                        "DELETE FROM messages WHERE timestamp < NOW() - %s * INTERVAL '1 day'",
+                        (days,),
                     )
-                    total = cur.fetchone()["count"]
+                    deleted = cur.rowcount
 
-                    if total > keep_recent:
-                        cur.execute(
-                            """
-                            DELETE FROM messages
-                            WHERE chat_id = %s AND is_group_chat = TRUE
-                            AND id NOT IN (
-                                SELECT id FROM messages
-                                WHERE chat_id = %s AND is_group_chat = TRUE
-                                ORDER BY timestamp DESC
-                                LIMIT %s
-                            )
-                            """,
-                            (chat_id, chat_id, keep_recent),
-                        )
-                        deleted = total - keep_recent
-                        logger.info(f"Cleaned up {deleted} old messages from group chat {chat_id}")
+            logger.info(f"Deleted {deleted} messages older than {days} days")
+            return deleted
 
         except Exception as e:
-            logger.error(f"Failed to cleanup old messages: {e}", exc_info=True)
+            logger.error(f"Failed to delete old messages: {e}", exc_info=True)
+            raise

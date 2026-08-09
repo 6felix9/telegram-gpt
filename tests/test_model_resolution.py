@@ -45,6 +45,7 @@ def test_provider_api_key_selection():
 class _SummaryCfg(_Cfg):
     SUMMARY_MODEL = "gpt-4.1-mini"
     MODEL_TIMEOUT = 60
+    MAX_SUMMARY_OUTPUT = 1000
 
 
 def test_make_summary_model_uses_registry_key_and_output_cap(monkeypatch):
@@ -62,7 +63,7 @@ def test_make_summary_model_uses_registry_key_and_output_cap(monkeypatch):
     assert result is not None
     assert calls["model_id"] == "openai:gpt-4.1-mini"
     assert calls["kwargs"]["api_key"] == "o"
-    assert calls["kwargs"]["max_tokens"] == 1024
+    assert calls["kwargs"]["max_tokens"] == 1000
     assert calls["kwargs"]["timeout"] == 60
     assert calls["kwargs"]["max_retries"] == 2
     assert calls["kwargs"]["use_responses_api"] is True

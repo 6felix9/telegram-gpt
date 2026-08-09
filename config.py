@@ -50,17 +50,27 @@ class Config:
     # middleware's reserve (history budget = MAX_CONTEXT_TOKENS - this).
     MAX_OUTPUT_TOKENS = _int_env("MAX_OUTPUT_TOKENS", 2048)
 
-    # Rolling checkpoint summary. Summarization runs only on triggered requests.
-    SUMMARY_MODEL = os.getenv("SUMMARY_MODEL", "gpt-4.1-mini")
+    # Rolling checkpoint summary. Compaction runs before every checkpoint
+    # update, triggered or passive, and is independent of /model.
+    SUMMARY_MODEL = os.getenv("SUMMARY_MODEL", "gpt-5.6-luna")
     # Dedicated vision model that describes images on ingest so later turns
     # keep a text description. Fixed, independent of /model and SUMMARY_MODEL.
     # A missing provider key does not block startup (image persist fails open).
     VISION_SUMMARY_MODEL = os.getenv("VISION_SUMMARY_MODEL", "gpt-5.4-nano")
-    SUMMARY_TRIGGER_TOKENS = _int_env("SUMMARY_TRIGGER_TOKENS", 10000)
-    SUMMARY_KEEP_TOKENS = _int_env("SUMMARY_KEEP_TOKENS", 4000)
-    # Input budget for the summary model call, independent of MAX_CONTEXT_TOKENS
-    # (which bounds the reply model instead).
-    SUMMARY_CONTEXT_TOKENS = _int_env("SUMMARY_CONTEXT_TOKENS", 14000)
+    # Compact the checkpoint when active message state reaches this many
+    # approximate tokens. The sole threshold governing checkpoint size.
+    SUMMARIZATION_TRIGGER = _int_env("SUMMARIZATION_TRIGGER", 8000)
+    # Hard output cap for one generated summary.
+    MAX_SUMMARY_OUTPUT = _int_env("MAX_SUMMARY_OUTPUT", 1000)
+
+    # Dedicated speech-to-text model for voice notes. Uses OpenAI's audio
+    # transcription endpoint, not init_chat_model — deliberately absent from
+    # MODEL_PROVIDERS. Fixed and independent of /model and SUMMARY_MODEL.
+    TRANSCRIPTION_MODEL = os.getenv("TRANSCRIPTION_MODEL", "gpt-transcribe")
+    # Voice notes longer than this are skipped before download, so an
+    # over-limit note costs nothing. At gpt-transcribe's $0.0045/min this caps
+    # a single note at roughly $0.045.
+    MAX_VOICE_DURATION_SECONDS = _int_env("MAX_VOICE_DURATION_SECONDS", 600)
 
     # Web search tool (Tavily); blank falls back to DuckDuckGo at runtime
     TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
@@ -71,8 +81,10 @@ class Config:
     # Database
     DATABASE_URL = os.getenv("DATABASE_URL", "")
 
-    # Group chat settings
-    MAX_GROUP_CONTEXT_MESSAGES = _int_env("MAX_GROUP_CONTEXT_MESSAGES", 500)
+    # Retention: age-based deletion of `messages` audit rows, run out-of-band by
+    # scripts/cleanup_retention.py (wired into Railway preDeployCommand). 0 means
+    # "disabled" (skip the delete).
+    MESSAGE_RETENTION_DAYS = _int_env("MESSAGE_RETENTION_DAYS", 30)
 
     # Logging
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
@@ -103,25 +115,21 @@ class Config:
             "MODEL_TIMEOUT",
             "MAX_CONTEXT_TOKENS",
             "MAX_OUTPUT_TOKENS",
-            "SUMMARY_TRIGGER_TOKENS",
-            "SUMMARY_KEEP_TOKENS",
-            "SUMMARY_CONTEXT_TOKENS",
+            "SUMMARIZATION_TRIGGER",
+            "MAX_SUMMARY_OUTPUT",
+            "MAX_VOICE_DURATION_SECONDS",
         ):
             if getattr(cls, name) <= 0:
                 errors.append(f"{name} must be positive")
 
-        if cls.SUMMARY_KEEP_TOKENS >= cls.SUMMARY_TRIGGER_TOKENS:
-            errors.append(
-                "SUMMARY_KEEP_TOKENS must be less than SUMMARY_TRIGGER_TOKENS"
-            )
+        if cls.MESSAGE_RETENTION_DAYS < 0:
+            errors.append("MESSAGE_RETENTION_DAYS must be >= 0 (0 disables retention cleanup)")
 
-        older_partition_tokens = cls.SUMMARY_TRIGGER_TOKENS - cls.SUMMARY_KEEP_TOKENS
-        if cls.SUMMARY_CONTEXT_TOKENS < older_partition_tokens:
+        if cls.MAX_SUMMARY_OUTPUT >= cls.SUMMARIZATION_TRIGGER:
             errors.append(
-                "SUMMARY_CONTEXT_TOKENS must be at least "
-                "SUMMARY_TRIGGER_TOKENS - SUMMARY_KEEP_TOKENS "
-                f"({older_partition_tokens}), or an ordinary (non-backlog) trigger "
-                "would silently drop history before it reaches the summary model"
+                "MAX_SUMMARY_OUTPUT must be less than SUMMARIZATION_TRIGGER, or a "
+                "compaction could not bring checkpoint state below the trigger and "
+                "every subsequent message would re-trigger a summary call"
             )
 
         if cls.MAX_CONTEXT_TOKENS > 100000:
