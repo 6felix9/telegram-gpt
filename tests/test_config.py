@@ -9,8 +9,8 @@ def _fresh_config(monkeypatch, env: dict):
     for key in [
         "TELEGRAM_BOT_TOKEN", "BOT_USERNAME", "OPENAI_API_KEY", "XAI_API_KEY",
         "GEMINI_API_KEY", "DEFAULT_MODEL", "MODEL_TIMEOUT", "MAX_CONTEXT_TOKENS",
-        "MAX_OUTPUT_TOKENS", "SUMMARY_MODEL", "SUMMARY_TRIGGER_TOKENS",
-        "SUMMARY_KEEP_TOKENS", "SUMMARY_CONTEXT_TOKENS", "MAX_GROUP_CONTEXT_MESSAGES",
+        "MAX_OUTPUT_TOKENS", "SUMMARY_MODEL", "SUMMARIZATION_TRIGGER",
+        "MAX_SUMMARY_OUTPUT",
         "TAVILY_API_KEY", "AUTHORIZED_USER_ID", "DATABASE_URL", "LOG_LEVEL",
         "VISION_SUMMARY_MODEL", "MESSAGE_RETENTION_DAYS",
     ]:
@@ -35,12 +35,14 @@ def test_defaults_apply_when_optional_unset(monkeypatch):
     assert cfg.config.DEFAULT_MODEL == "gpt-5.4-mini"
     assert cfg.config.MAX_OUTPUT_TOKENS == 2048
     assert cfg.config.MAX_CONTEXT_TOKENS == 16000
-    assert cfg.config.SUMMARY_MODEL == "gpt-4.1-mini"
+    assert cfg.config.SUMMARY_MODEL == "gpt-5.6-luna"
     assert cfg.config.VISION_SUMMARY_MODEL == "gpt-5.4-nano"
-    assert cfg.config.SUMMARY_TRIGGER_TOKENS == 10000
-    assert cfg.config.SUMMARY_KEEP_TOKENS == 4000
-    assert cfg.config.SUMMARY_CONTEXT_TOKENS == 14000
-    assert cfg.config.MAX_GROUP_CONTEXT_MESSAGES == 500
+    assert cfg.config.SUMMARIZATION_TRIGGER == 8000
+    assert cfg.config.MAX_SUMMARY_OUTPUT == 1000
+    assert not hasattr(cfg.config, "SUMMARY_TRIGGER_TOKENS")
+    assert not hasattr(cfg.config, "SUMMARY_KEEP_TOKENS")
+    assert not hasattr(cfg.config, "SUMMARY_CONTEXT_TOKENS")
+    assert not hasattr(cfg.config, "MAX_GROUP_CONTEXT_MESSAGES")
     assert cfg.config.MODEL_TIMEOUT == 60
     assert cfg.config.BOT_USERNAME == ""
     assert cfg.config.TAVILY_API_KEY == ""
@@ -70,21 +72,15 @@ def test_missing_provider_key_does_not_fail_startup(monkeypatch):
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
-        ({"SUMMARY_TRIGGER_TOKENS": "0"}, "SUMMARY_TRIGGER_TOKENS must be positive"),
-        ({"SUMMARY_KEEP_TOKENS": "0"}, "SUMMARY_KEEP_TOKENS must be positive"),
-        ({"SUMMARY_CONTEXT_TOKENS": "0"}, "SUMMARY_CONTEXT_TOKENS must be positive"),
+        ({"SUMMARIZATION_TRIGGER": "0"}, "SUMMARIZATION_TRIGGER must be positive"),
+        ({"MAX_SUMMARY_OUTPUT": "0"}, "MAX_SUMMARY_OUTPUT must be positive"),
         (
-            {"SUMMARY_TRIGGER_TOKENS": "4000", "SUMMARY_KEEP_TOKENS": "4000"},
-            "SUMMARY_KEEP_TOKENS must be less than SUMMARY_TRIGGER_TOKENS",
+            {"SUMMARIZATION_TRIGGER": "1000", "MAX_SUMMARY_OUTPUT": "1000"},
+            "MAX_SUMMARY_OUTPUT must be less than SUMMARIZATION_TRIGGER",
         ),
         (
-            {
-                "SUMMARY_TRIGGER_TOKENS": "10000",
-                "SUMMARY_KEEP_TOKENS": "4000",
-                "SUMMARY_CONTEXT_TOKENS": "5000",
-            },
-            "SUMMARY_CONTEXT_TOKENS must be at least "
-            "SUMMARY_TRIGGER_TOKENS - SUMMARY_KEEP_TOKENS",
+            {"SUMMARIZATION_TRIGGER": "1000", "MAX_SUMMARY_OUTPUT": "2000"},
+            "MAX_SUMMARY_OUTPUT must be less than SUMMARIZATION_TRIGGER",
         ),
     ],
 )
@@ -118,18 +114,14 @@ def test_blank_int_vars_fall_back_to_defaults(monkeypatch):
         MODEL_TIMEOUT="",
         MAX_CONTEXT_TOKENS="",
         MAX_OUTPUT_TOKENS="",
-        SUMMARY_TRIGGER_TOKENS="",
-        SUMMARY_KEEP_TOKENS="",
-        SUMMARY_CONTEXT_TOKENS="  ",
-        MAX_GROUP_CONTEXT_MESSAGES="",
+        SUMMARIZATION_TRIGGER="",
+        MAX_SUMMARY_OUTPUT="  ",
     ))
     assert cfg.config.MODEL_TIMEOUT == 60
     assert cfg.config.MAX_CONTEXT_TOKENS == 16000
     assert cfg.config.MAX_OUTPUT_TOKENS == 2048
-    assert cfg.config.SUMMARY_TRIGGER_TOKENS == 10000
-    assert cfg.config.SUMMARY_KEEP_TOKENS == 4000
-    assert cfg.config.SUMMARY_CONTEXT_TOKENS == 14000
-    assert cfg.config.MAX_GROUP_CONTEXT_MESSAGES == 500
+    assert cfg.config.SUMMARIZATION_TRIGGER == 8000
+    assert cfg.config.MAX_SUMMARY_OUTPUT == 1000
     cfg.config.validate()  # blank optionals must not fail validation
 
 

@@ -1,50 +1,57 @@
-import asyncio
-import copy
-from typing import ClassVar
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
-
-from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, ToolMessage
+"""Pure compaction logic: sanitization, keep-suffix selection, plan()."""
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 import pytest
 
 from conversation_summary import (
-    PendingSummaryAuditRecord,
-    ResilientSummarizationMiddleware,
+    SUMMARY_HEADING,
+    CompactionPlan,
+    ConversationCompactor,
     SummaryAuditRecord,
     SummaryGenerationError,
     sanitize_summary_messages,
+    select_keep_suffix,
 )
 
 NO_HISTORY_PLACEHOLDER = "No previous conversation history."
 TOO_LONG_PLACEHOLDER = "Previous conversation was too long to summarize."
 
 
-class _FakeSummaryChat(GenericFakeChatModel):
-    def bind_tools(self, tools, **kwargs):
-        return self
+class _FakeModel:
+    """Minimal stand-in for a chat model: replays queued replies, counts calls."""
+
+    def __init__(self, replies=("durable summary",), error=None):
+        self.replies = list(replies)
+        self.error = error
+        self.calls = []
+
+    def invoke(self, prompt):
+        self.calls.append(prompt)
+        if self.error is not None:
+            raise self.error
+        return AIMessage(content=self.replies.pop(0))
 
 
-class _TrackingSummaryChat(_FakeSummaryChat):
-    invoke_count: ClassVar[int] = 0
-    ainvoke_count: ClassVar[int] = 0
-
-    def invoke(self, *args, **kwargs):
-        type(self).invoke_count += 1
-        return super().invoke(*args, **kwargs)
-
-    async def ainvoke(self, *args, **kwargs):
-        type(self).ainvoke_count += 1
-        return await super().ainvoke(*args, **kwargs)
+def _compactor(model=None, trigger_tokens=100, max_summary_output=40, on_summary=None):
+    return ConversationCompactor(
+        model=model if model is not None else _FakeModel(),
+        summary_model_name="gpt-5.6-luna",
+        trigger_tokens=trigger_tokens,
+        max_summary_output=max_summary_output,
+        on_summary=on_summary,
+    )
 
 
-def _runtime(thread_id="chat-1"):
-    return SimpleNamespace(context=SimpleNamespace(thread_id=thread_id))
+def _big(text, repeat=60):
+    """A message body large enough to push state over a small test trigger.
+
+    At repeat=60 one message costs roughly 66 tokens, so two of them clear the
+    100-token trigger the plan() tests use while the short "recent" messages
+    stay well inside the 60-token post-summary keep budget.
+    """
+    return f"{text} " + ("word " * repeat)
 
 
-def _count_messages(messages):
-    return sum(len(str(message.content)) + 4 for message in messages)
-
+# --- sanitization -----------------------------------------------------------
 
 def test_sanitize_replaces_data_url_without_mutating_original():
     original = HumanMessage(
@@ -73,129 +80,203 @@ def test_sanitize_leaves_plain_text_message_unchanged():
     assert sanitize_summary_messages([original]) == [original]
 
 
-def _middleware(summary_text="durable summary"):
-    model = _FakeSummaryChat(messages=iter([AIMessage(content=summary_text)]))
-    return ResilientSummarizationMiddleware(
-        model=model,
-        summary_model_name="gpt-4.1-mini",
-        trigger=("messages", 4),
-        keep=("messages", 1),
-        token_counter=_count_messages,
-        trim_tokens_to_summarize=10000,
-    )
+# --- keep-suffix selection --------------------------------------------------
 
-
-def test_before_model_replaces_old_messages_with_summary_and_recent_suffix():
-    middleware = _middleware()
-    newest = HumanMessage(id="4", content="newest")
-    state = {
-        "messages": [
-            HumanMessage(id="1", content="old question"),
-            AIMessage(id="2", content="old answer"),
-            HumanMessage(id="3", content="recent question"),
-            newest,
-        ]
-    }
-
-    update = middleware.before_model(state, _runtime())
-
-    assert update is not None
-    assert isinstance(update["messages"][0], RemoveMessage)
-    summary = update["messages"][1]
-    assert summary.additional_kwargs["lc_source"] == "summarization"
-    assert "durable summary" in summary.content
-    assert update["messages"][-1] is newest
-
-
-def test_tool_call_and_result_are_not_split_at_cutoff():
-    middleware = ResilientSummarizationMiddleware(
-        model=_FakeSummaryChat(messages=iter([AIMessage(content="tool summary")])),
-        summary_model_name="gpt-4.1-mini",
-        trigger=("messages", 5),
-        keep=("messages", 2),
-        token_counter=_count_messages,
-        trim_tokens_to_summarize=10000,
-    )
+def test_keep_suffix_starts_at_last_human_message():
     messages = [
-        HumanMessage(id="1", content="old"),
+        HumanMessage(content="old question"),
+        AIMessage(content="old answer"),
+        HumanMessage(content="recent question"),
+        AIMessage(content="recent answer"),
+    ]
+
+    keep = select_keep_suffix(messages, trigger_tokens=1000, max_summary_output=100)
+
+    assert [message.content for message in keep] == [
+        "recent question",
+        "recent answer",
+    ]
+
+
+def test_keep_suffix_includes_trailing_tool_messages():
+    messages = [
+        HumanMessage(content="old question"),
+        HumanMessage(content="recent question"),
         AIMessage(
-            id="2",
             content="",
             tool_calls=[{"name": "fetch_url", "args": {"url": "https://x.test"}, "id": "c1"}],
         ),
-        ToolMessage(id="3", content="result", tool_call_id="c1"),
-        HumanMessage(id="4", content="follow-up"),
-        HumanMessage(id="5", content="newest"),
+        ToolMessage(content="page text", tool_call_id="c1"),
+        AIMessage(content="recent answer"),
     ]
 
-    update = middleware.before_model({"messages": messages}, _runtime())
-    kept = update["messages"][2:]
+    keep = select_keep_suffix(messages, trigger_tokens=1000, max_summary_output=100)
 
-    assert not (kept and isinstance(kept[0], ToolMessage))
+    assert len(keep) == 4
+    assert isinstance(keep[0], HumanMessage)
+    assert keep[0].content == "recent question"
 
 
-def test_summary_exception_fails_open_without_state_update(monkeypatch):
-    middleware = _middleware()
-    monkeypatch.setattr(
-        middleware,
-        "_create_summary",
-        Mock(side_effect=TimeoutError("provider timeout")),
-    )
+def test_keep_suffix_never_starts_with_an_orphaned_tool_message():
     messages = [
-        HumanMessage(id=None, content="message 0"),
-        HumanMessage(id="1", content="message 1"),
-        HumanMessage(id=None, content=[{"type": "text", "text": "message 2"}]),
-        HumanMessage(id="3", content="message 3"),
-    ]
-    state = {"messages": messages}
-    original_list = state["messages"]
-    original_message_objs = list(state["messages"])
-    original_message_ids = [message.id for message in state["messages"]]
-    original_message_contents = [
-        copy.deepcopy(message.content) for message in state["messages"]
+        HumanMessage(content="question"),
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "fetch_url", "args": {"url": "https://x.test"}, "id": "c1"}],
+        ),
+        ToolMessage(content="page text", tool_call_id="c1"),
     ]
 
-    assert middleware.before_model(state, _runtime()) is None
+    keep = select_keep_suffix(messages, trigger_tokens=1000, max_summary_output=100)
 
-    assert state["messages"] is original_list
-    assert len(state["messages"]) == len(original_message_objs)
-    for index, message in enumerate(original_message_objs):
-        assert state["messages"][index] is message
-    assert [message.id for message in state["messages"]] == original_message_ids
-    assert [
-        copy.deepcopy(message.content) for message in state["messages"]
-    ] == original_message_contents
+    assert not isinstance(keep[0], ToolMessage)
 
 
-def test_error_sentinel_fails_open():
-    middleware = _middleware("Error generating summary: provider timeout")
-    state = {
-        "messages": [
-            HumanMessage(id=str(index), content=f"message {index}")
-            for index in range(4)
-        ]
-    }
-    assert middleware.before_model(state, _runtime()) is None
+def test_keep_suffix_is_empty_without_a_human_message():
+    messages = [AIMessage(content="only an answer")]
+    assert select_keep_suffix(messages, trigger_tokens=1000, max_summary_output=100) == []
 
 
-def test_empty_summary_fails_open():
-    middleware = _middleware("")
-    state = {
-        "messages": [
-            HumanMessage(id=str(index), content=f"message {index}")
-            for index in range(4)
-        ]
-    }
-    assert middleware.before_model(state, _runtime()) is None
+def test_keep_suffix_is_dropped_when_it_exceeds_the_post_summary_budget():
+    # Budget is trigger - max_summary_output = 60; this single message is larger.
+    messages = [
+        HumanMessage(content="old"),
+        HumanMessage(content=_big("enormous", repeat=100)),
+    ]
+
+    assert select_keep_suffix(messages, trigger_tokens=100, max_summary_output=40) == []
+
+
+# --- plan() -----------------------------------------------------------------
+
+def test_plan_returns_none_below_threshold():
+    model = _FakeModel()
+    compactor = _compactor(model, trigger_tokens=100_000)
+
+    assert compactor.plan("chat-1", [HumanMessage(content="hi")]) is None
+    assert model.calls == []
+
+
+def test_plan_replaces_state_with_summary_and_last_exchange():
+    model = _FakeModel(["Alice prefers window seats."])
+    compactor = _compactor(model, trigger_tokens=100, max_summary_output=40)
+    messages = [
+        HumanMessage(content=_big("old question")),
+        AIMessage(content=_big("old answer")),
+        HumanMessage(content="recent question"),
+        AIMessage(content="recent answer"),
+    ]
+
+    plan = compactor.plan("chat-1", messages)
+
+    assert isinstance(plan, CompactionPlan)
+    assert len(plan.messages) == 3
+    assert plan.messages[0].content == (
+        f"{SUMMARY_HEADING}\n\nAlice prefers window seats."
+    )
+    assert [message.content for message in plan.messages[1:]] == [
+        "recent question",
+        "recent answer",
+    ]
+
+
+def test_plan_summarizes_every_message_including_the_kept_suffix():
+    model = _FakeModel(["rolling summary"])
+    compactor = _compactor(model, trigger_tokens=100, max_summary_output=40)
+    messages = [
+        HumanMessage(content=_big("old question")),
+        AIMessage(content=_big("old answer")),
+        HumanMessage(content="recent question"),
+    ]
+
+    compactor.plan("chat-1", messages)
+
+    assert len(model.calls) == 1
+    prompt = model.calls[0]
+    assert "old question" in prompt
+    assert "old answer" in prompt
+    assert "recent question" in prompt
+
+
+def test_plan_sanitizes_images_out_of_the_summary_input():
+    model = _FakeModel(["summary"])
+    compactor = _compactor(model, trigger_tokens=10, max_summary_output=4)
+    messages = [
+        HumanMessage(
+            content=[
+                {"type": "text", "text": "A receipt"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/jpeg;base64,SECRET"},
+                },
+            ]
+        ),
+        HumanMessage(content="what does it say"),
+    ]
+
+    compactor.plan("chat-1", messages)
+
+    assert "SECRET" not in model.calls[0]
+    assert "A receipt" in model.calls[0]
+    assert "SECRET" in str(messages[0].content)  # original state untouched
+
+
+def test_plan_builds_the_audit_record():
+    model = _FakeModel(["Alice prefers window seats."])
+    compactor = _compactor(model, trigger_tokens=100, max_summary_output=40)
+    messages = [
+        HumanMessage(content=_big("old question")),
+        AIMessage(content=_big("old answer")),
+        HumanMessage(content="recent question"),
+    ]
+
+    record = compactor.plan("chat-9", messages).record
+
+    assert isinstance(record, SummaryAuditRecord)
+    assert record.chat_id == "chat-9"
+    assert record.summary_model == "gpt-5.6-luna"
+    assert record.summary_text == "Alice prefers window seats."
+    assert record.before_message_count == 3
+    assert record.after_message_count == 2
+    assert record.before_tokens > record.after_tokens
+
+
+def test_plan_raises_on_model_error():
+    compactor = _compactor(
+        _FakeModel(error=TimeoutError("provider timeout")),
+        trigger_tokens=10,
+        max_summary_output=4,
+    )
+    with pytest.raises(TimeoutError):
+        compactor.plan("chat-1", [HumanMessage(content=_big("a"))])
 
 
 @pytest.mark.parametrize(
-    "placeholder",
-    [NO_HISTORY_PLACEHOLDER, TOO_LONG_PLACEHOLDER],
+    "unusable",
+    [
+        "",
+        "   ",
+        "Error generating summary: provider timeout",
+        NO_HISTORY_PLACEHOLDER,
+        TOO_LONG_PLACEHOLDER,
+    ],
 )
-def test_langchain_placeholder_summaries_are_rejected(placeholder):
+def test_plan_raises_on_unusable_summary(unusable):
+    compactor = _compactor(
+        _FakeModel([unusable]), trigger_tokens=10, max_summary_output=4
+    )
     with pytest.raises(SummaryGenerationError):
-        ResilientSummarizationMiddleware._validate_summary(placeholder)
+        compactor.plan("chat-1", [HumanMessage(content=_big("a"))])
+
+
+def test_plan_converts_stop_iteration_into_a_summary_error():
+    # StopIteration must never escape: plan() runs in asyncio.to_thread, where a
+    # StopIteration on the future would hang the await instead of failing open.
+    compactor = _compactor(
+        _FakeModel(error=StopIteration()), trigger_tokens=10, max_summary_output=4
+    )
+    with pytest.raises(SummaryGenerationError):
+        compactor.plan("chat-1", [HumanMessage(content=_big("a"))])
 
 
 def test_validate_summary_allows_legitimate_text_with_similar_words():
@@ -203,288 +284,17 @@ def test_validate_summary_allows_legitimate_text_with_similar_words():
         "Previous conversation covered travel plans; no previous conversation "
         "history was discarded because it was too long to summarize in full."
     )
-    assert ResilientSummarizationMiddleware._validate_summary(text) == text
+    assert ConversationCompactor._validate_summary(text) == text
 
 
-def test_over_budget_trim_to_zero_fails_open_without_model_call():
-    _TrackingSummaryChat.invoke_count = 0
-    model = _TrackingSummaryChat(
-        messages=iter([AIMessage(content="SHOULD NOT BE USED")])
-    )
-    middleware = ResilientSummarizationMiddleware(
-        model=model,
-        summary_model_name="gpt-4.1-mini",
-        trigger=("messages", 4),
-        keep=("messages", 1),
-        token_counter=_count_messages,
-        trim_tokens_to_summarize=0,
-    )
-    messages = [
-        HumanMessage(id=str(index), content=f"message {index} " * 20)
-        for index in range(4)
-    ]
-    state = {"messages": messages}
-    original_list = state["messages"]
-    original_message_objs = list(state["messages"])
-    original_message_ids = [message.id for message in state["messages"]]
-    original_message_contents = [
-        copy.deepcopy(message.content) for message in state["messages"]
-    ]
-    runtime = _runtime()
-    runtime.context.pending_summary_records = []
+def test_plan_flattens_block_list_summary_content():
+    class _BlockListModel(_FakeModel):
+        def invoke(self, prompt):
+            self.calls.append(prompt)
+            return AIMessage(content=[{"type": "text", "text": "block summary"}])
 
-    assert middleware.before_model(state, runtime) is None
+    compactor = _compactor(_BlockListModel(), trigger_tokens=10, max_summary_output=4)
 
-    assert _TrackingSummaryChat.invoke_count == 0
-    assert runtime.context.pending_summary_records == []
-    assert state["messages"] is original_list
-    assert len(state["messages"]) == len(original_message_objs)
-    for index, message in enumerate(original_message_objs):
-        assert state["messages"][index] is message
-    assert [message.id for message in state["messages"]] == original_message_ids
-    assert [
-        copy.deepcopy(message.content) for message in state["messages"]
-    ] == original_message_contents
+    plan = compactor.plan("chat-1", [HumanMessage(content=_big("a"))])
 
-
-@pytest.mark.parametrize(
-    "placeholder",
-    [NO_HISTORY_PLACEHOLDER, TOO_LONG_PLACEHOLDER],
-)
-def test_placeholder_summary_text_fails_open_via_before_model(placeholder):
-    middleware = _middleware(placeholder)
-    messages = [
-        HumanMessage(id=str(index), content=f"message {index}")
-        for index in range(4)
-    ]
-    state = {"messages": messages}
-    original_message_ids = [message.id for message in messages]
-    original_message_contents = [
-        copy.deepcopy(message.content) for message in messages
-    ]
-    runtime = _runtime()
-    runtime.context.pending_summary_records = []
-
-    assert middleware.before_model(state, runtime) is None
-    assert runtime.context.pending_summary_records == []
-    assert [message.id for message in state["messages"]] == original_message_ids
-    assert [
-        copy.deepcopy(message.content) for message in state["messages"]
-    ] == original_message_contents
-
-
-@pytest.mark.parametrize(
-    "placeholder",
-    [NO_HISTORY_PLACEHOLDER, TOO_LONG_PLACEHOLDER],
-)
-def test_async_placeholder_summary_fails_open(placeholder):
-    _TrackingSummaryChat.ainvoke_count = 0
-    model = _TrackingSummaryChat(
-        messages=iter([AIMessage(content=placeholder)])
-    )
-    middleware = ResilientSummarizationMiddleware(
-        model=model,
-        summary_model_name="gpt-4.1-mini",
-        trigger=("messages", 4),
-        keep=("messages", 1),
-        token_counter=_count_messages,
-        trim_tokens_to_summarize=10000,
-    )
-    messages = [
-        HumanMessage(id=str(index), content=f"message {index}")
-        for index in range(4)
-    ]
-    state = {"messages": messages}
-    original_list = state["messages"]
-    original_message_objs = list(state["messages"])
-    original_message_ids = [message.id for message in state["messages"]]
-    original_message_contents = [
-        copy.deepcopy(message.content) for message in state["messages"]
-    ]
-    runtime = _runtime()
-    runtime.context.pending_summary_records = []
-
-    assert asyncio.run(middleware.abefore_model(state, runtime)) is None
-
-    assert _TrackingSummaryChat.ainvoke_count == 1
-    assert runtime.context.pending_summary_records == []
-    assert state["messages"] is original_list
-    for index, message in enumerate(original_message_objs):
-        assert state["messages"][index] is message
-    assert [message.id for message in state["messages"]] == original_message_ids
-    assert [
-        copy.deepcopy(message.content) for message in state["messages"]
-    ] == original_message_contents
-
-
-def test_async_summary_exception_fails_open(monkeypatch):
-    middleware = _middleware()
-    monkeypatch.setattr(
-        middleware,
-        "_acreate_summary",
-        AsyncMock(side_effect=TimeoutError("provider timeout")),
-    )
-    messages = [
-        HumanMessage(id=None, content="message 0"),
-        HumanMessage(id="1", content="message 1"),
-        HumanMessage(id=None, content=[{"type": "text", "text": "message 2"}]),
-        HumanMessage(id="3", content="message 3"),
-    ]
-    state = {"messages": messages}
-    original_list = state["messages"]
-    original_message_objs = list(state["messages"])
-    original_message_ids = [message.id for message in state["messages"]]
-    original_message_contents = [
-        copy.deepcopy(message.content) for message in state["messages"]
-    ]
-
-    result = asyncio.run(middleware.abefore_model(state, _runtime()))
-
-    assert result is None
-    assert state["messages"] is original_list
-    assert len(state["messages"]) == len(original_message_objs)
-    for index, message in enumerate(original_message_objs):
-        assert state["messages"][index] is message
-    assert [message.id for message in state["messages"]] == original_message_ids
-    assert [
-        copy.deepcopy(message.content) for message in state["messages"]
-    ] == original_message_contents
-
-
-def test_before_model_stages_audit_record_without_calling_callback():
-    callback = Mock()
-    runtime = _runtime("chat-9")
-    runtime.context.pending_summary_records = []
-    middleware = ResilientSummarizationMiddleware(
-        model=_FakeSummaryChat(messages=iter([AIMessage(content="durable summary")])),
-        summary_model_name="gpt-4.1-mini",
-        trigger=("messages", 4),
-        keep=("messages", 1),
-        token_counter=_count_messages,
-        trim_tokens_to_summarize=10000,
-        on_summary=callback,
-    )
-    state = {
-        "messages": [
-            HumanMessage(id="1", content="old question"),
-            AIMessage(id="2", content="old answer"),
-            HumanMessage(id="3", content="recent question"),
-            HumanMessage(id="4", content="newest"),
-        ]
-    }
-
-    update = middleware.before_model(state, runtime)
-
-    assert update is not None
-    callback.assert_not_called()
-    assert len(runtime.context.pending_summary_records) == 1
-    pending = runtime.context.pending_summary_records[0]
-    assert isinstance(pending, PendingSummaryAuditRecord)
-    assert pending.summary_message_id
-    record = pending.record
-    assert isinstance(record, SummaryAuditRecord)
-    assert record.chat_id == "chat-9"
-    assert record.summary_model == "gpt-4.1-mini"
-    assert "durable summary" in record.summary_text
-    assert record.before_message_count == 4
-    assert record.after_message_count == 2
-
-
-def test_before_model_stages_no_record_when_audit_disabled():
-    runtime = _runtime("chat-9")
-    runtime.context.pending_summary_records = []
-    middleware = ResilientSummarizationMiddleware(
-        model=_FakeSummaryChat(messages=iter([AIMessage(content="durable summary")])),
-        summary_model_name="gpt-4.1-mini",
-        trigger=("messages", 4),
-        keep=("messages", 1),
-        token_counter=_count_messages,
-        trim_tokens_to_summarize=10000,
-        on_summary=None,
-    )
-    state = {
-        "messages": [
-            HumanMessage(id="1", content="old question"),
-            AIMessage(id="2", content="old answer"),
-            HumanMessage(id="3", content="recent question"),
-            HumanMessage(id="4", content="newest"),
-        ]
-    }
-
-    update = middleware.before_model(state, runtime)
-
-    assert update is not None
-    assert runtime.context.pending_summary_records == []
-
-
-def test_second_before_model_pass_in_one_runtime_stages_only_one_summary():
-    runtime = _runtime("chat-9")
-    runtime.context.pending_summary_records = []
-    runtime.context.summary_compacted = False
-    middleware = ResilientSummarizationMiddleware(
-        model=_FakeSummaryChat(messages=iter([
-            AIMessage(content="first summary"),
-            AIMessage(content="second summary"),
-        ])),
-        summary_model_name="gpt-4.1-mini",
-        trigger=("messages", 4),
-        keep=("messages", 1),
-        token_counter=_count_messages,
-        trim_tokens_to_summarize=10000,
-        on_summary=Mock(),
-    )
-    state = {
-        "messages": [
-            HumanMessage(id="1", content="old question"),
-            AIMessage(id="2", content="old answer"),
-            HumanMessage(id="3", content="recent question"),
-            HumanMessage(id="4", content="newest"),
-        ]
-    }
-
-    first_update = middleware.before_model(state, runtime)
-    second_update = middleware.before_model(state, runtime)
-
-    assert first_update is not None
-    assert second_update is None
-    assert len(runtime.context.pending_summary_records) == 1
-    pending = runtime.context.pending_summary_records[0]
-    assert isinstance(pending, PendingSummaryAuditRecord)
-    assert pending.summary_message_id
-    assert "first summary" in pending.record.summary_text
-
-
-def test_before_model_stages_no_record_when_skipped_or_failed_open():
-    callback = Mock()
-    below_threshold = ResilientSummarizationMiddleware(
-        model=_FakeSummaryChat(messages=iter([AIMessage(content="unused")])),
-        summary_model_name="gpt-4.1-mini",
-        trigger=("messages", 100),
-        keep=("messages", 1),
-        token_counter=_count_messages,
-        trim_tokens_to_summarize=10000,
-        on_summary=callback,
-    )
-    skipped_runtime = _runtime()
-    skipped_runtime.context.pending_summary_records = []
-    below_threshold.before_model(
-        {"messages": [HumanMessage(id="1", content="hi")]}, skipped_runtime
-    )
-
-    failed_open = _middleware("Error generating summary: provider timeout")
-    failed_open.on_summary = callback
-    failed_runtime = _runtime()
-    failed_runtime.context.pending_summary_records = []
-    failed_open.before_model(
-        {
-            "messages": [
-                HumanMessage(id=str(index), content=f"message {index}")
-                for index in range(4)
-            ]
-        },
-        failed_runtime,
-    )
-
-    callback.assert_not_called()
-    assert skipped_runtime.context.pending_summary_records == []
-    assert failed_runtime.context.pending_summary_records == []
+    assert plan.record.summary_text == "block summary"

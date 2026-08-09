@@ -5,17 +5,18 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import dynamic_prompt, wrap_model_call
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import BaseMessage, HumanMessage, RemoveMessage
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 from conversation_summary import (
-    PendingSummaryAuditRecord,
-    ResilientSummarizationMiddleware,
-    SUMMARY_PROMPT,
+    CompactionPlan,
+    ConversationCompactor,
     SummaryAuditRecord,
 )
 from image_store import make_image_summary
@@ -32,7 +33,6 @@ from token_budget import (
     _message_text,
     count_tokens,
     count_message_tokens,
-    count_messages_tokens,
     trim_messages,
     make_trim_middleware,
 )
@@ -87,8 +87,6 @@ Key behaviors:
 - Provide clear, helpful responses
 - Never discuss which model or provider you are
 - Track conversation context from multiple participants"""
-
-SUMMARY_MAX_OUTPUT_TOKENS = 1024
 
 # An empty (e.g. reasoning-only, no visible text) model reply is treated as a
 # retryable failure, mirroring the transport-level max_retries=2 already used
@@ -164,9 +162,12 @@ def make_summary_model(config):
         api_key=key,
         timeout=config.MODEL_TIMEOUT,
         max_retries=2,
-        max_tokens=SUMMARY_MAX_OUTPUT_TOKENS,
+        max_tokens=config.MAX_SUMMARY_OUTPUT,
         **({"use_responses_api": True} if provider == "openai" else {}),
-        **({"reasoning": {"effort": "low"}} if config.SUMMARY_MODEL in REASONING_EFFORT_LOW else {}),
+        # Reasoning tokens count against the output cap on the Responses API, so
+        # a reasoning summary call could burn the whole budget and return no
+        # visible text. The summary is a compression task; it needs none.
+        **({"reasoning": {"effort": "none"}} if config.SUMMARY_MODEL in REASONING_EFFORT_LOW else {}),
     )
 
 
@@ -222,8 +223,6 @@ class AgentContext:
     is_group: bool = False
     reply_context: tuple[str, str] | None = None
     thread_id: str = "unknown"
-    pending_summary_records: list[PendingSummaryAuditRecord] = field(default_factory=list)
-    summary_compacted: bool = False
 
 
 def _tool_names(tools) -> list[str]:
@@ -294,19 +293,15 @@ class Agent:
         self._db = db
         self._summary_model = summary_model or make_summary_model(config)
         self._vision_summary_model = _build_vision_model(config)
-        self._summary_middleware = ResilientSummarizationMiddleware(
+        self._compactor = ConversationCompactor(
             model=self._summary_model,
             summary_model_name=config.SUMMARY_MODEL,
-            trigger=("tokens", config.SUMMARY_TRIGGER_TOKENS),
-            keep=("tokens", config.SUMMARY_KEEP_TOKENS),
-            token_counter=count_messages_tokens,
-            summary_prompt=SUMMARY_PROMPT,
-            trim_tokens_to_summarize=config.SUMMARY_CONTEXT_TOKENS,
+            trigger_tokens=config.SUMMARIZATION_TRIGGER,
+            max_summary_output=config.MAX_SUMMARY_OUTPUT,
             on_summary=self._record_summary if db is not None else None,
         )
         self._middleware = [
             _make_dynamic_prompt(prompt_builder, self._tools),
-            self._summary_middleware,
             make_trim_middleware(config.MAX_CONTEXT_TOKENS, config.MAX_OUTPUT_TOKENS),
             # Last => innermost: the context block is appended after trimming,
             # so it can never be trimmed away.
@@ -365,41 +360,61 @@ class Agent:
             after_tokens=record.after_tokens,
         )
 
-    def _persist_checkpointed_summary_records(
-        self,
-        chat_id: str,
-        context: AgentContext,
-        final_messages: list[BaseMessage] | None,
-    ) -> None:
-        """Audit staged records only after their exact message ID is confirmed."""
-        records = context.pending_summary_records
+    async def _compact_if_needed(self, chat_id) -> None:
+        """Reduce active checkpoint state to a rolling summary once it crosses
+        SUMMARIZATION_TRIGGER, before the incoming message is appended.
+
+        Fully fail-open: any failure leaves checkpoint state untouched and the
+        caller proceeds on uncompacted history. Request-time trimming still
+        bounds what the reply model sees, so a reply is never blocked by this.
+        """
+        if self._graph is None:
+            return
+        started = time.perf_counter()
         try:
-            if not records or self._summary_middleware.on_summary is None:
+            state = self._graph.get_state(self._config_for(chat_id))
+            messages = list(state.values.get("messages", []))
+            plan: CompactionPlan | None = await asyncio.to_thread(
+                self._compactor.plan, str(chat_id), messages
+            )
+            if plan is None:
                 return
-            if final_messages is None:
-                state = self._graph.get_state(self._config_for(chat_id))
-                final_messages = state.values.get("messages", [])
-            confirmed_ids = {
-                str(message.id)
-                for message in final_messages
-                if message.id is not None
-            }
-            for pending in records:
-                if pending.summary_message_id in confirmed_ids:
-                    try:
-                        self._summary_middleware.on_summary(pending.record)
-                    except Exception:
-                        logger.exception(
-                            "Failed to persist summary audit record thread=%s",
-                            pending.record.chat_id,
-                        )
+            self._graph.update_state(
+                self._config_for(chat_id),
+                {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *plan.messages]},
+            )
+        except Exception as exc:
+            logger.error(
+                "Checkpoint compaction failed open thread=%s model=%s "
+                "error_type=%s latency_ms=%s",
+                chat_id,
+                self._config.SUMMARY_MODEL,
+                type(exc).__name__,
+                round((time.perf_counter() - started) * 1000),
+            )
+            return
+
+        record = plan.record
+        logger.info(
+            "Checkpoint compaction succeeded thread=%s model=%s "
+            "before_messages=%s after_messages=%s before_tokens=%s "
+            "after_tokens=%s latency_ms=%s",
+            chat_id,
+            self._config.SUMMARY_MODEL,
+            record.before_message_count,
+            record.after_message_count,
+            record.before_tokens,
+            record.after_tokens,
+            round((time.perf_counter() - started) * 1000),
+        )
+        if self._compactor.on_summary is None:
+            return
+        try:
+            self._compactor.on_summary(record)
         except Exception:
             logger.exception(
-                "Could not confirm checkpointed summary audit records thread=%s",
-                chat_id,
+                "Failed to persist summary audit record thread=%s", chat_id
             )
-        finally:
-            records.clear()
 
     async def run(self, chat_id, human_message, is_group, reply_context=None) -> str:
         if self._graph is None:
@@ -407,12 +422,12 @@ class Agent:
                 f"❌ {PROVIDER_LABEL[self._provider]} API key is not set. "
                 "Set it or switch models with /model."
             )
+        await self._compact_if_needed(chat_id)
         context = AgentContext(
             is_group=is_group,
             reply_context=reply_context,
             thread_id=str(chat_id),
         )
-        result = None
         empty_reply_ids: list[str] = []
         try:
             for attempt in range(EMPTY_RESPONSE_MAX_RETRIES + 1):
@@ -463,16 +478,16 @@ class Agent:
                     logger.exception(
                         "Failed to prune empty-reply messages for chat %s", chat_id
                     )
-            self._persist_checkpointed_summary_records(
-                str(chat_id),
-                context,
-                result["messages"] if result is not None else None,
-            )
 
-    def append_context_message(self, chat_id, human_message) -> None:
-        """Append a non-triggering message to the thread (no model call)."""
+    async def append_context_message(self, chat_id, human_message) -> None:
+        """Append a non-triggering message to the thread (no reply model call).
+
+        Compaction runs first, so the appended message always lands on
+        already-compacted state and is never swallowed by its own summary.
+        """
         if self._graph is None:
             return
+        await self._compact_if_needed(chat_id)
         try:
             self._graph.update_state(
                 self._config_for(chat_id), {"messages": [human_message]}
@@ -492,7 +507,8 @@ class Agent:
         sender_name: str | None = None,
     ) -> int | None:
         """Fail-open post-reply step: describe the image, store it durably, and
-        write its [image #id] marker into the checkpoint. A brand-new
+        write its [image #id] marker into the checkpoint. Compaction runs first,
+        so the marker always lands on already-compacted state. A brand-new
         image_message_id appends the marker (passive photo ingest); reusing the
         raw image's id rewrites it in place (triggered reply). In groups the
         marker keeps the '[sender]:' prefix so later turns can still attribute
@@ -500,6 +516,7 @@ class Agent:
         as-is. Returns the stored image id, or None if nothing was persisted."""
         if self._graph is None or self._vision_summary_model is None or self._db is None:
             return None
+        await self._compact_if_needed(chat_id)
         try:
             summary = await asyncio.to_thread(
                 make_image_summary, self._vision_summary_model, image_data_url

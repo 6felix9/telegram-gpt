@@ -55,7 +55,7 @@ def _message(text=None, chat_id=123, chat_type="private", user_id=7):
 
 def test_non_triggering_message_stores_context_without_reply():
     db = SimpleNamespace(add_message=Mock())
-    agent = SimpleNamespace(append_context_message=Mock(), run=AsyncMock())
+    agent = SimpleNamespace(append_context_message=AsyncMock(), run=AsyncMock())
     prompt_builder = SimpleNamespace(to_lc_human_message=Mock(return_value="human"))
     handlers_obj = _handlers(db=db, agent=agent, prompt_builder=prompt_builder)
 
@@ -66,7 +66,7 @@ def test_non_triggering_message_stores_context_without_reply():
     asyncio.run(handlers_obj.message_handler(update, context))
 
     db.add_message.assert_called_once()
-    agent.append_context_message.assert_called_once_with("123", "human")
+    agent.append_context_message.assert_awaited_once_with("123", "human")
     agent.run.assert_not_awaited()
 
 

@@ -97,7 +97,7 @@ class MessageHandlers:
                     sender_name=sender_name, sender_username=sender_username,
                     is_group_chat=is_group,
                 )
-                self._deps.agent.append_context_message(
+                await self._deps.agent.append_context_message(
                     chat_id,
                     self._deps.prompt_builder.to_lc_human_message(
                         text=message.text, is_group=is_group, sender_name=sender_name),
