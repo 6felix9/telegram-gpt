@@ -186,7 +186,16 @@ class ConversationCompactor:
         prompt = SUMMARY_PROMPT.format(
             messages=render_conversation(sanitize_summary_messages(messages))
         )
-        return self._validate_summary(_message_text(self.model.invoke(prompt)))
+        try:
+            response = self.model.invoke(prompt)
+        except StopIteration as exc:
+            # plan() runs inside asyncio.to_thread. A StopIteration set on that
+            # future never resolves the await, so the caller's fail-open handler
+            # would hang instead of running. Convert it here, at the boundary.
+            raise SummaryGenerationError(
+                "summary model raised StopIteration"
+            ) from exc
+        return self._validate_summary(_message_text(response))
 
     def plan(
         self, chat_id: str, messages: list[BaseMessage]

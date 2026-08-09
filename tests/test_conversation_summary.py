@@ -269,6 +269,16 @@ def test_plan_raises_on_unusable_summary(unusable):
         compactor.plan("chat-1", [HumanMessage(content=_big("a"))])
 
 
+def test_plan_converts_stop_iteration_into_a_summary_error():
+    # StopIteration must never escape: plan() runs in asyncio.to_thread, where a
+    # StopIteration on the future would hang the await instead of failing open.
+    compactor = _compactor(
+        _FakeModel(error=StopIteration()), trigger_tokens=10, max_summary_output=4
+    )
+    with pytest.raises(SummaryGenerationError):
+        compactor.plan("chat-1", [HumanMessage(content=_big("a"))])
+
+
 def test_validate_summary_allows_legitimate_text_with_similar_words():
     text = (
         "Previous conversation covered travel plans; no previous conversation "
