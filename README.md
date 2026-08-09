@@ -196,12 +196,10 @@ Environment variables are loaded from `.env`.
 | `MODEL_TIMEOUT` | `60` | API timeout in seconds |
 | `MAX_CONTEXT_TOKENS` | `16000` | Total history budget before reserve tokens |
 | `MAX_OUTPUT_TOKENS` | `2048` | Max tokens per reply; also the trimming middleware's reserve |
-| `SUMMARY_MODEL` | `gpt-4.1-mini` | Dedicated supported model used for rolling checkpoint summaries |
+| `SUMMARY_MODEL` | `gpt-5.6-luna` | Dedicated supported model used to compact checkpoint state into a rolling summary |
 | `VISION_SUMMARY_MODEL` | `gpt-5.4-nano` | Dedicated supported model used to describe images on ingest; independent of `/model` and `SUMMARY_MODEL` |
-| `SUMMARY_TRIGGER_TOKENS` | `10000` | Summarize older active messages on the next triggered request at this approximate token count |
-| `SUMMARY_KEEP_TOKENS` | `4000` | Approximate recent raw-message tokens retained after summarization |
-| `SUMMARY_CONTEXT_TOKENS` | `14000` | Input token budget for the summary model call itself, independent of `MAX_CONTEXT_TOKENS` |
-| `MAX_GROUP_CONTEXT_MESSAGES` | `500` | Reserved for future group message retention; cleanup is currently disabled |
+| `SUMMARIZATION_TRIGGER` | `8000` | Compact the checkpoint when active message state reaches this approximate token count |
+| `MAX_SUMMARY_OUTPUT` | `1000` | Hard output cap for one generated summary; must be less than `SUMMARIZATION_TRIGGER` |
 | `MESSAGE_RETENTION_DAYS` | `30` | Age-based retention for the `messages` audit table; rows older than this many days are deleted by `scripts/cleanup_retention.py`. `0` disables cleanup |
 | `TAVILY_API_KEY` | Empty | Optional; powers the agent's web search tool. If blank, the search tool falls back to DuckDuckGo at runtime |
 | `LOG_LEVEL` | `INFO` | Python logging level |
@@ -218,9 +216,9 @@ Notes:
 - After first startup, the active model is read from the database and can be changed with `/model`.
 - `config.py` validates that the correct provider key is present for the configured `DEFAULT_MODEL`.
 - `SUMMARY_MODEL` must be listed in `agent.py`'s `MODEL_PROVIDERS`, and its provider key must be configured at startup.
-- `SUMMARY_KEEP_TOKENS` must be lower than `SUMMARY_TRIGGER_TOKENS`; `SUMMARY_CONTEXT_TOKENS` must be at least `SUMMARY_TRIGGER_TOKENS - SUMMARY_KEEP_TOKENS`.
-- `SUMMARY_CONTEXT_TOKENS` bounds only the summary model's input and is unrelated to `MAX_CONTEXT_TOKENS`, which bounds the reply model's input instead.
-- Passive non-triggering text is checkpointed without a model call. If it crosses the summary threshold, compaction waits for the next triggered request.
+- `MAX_SUMMARY_OUTPUT` must be less than `SUMMARIZATION_TRIGGER`, or a compaction could not bring state below the trigger and every subsequent message would re-trigger a summary call.
+- `SUMMARIZATION_TRIGGER` is the only threshold governing checkpoint size. `MAX_CONTEXT_TOKENS` is unrelated: it bounds a single reply-model call, not stored state.
+- Compaction runs before every checkpoint update, triggered or passive, so a chat that only ever receives non-triggering messages is still bounded. A passive message that crosses the threshold does cost one summary-model call with no reply to show for it.
 
 ## CLI Chat Simulator
 
@@ -261,7 +259,7 @@ Core modules:
 - `config.py` - Env loading and validation
 - `database/` - PostgreSQL connection pooling, persistence, cached lookups (`Database` facade + repositories)
 - `handlers/` - Telegram handlers, authorization checks, command implementations
-- `agent.py` - LangChain agent construction (`create_agent` + `init_chat_model`), provider/model routing (`MODEL_PROVIDERS`), rolling conversation summarization (`ResilientSummarizationMiddleware`), and the token-trimming middleware
+- `agent.py` - LangChain agent construction (`create_agent` + `init_chat_model`), provider/model routing (`MODEL_PROVIDERS`), checkpoint compaction (`_compact_if_needed`), and the token-trimming middleware
 - `conversation_summary.py` - Fail-open summarization middleware, image sanitization for summary generation, and post-compaction audit callback wiring
 - `tools.py` - Agent tools: `web_search` (Tavily or DuckDuckGo behind one stable name) and `fetch_url`
 - `prompt_builder.py` - System prompt assembly (persona, generated tool section, conventions), the per-call context message, and outbound message formatting
@@ -274,7 +272,7 @@ High-level flow:
 2. Detect activation via `chatgpt` or `@BOT_USERNAME`.
 3. Authorize the user.
 4. Store the incoming message or image marker in PostgreSQL.
-5. On a triggered request, `ResilientSummarizationMiddleware` may compact active checkpoint history at or above `SUMMARY_TRIGGER_TOKENS` (at most one successful compaction per `Agent.run`/tool loop).
+5. Before appending the incoming message, `Agent._compact_if_needed` replaces active checkpoint state with a rolling summary plus the last exchange if it has reached `SUMMARIZATION_TRIGGER`.
 6. Request-time trimming keeps the reply-model input within the configured reserve.
 7. Build the static system prompt (persona, then tools, then conventions), the provider-specific message payload, and append the per-call `## Current context` block after the trimmed history.
 8. Call the active model provider (reply/tool loop).
@@ -298,19 +296,19 @@ Primary tables:
 
 The LangGraph agent's conversation checkpoints live in their own tables (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`), owned and versioned by `langgraph-checkpoint-postgres` — they are intentionally **not** part of the Alembic-managed schema above.
 
-The latest checkpoint uses rolling summaries plus recent raw messages. On a
-triggered request, active history at or above `SUMMARY_TRIGGER_TOKENS` is
-compacted by `SUMMARY_MODEL`; up to `SUMMARY_KEEP_TOKENS` of recent messages
-remain verbatim. Summary failure leaves state unchanged and the normal
-request-time trimming middleware still allows the reply to proceed.
+The latest checkpoint holds a rolling summary plus at most the last exchange.
+Before any checkpoint update — a triggered reply or a passively stored message —
+state at or above `SUMMARIZATION_TRIGGER` is compacted by `SUMMARY_MODEL` into a
+single summary of at most `MAX_SUMMARY_OUTPUT` tokens. The incoming message is
+appended afterward, so it is never swallowed by its own summary. Everything
+older than the last exchange survives only as summarized prose.
 
-Rolling summarization is the only mechanism that bounds active checkpoint
-state; the previous fixed 500→400 message prune has been removed. A chat
-whose summarization keeps failing open, or one that stays purely passive and
-never triggers a reply, can grow its active checkpoint state without limit —
-there is no message-count fallback. This is monitored via the "summary failed
-open" structured log rather than enforced with a hard ceiling. Rolling
-summaries compact the latest logical state; they do not by themselves
+Compaction is the only mechanism that bounds active checkpoint state. It is
+fully fail-open: a summary failure leaves state unchanged and the reply still
+proceeds, because request-time trimming is independent. A chat whose compaction
+keeps failing can therefore grow its active state without limit — monitored via
+the "Checkpoint compaction failed open" structured log rather than enforced with
+a hard ceiling. Compaction rewrites the latest logical state; it does not
 physically delete historical checkpoint rows — that's handled by the sweep
 described below.
 

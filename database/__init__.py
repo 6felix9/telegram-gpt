@@ -40,9 +40,6 @@ class Database:
     def get_stats(self, chat_id: str) -> dict:
         return self._messages.get_stats(chat_id)
 
-    def cleanup_old_group_messages(self, chat_id: str, keep_recent: int = 100):
-        return self._messages.cleanup_old_group_messages(chat_id, keep_recent)
-
     def delete_messages_older_than(self, days: int) -> int:
         return self._messages.delete_messages_older_than(days)
 
