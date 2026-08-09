@@ -41,11 +41,9 @@ def test_never_starts_with_orphan_tool_message():
     assert kept == [messages[2]]
 
 
-def test_lone_most_recent_tool_message_is_never_dropped():
-    # The newest (and only surviving) message is itself a ToolMessage.
-    # trim_messages must not strip it even though the orphan-drop loop
-    # would otherwise treat it as a leading orphaned ToolMessage.
+def test_lone_orphaned_tool_message_is_dropped():
+    # A result without a retained AIMessage tool call is invalid provider input,
+    # even when it is the most recent message.
     messages = [ToolMessage(content="result", tool_call_id="1")]
     kept = agent.trim_messages(messages, 100000, 0)
-    assert kept != []
-    assert kept[-1] is messages[-1]
+    assert kept == []

@@ -61,6 +61,28 @@ def test_trim_messages_keeps_summary_and_last_even_over_budget():
     assert kept == [summary, latest]
 
 
+def test_trim_messages_drops_orphaned_tool_after_preserved_summary():
+    summary = HumanMessage(
+        content="earlier conversation summary",
+        additional_kwargs={"lc_source": "summarization"},
+    )
+    tool_call = AIMessage(
+        content="reasoning " * 100,
+        tool_calls=[{"name": "f", "args": {}, "id": "1"}],
+    )
+    tool_result = ToolMessage(content="result", tool_call_id="1")
+    latest = HumanMessage(content="latest")
+    messages = [summary, tool_call, tool_result, latest]
+    max_context = sum(
+        token_budget.count_message_tokens(message)
+        for message in [summary, tool_result, latest]
+    )
+
+    kept = token_budget.trim_messages(messages, max_context_tokens=max_context, reserve=0)
+
+    assert kept == [summary, latest]
+
+
 def test_trim_messages_keeps_heading_summary_under_pressure():
     summary = HumanMessage(content="## Conversation summary\n\nearlier conversation summary")
     big = "word " * 200
@@ -80,4 +102,3 @@ def test_trim_messages_keeps_heading_summary_under_pressure():
     assert kept[-1] is messages[-1]
     assert summary in kept
     assert len(kept) == 2
-
