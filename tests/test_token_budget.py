@@ -23,3 +23,82 @@ def test_trim_messages_drops_orphaned_leading_tool_message():
     ]
     kept = token_budget.trim_messages(messages, max_context_tokens=100000, reserve=0)
     assert not isinstance(kept[0], ToolMessage)
+
+
+def test_trim_messages_always_keeps_summary_under_pressure():
+    summary = HumanMessage(
+        content="earlier conversation summary",
+        additional_kwargs={"lc_source": "summarization"},
+    )
+    big = "word " * 200
+    messages = [
+        summary,
+        HumanMessage(content=big),
+        HumanMessage(content=big),
+        HumanMessage(content="latest"),
+    ]
+    # Budget fits summary + last only; the two large middle messages must be dropped.
+    max_context = (
+        token_budget.count_message_tokens(summary)
+        + token_budget.count_message_tokens(messages[-1])
+        + 5
+    )
+    kept = token_budget.trim_messages(messages, max_context_tokens=max_context, reserve=0)
+    assert kept[0] is summary
+    assert kept[-1] is messages[-1]
+    assert summary in kept
+    assert len(kept) == 2
+
+
+def test_trim_messages_keeps_summary_and_last_even_over_budget():
+    summary = HumanMessage(
+        content="a" * 80,
+        additional_kwargs={"lc_source": "summarization"},
+    )
+    latest = HumanMessage(content="b" * 80)
+    messages = [summary, latest]
+    kept = token_budget.trim_messages(messages, max_context_tokens=1, reserve=0)
+    assert kept == [summary, latest]
+
+
+def test_trim_messages_drops_orphaned_tool_after_preserved_summary():
+    summary = HumanMessage(
+        content="earlier conversation summary",
+        additional_kwargs={"lc_source": "summarization"},
+    )
+    tool_call = AIMessage(
+        content="reasoning " * 100,
+        tool_calls=[{"name": "f", "args": {}, "id": "1"}],
+    )
+    tool_result = ToolMessage(content="result", tool_call_id="1")
+    latest = HumanMessage(content="latest")
+    messages = [summary, tool_call, tool_result, latest]
+    max_context = sum(
+        token_budget.count_message_tokens(message)
+        for message in [summary, tool_result, latest]
+    )
+
+    kept = token_budget.trim_messages(messages, max_context_tokens=max_context, reserve=0)
+
+    assert kept == [summary, latest]
+
+
+def test_trim_messages_keeps_heading_summary_under_pressure():
+    summary = HumanMessage(content="## Conversation summary\n\nearlier conversation summary")
+    big = "word " * 200
+    messages = [
+        summary,
+        HumanMessage(content=big),
+        HumanMessage(content=big),
+        HumanMessage(content="latest"),
+    ]
+    max_context = (
+        token_budget.count_message_tokens(summary)
+        + token_budget.count_message_tokens(messages[-1])
+        + 5
+    )
+    kept = token_budget.trim_messages(messages, max_context_tokens=max_context, reserve=0)
+    assert kept[0] is summary
+    assert kept[-1] is messages[-1]
+    assert summary in kept
+    assert len(kept) == 2

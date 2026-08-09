@@ -5,7 +5,7 @@ from collections.abc import Iterable
 
 import tiktoken
 from langchain.agents.middleware import ModelRequest, ModelResponse, wrap_model_call
-from langchain_core.messages import AnyMessage, BaseMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, ToolMessage
 
 # tiktoken encoding is model-independent for our budgeting purposes.
 _ENCODING = tiktoken.get_encoding("cl100k_base")
@@ -50,6 +50,35 @@ def count_messages_tokens(messages: Iterable[BaseMessage]) -> int:
     return sum(count_message_tokens(message) for message in messages)
 
 
+def _is_summary_message(message: BaseMessage) -> bool:
+    """True for the rolling-summary HumanMessage inserted by checkpoint compaction."""
+    if message.additional_kwargs.get("lc_source") == "summarization":
+        return True
+    text = _message_text(message)
+    return text.startswith("## Conversation summary")
+
+
+def _drop_orphaned_tool_messages(messages: list[AnyMessage]) -> list[AnyMessage]:
+    """Remove tool results whose retained tool call no longer precedes them."""
+    retained_tool_call_ids: set[str] = set()
+    valid_messages: list[AnyMessage] = []
+
+    for message in messages:
+        if isinstance(message, AIMessage):
+            for tool_call in message.tool_calls:
+                tool_call_id = tool_call.get("id")
+                if tool_call_id:
+                    retained_tool_call_ids.add(tool_call_id)
+            valid_messages.append(message)
+        elif isinstance(message, ToolMessage):
+            if message.tool_call_id in retained_tool_call_ids:
+                valid_messages.append(message)
+        else:
+            valid_messages.append(message)
+
+    return valid_messages
+
+
 def trim_messages(
     messages: list[AnyMessage],
     max_context_tokens: int,
@@ -57,30 +86,36 @@ def trim_messages(
 ) -> list[AnyMessage]:
     """Keep as much recent history as fits the budget, newest-first.
 
-    Non-destructive: returns a new list. Always keeps the last message.
-    Never returns a list beginning with a ToolMessage orphaned from its
-    AIMessage tool call.
+    Non-destructive: returns a new list. Always keeps the last message unless
+    it is an orphaned tool result, and keeps any summarization-tagged rolling
+    summary messages (even if their combined cost exceeds the budget). Never
+    returns a ToolMessage without its preceding AIMessage tool call.
     """
     if not messages:
         return []
 
     available = max(0, max_context_tokens - reserve)
 
-    kept: list[AnyMessage] = [messages[-1]]
-    total = count_message_tokens(messages[-1])
-    for message in reversed(messages[:-1]):
-        cost = count_message_tokens(message)
+    always_keep = {len(messages) - 1}
+    for i, message in enumerate(messages):
+        if _is_summary_message(message):
+            always_keep.add(i)
+
+    total = sum(count_message_tokens(messages[i]) for i in always_keep)
+    selected = set(always_keep)
+
+    for i in range(len(messages) - 2, -1, -1):
+        if i in selected:
+            continue
+        cost = count_message_tokens(messages[i])
         if total + cost > available:
             break
-        kept.insert(0, message)
+        selected.add(i)
         total += cost
 
-    # Drop a leading orphaned ToolMessage (its AIMessage tool_call was trimmed).
-    # Guard with len(kept) > 1 so the most-recent message is never removed.
-    while len(kept) > 1 and isinstance(kept[0], ToolMessage):
-        kept.pop(0)
+    kept = [messages[i] for i in range(len(messages)) if i in selected]
 
-    return kept
+    return _drop_orphaned_tool_messages(kept)
 
 
 def make_trim_middleware(max_context_tokens: int, reserve: int):
