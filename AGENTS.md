@@ -13,7 +13,7 @@ The bot is no longer "OpenAI only". `agent.py` routes requests by model name to 
 
 ## Project Structure & Module Organization
 
-- Core runtime files at repo root: `bot.py` (entrypoint), `agent.py` (LangChain agent construction, provider/model routing via `MODEL_PROVIDERS`, summarization middleware wiring, and request-time trimming), `conversation_summary.py` (`ResilientSummarizationMiddleware` and summary helpers), `tools.py` (agent tools: web search and page fetch), `prompt_builder.py` (system prompt construction and message formatting), `cache.py` (TTL cache helpers), `config.py` (env-driven settings), `app_factory.py` (composition for `bot.py` / `scripts/chat_cli.py`), `model_registry.py`, and `token_budget.py`.
+- Core runtime files at repo root: `bot.py` (entrypoint), `agent.py` (LangChain agent construction, provider/model routing via `MODEL_PROVIDERS`, checkpoint compaction, and request-time trimming), `conversation_summary.py` (`ConversationCompactor` and summary helpers), `tools.py` (agent tools: web search and page fetch), `prompt_builder.py` (system prompt construction and message formatting), `cache.py` (TTL cache helpers), `config.py` (env-driven settings), `app_factory.py` (composition for `bot.py` / `scripts/chat_cli.py`), `model_registry.py`, and `token_budget.py`.
 - `handlers/` is a package for Telegram handlers and commands (`handlers/__init__.py` facade plus `handler_deps`, `authorization`, `request_processor`, `message_handlers`, `command_handlers`).
 - `database/` is a package for PostgreSQL/Neon persistence (`database/__init__.py` `Database` facade plus `db_connection`, `message_repository`, `access_repository`, `settings_repository`, `summary_audit_repository`).
 - Operational docs live in `README.md` and `AGENTS.md`.
@@ -28,16 +28,16 @@ The bot is no longer "OpenAI only". `agent.py` routes requests by model name to 
 2. `config.py` loads `.env` and validates required settings.
 3. `database/` owns PostgreSQL persistence, cached lookups, and global settings such as active model and active personality (schema itself is Alembic-managed — see Database Schema below).
 4. `handlers/` implements Telegram message handlers and bot commands.
-5. `agent.py` builds the LangChain agent (`create_agent` + `init_chat_model`), maps the active model to a provider via `MODEL_PROVIDERS`, wires `ResilientSummarizationMiddleware` as a persistent state-compaction hook before request trimming, and applies the `wrap_model_call` trimming middleware before each reply-model call. A final `wrap_model_call` runs innermost to append the per-call context block after trimming.
+5. `agent.py` builds the LangChain agent (`create_agent` + `init_chat_model`), maps the active model to a provider via `MODEL_PROVIDERS`, applies the `wrap_model_call` trimming middleware before each reply-model call, and calls `_compact_if_needed()` before every checkpoint update. A final `wrap_model_call` runs innermost to append the per-call context block after trimming.
 6. `prompt_builder.py` builds system prompts (persona, generated tool section, conventions), the per-call `## Current context` message, and normalizes message payloads for the agent.
-7. The checkpointer (`PostgresSaver`, keyed by chat_id thread) persists conversation state across turns as a rolling summary plus recent raw messages. The previous fixed 500→400 message-count prune has been removed; rolling summarization is the sole bound on active checkpoint state. Token counting and model-input trimming remain separate.
+7. The checkpointer (`PostgresSaver`, keyed by chat_id thread) persists conversation state as a rolling summary plus at most the last exchange. Compaction is the sole bound on active checkpoint state. Token counting and model-input trimming remain separate.
 8. `cache.py` provides a small TTL cache used by the database layer.
 9. `tools.py` builds the agent's tools: a web search tool always named `web_search` (Tavily when `TAVILY_API_KEY` is set, else a DuckDuckGo fallback — both wrapped to a single `query` argument) and a page-fetch tool, wired into the agent via `create_agent`.
-10. `conversation_summary.py` owns fail-open summary generation, historical image sanitization for the summary model, and the post-compaction audit callback.
+10. `conversation_summary.py` owns pure compaction logic: the summary prompt, historical image sanitization, summary validation, keep-suffix selection, and `ConversationCompactor.plan()`. It holds no graph reference — `agent.Agent` owns checkpoint access and the fail-open boundary.
 
 ### Provider / API Routing
 
-`agent.py` is the source of truth: `MODEL_PROVIDERS` maps each supported model name to its provider, and `resolve_model()` turns that into the provider-prefixed id (`"<provider>:<model>"`) passed to LangChain's `init_chat_model()`, which builds the actual chat model per provider. `openai_client.py` and `token_manager.py` have been retired — the agent (`agent.py`, built on `create_agent`) and its middleware now own model routing, rolling summarization, and context trimming.
+`agent.py` is the source of truth: `MODEL_PROVIDERS` maps each supported model name to its provider, and `resolve_model()` turns that into the provider-prefixed id (`"<provider>:<model>"`) passed to LangChain's `init_chat_model()`, which builds the actual chat model per provider. `openai_client.py` and `token_manager.py` have been retired — the agent (`agent.py`, built on `create_agent`) now owns model routing, checkpoint compaction, and context trimming.
 
 - OpenAI models use `init_chat_model` with the `openai` provider
 - xAI models use the `xai` provider
@@ -52,7 +52,7 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 3. Authorization is checked.
 4. The incoming user message is stored in `messages`.
 5. History is loaded from the checkpoint thread for the chat.
-6. On a triggered `Agent.run()`, `ResilientSummarizationMiddleware` may compact older active messages into a summary plus recent raw suffix (at most one successful compaction per triggered invocation/tool loop). Summary failure leaves checkpoint state unchanged.
+6. Before the incoming message is appended, `Agent._compact_if_needed()` replaces active state with a summary plus the last exchange if it has reached `SUMMARIZATION_TRIGGER`. This runs on triggered and passive messages alike. Compaction failure leaves checkpoint state unchanged.
 7. `agent.py`'s trimming middleware (`wrap_model_call`) keeps as much recent context as possible while reserving response tokens.
 8. `prompt_builder` builds the static system prompt and provider-specific message format; the context middleware then appends the `## Current context` block (date/time, reply context) after the trimmed history.
 9. `agent.run()` continues the LangChain agent reply/tool loop with the active provider.
@@ -64,10 +64,10 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 - Non-triggering photo posts are no longer ignored: every photo is persisted on arrival (summarized and stored) so it can be referenced later — see Image Handling.
 - Group user messages are formatted as `[Name]: message` before model submission; private messages are stored as plain text.
 - Replies still require `chatgpt` or `@BOT_USERNAME`, and authorization is still checked before the model runs.
-- Stored messages in the application `messages` table are retained for `MESSAGE_RETENTION_DAYS` (default 30 days) via a global age-based delete run by `scripts/cleanup_retention.py`; set `MESSAGE_RETENTION_DAYS=0` to disable. The previous probabilistic per-chat database cleanup (`cleanup_old_group_messages`) remains unused. `/stats`'s reported "Since" date reflects the oldest row currently retained, not necessarily the chat's true first message, once retention has pruned older rows.
-- Latest LangGraph checkpoint state is a rolling summary plus recent raw messages. The previous 500→400 message-count prune has been removed; rolling summarization is the sole bound on active checkpoint state. Historical checkpoint rows are pruned to the newest checkpoint per thread by a global sweep in `scripts/cleanup_retention.py` (same preDeployCommand step); a chat whose summarization keeps failing open — or one that stays purely passive and never triggers a reply — can still grow its *active* checkpoint state without limit, since the sweep only removes superseded historical rows, not the current one.
+- Stored messages in the application `messages` table are retained for `MESSAGE_RETENTION_DAYS` (default 30 days) via a global age-based delete run by `scripts/cleanup_retention.py`; set `MESSAGE_RETENTION_DAYS=0` to disable. `/stats`'s reported "Since" date reflects the oldest row currently retained, not necessarily the chat's true first message, once retention has pruned older rows.
+- Latest LangGraph checkpoint state is a rolling summary plus at most the last exchange. Compaction runs before every checkpoint update — triggered or passive — so a purely passive chat is bounded too. Historical checkpoint rows are pruned to the newest checkpoint per thread by a global sweep in `scripts/cleanup_retention.py` (same preDeployCommand step); a chat whose compaction keeps failing open can still grow its *active* checkpoint state without limit, since the sweep only removes superseded historical rows, not the current one.
 - `/clear` removes the current checkpoint's summary and recent messages; it does not delete `messages` or `conversation_summaries` audit rows.
-- A `conversation_summaries` audit row is inserted only after the exact generated summary ID is confirmed in result/checkpoint state. Audit failures are logged and never block compaction or replies.
+- A `conversation_summaries` audit row is inserted after the compacting `update_state` succeeds. Audit failures are logged and never block compaction or replies.
 
 ### Image Handling
 
@@ -83,7 +83,7 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 - When a triggering message replies to an earlier photo, the handler resolves that photo's stored `[image #<id>]` (via `get_image_by_message_id`, persisting it on the fly if it was not stored yet) and passes it as reply context so the agent can call `get_image(<id>)`.
 - The agent can call the `get_image(image_id)` tool to pull a stored image back into context as a multimodal tool result when the summary is not enough. Retrieval is chat-scoped: a chat can only fetch its own images.
 - Persisted image bytes currently have no retention limit (the checkpoint/`messages` retention work landed separately — see `MESSAGE_RETENTION_DAYS` and `scripts/cleanup_retention.py` — image bytes are not yet covered).
-- For summary generation only, historical data-URL image blocks in the older partition are replaced with `[image omitted]` (captions and surrounding text are preserved). Recent raw checkpoint messages are not mutated by that sanitization.
+- For summary generation only, historical data-URL image blocks are replaced with `[image omitted]` (captions and surrounding text are preserved). The checkpoint messages themselves are never mutated by that sanitization.
 
 ### Personality Behavior
 
@@ -155,6 +155,8 @@ Tests cover pure logic only (no Telegram, database, or live API calls):
 - `handlers.extract_keyword()` — activation keyword and `@mention` stripping
 - `prompt_builder.PromptBuilder.format_messages()` — group prefixes and vision payload formatting
 - `agent.trim_messages()` / `agent.count_message_tokens()` — context window trimming (`tests/test_trimming.py`)
+- `conversation_summary.ConversationCompactor.plan()` / `select_keep_suffix()` — checkpoint compaction planning (`tests/test_conversation_summary.py`)
+- `conversation_summary.ConversationCompactor.plan()` / `select_keep_suffix()` — checkpoint compaction planning (`tests/test_conversation_summary.py`)
 - `agent.resolve_model()` / `MODEL_PROVIDERS` — model/provider validation used by `/model` (`tests/test_model_resolution.py`)
 - `tests/test_config.py`, `tests/test_prompt_builder.py`, `tests/test_tools.py`, `tests/test_agent.py`, `tests/test_extract_keyword.py` cover config validation, prompt formatting, tools, agent wiring, and keyword extraction respectively
 
@@ -210,10 +212,8 @@ Relevant environment variables:
 - `MAX_OUTPUT_TOKENS`
 - `SUMMARY_MODEL`
 - `VISION_SUMMARY_MODEL`
-- `SUMMARY_TRIGGER_TOKENS`
-- `SUMMARY_KEEP_TOKENS`
-- `SUMMARY_CONTEXT_TOKENS`
-- `MAX_GROUP_CONTEXT_MESSAGES`
+- `SUMMARIZATION_TRIGGER`
+- `MAX_SUMMARY_OUTPUT`
 - `MESSAGE_RETENTION_DAYS`
 - `TAVILY_API_KEY`
 - `LOG_LEVEL`
@@ -229,7 +229,7 @@ Important notes:
 - The running bot may use a different reply model if `/model` has changed `active_model`
 - `SUMMARY_MODEL` is the dedicated summarization model and is independent of `/model` / `active_model`
 - `VISION_SUMMARY_MODEL` is the dedicated model that describes images on ingest; it is fixed and independent of `/model` and `SUMMARY_MODEL`. A missing provider key does not block startup — image persistence simply fails open.
-- `SUMMARY_CONTEXT_TOKENS` bounds only the summary model's input and is independent of `MAX_CONTEXT_TOKENS`, which bounds the reply model's input
+- `SUMMARIZATION_TRIGGER` is the only threshold governing checkpoint size, and is independent of `MAX_CONTEXT_TOKENS`, which bounds a single reply-model call. `MAX_SUMMARY_OUTPUT` must be less than `SUMMARIZATION_TRIGGER`
 - `TAVILY_API_KEY` is optional; when blank, `tools.py` falls back to a DuckDuckGo-backed web search tool instead of Tavily
 - `MESSAGE_RETENTION_DAYS` bounds only the `messages` audit table via `scripts/cleanup_retention.py`; it does not affect checkpoint state or `/stats` beyond changing which rows remain to aggregate. `0` disables the delete.
 
