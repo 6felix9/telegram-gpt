@@ -1,6 +1,7 @@
 """Agent: fake-model tool invocation, key-missing handling, error mapping."""
 import asyncio
 import itertools
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -97,6 +98,65 @@ def test_run_returns_final_text():
     a = _agent_with_fake(fake)
     out = asyncio.run(a.run("chat-1", HumanMessage(content="hello"), is_group=False))
     assert out == "hi there"
+
+
+def test_passive_checkpoint_write_does_not_block_event_loop():
+    """Passive checkpoint persistence must not stall unrelated async work."""
+    a = _agent_with_fake(_FakeChat(messages=iter([])))
+
+    class _BlockingGraph:
+        def get_state(self, config):
+            return SimpleNamespace(values={"messages": []})
+
+        def update_state(self, config, values):
+            time.sleep(0.08)
+
+    a._graph = _BlockingGraph()
+
+    async def run_test():
+        started = time.perf_counter()
+        write_task = asyncio.create_task(
+            a.append_context_message("non-blocking", HumanMessage(content="hello"))
+        )
+        await asyncio.sleep(0.01)
+        elapsed_before_loop_resumed = time.perf_counter() - started
+        await write_task
+        return elapsed_before_loop_resumed
+
+    assert asyncio.run(run_test()) < 0.04
+
+
+def test_concurrent_passive_writes_for_one_chat_keep_arrival_order():
+    a = _agent_with_fake(_FakeChat(messages=iter([])))
+
+    class _OrderingGraph:
+        def __init__(self):
+            self.contents = []
+
+        def get_state(self, config):
+            return SimpleNamespace(values={"messages": []})
+
+        def update_state(self, config, values):
+            message = values["messages"][0]
+            if message.content == "first":
+                time.sleep(0.05)
+            self.contents.append(message.content)
+
+    graph = _OrderingGraph()
+    a._graph = graph
+
+    async def run_test():
+        first = asyncio.create_task(
+            a.append_context_message("ordered", HumanMessage(content="first"))
+        )
+        await asyncio.sleep(0)
+        second = asyncio.create_task(
+            a.append_context_message("ordered", HumanMessage(content="second"))
+        )
+        await asyncio.gather(first, second)
+
+    asyncio.run(run_test())
+    assert graph.contents == ["first", "second"]
 
 
 def test_run_flattens_block_list_content():
@@ -473,6 +533,7 @@ def _agent_for_persist(vision_model, db, graph):
     a._vision_summary_model = vision_model
     a._db = db
     a._graph = graph
+    a._context_locks = {}
     a._compactor = SimpleNamespace(plan=lambda *args, **kwargs: None)
     if not hasattr(graph, "get_state"):
         graph.get_state = Mock(return_value=SimpleNamespace(values={"messages": []}))

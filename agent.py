@@ -6,6 +6,7 @@ import asyncio
 import base64
 import logging
 import time
+import weakref
 from dataclasses import dataclass
 
 from langchain.agents import create_agent
@@ -310,6 +311,9 @@ class Agent:
         self.model_name = model_name
         self._provider = None
         self._graph = None
+        self._context_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
+            weakref.WeakValueDictionary()
+        )
         self.set_model(model_name)
 
     # --- compilation -----------------------------------------------------
@@ -348,6 +352,15 @@ class Agent:
     def _config_for(self, chat_id: str) -> dict:
         return {"configurable": {"thread_id": str(chat_id)}}
 
+    def _context_lock_for(self, chat_id) -> asyncio.Lock:
+        """Return a short-lived lock for one chat's passive checkpoint writes."""
+        thread_id = str(chat_id)
+        lock = self._context_locks.get(thread_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._context_locks[thread_id] = lock
+        return lock
+
     def _record_summary(self, record: SummaryAuditRecord) -> None:
         """Write one checkpoint-confirmed summary audit record."""
         self._db.record_conversation_summary(
@@ -372,14 +385,17 @@ class Agent:
             return
         started = time.perf_counter()
         try:
-            state = self._graph.get_state(self._config_for(chat_id))
+            state = await asyncio.to_thread(
+                self._graph.get_state, self._config_for(chat_id)
+            )
             messages = list(state.values.get("messages", []))
             plan: CompactionPlan | None = await asyncio.to_thread(
                 self._compactor.plan, str(chat_id), messages
             )
             if plan is None:
                 return
-            self._graph.update_state(
+            await asyncio.to_thread(
+                self._graph.update_state,
                 self._config_for(chat_id),
                 {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *plan.messages]},
             )
@@ -410,7 +426,7 @@ class Agent:
         if self._compactor.on_summary is None:
             return
         try:
-            self._compactor.on_summary(record)
+            await asyncio.to_thread(self._compactor.on_summary, record)
         except Exception:
             logger.exception(
                 "Failed to persist summary audit record thread=%s", chat_id
@@ -487,13 +503,16 @@ class Agent:
         """
         if self._graph is None:
             return
-        await self._compact_if_needed(chat_id)
-        try:
-            self._graph.update_state(
-                self._config_for(chat_id), {"messages": [human_message]}
-            )
-        except Exception as e:
-            logger.error("Failed to append context message: %s", e, exc_info=True)
+        async with self._context_lock_for(chat_id):
+            await self._compact_if_needed(chat_id)
+            try:
+                await asyncio.to_thread(
+                    self._graph.update_state,
+                    self._config_for(chat_id),
+                    {"messages": [human_message]},
+                )
+            except Exception as e:
+                logger.error("Failed to append context message: %s", e, exc_info=True)
 
     async def persist_image(
         self,
@@ -516,40 +535,45 @@ class Agent:
         as-is. Returns the stored image id, or None if nothing was persisted."""
         if self._graph is None or self._vision_summary_model is None or self._db is None:
             return None
-        await self._compact_if_needed(chat_id)
-        try:
-            summary = await asyncio.to_thread(
-                make_image_summary, self._vision_summary_model, image_data_url
-            )
-            summary = summary.strip() if summary else ""
-            if not summary:
-                logger.warning(
-                    "Empty image summary for chat %s; skipping image persist", chat_id
+        async with self._context_lock_for(chat_id):
+            await self._compact_if_needed(chat_id)
+            try:
+                summary = await asyncio.to_thread(
+                    make_image_summary, self._vision_summary_model, image_data_url
                 )
+                summary = summary.strip() if summary else ""
+                if not summary:
+                    logger.warning(
+                        "Empty image summary for chat %s; skipping image persist", chat_id
+                    )
+                    return None
+                raw = base64.b64decode(image_data_url.split(",", 1)[1])
+                image_id = await asyncio.to_thread(
+                    self._db.save_image,
+                    chat_id=str(chat_id),
+                    message_id=telegram_message_id,
+                    mime_type=mime_type,
+                    caption=caption,
+                    summary=summary,
+                    image_bytes=raw,
+                )
+                marker = _image_marker(image_id, caption, summary)
+                checkpoint_marker = (
+                    f"[{sender_name}]: {marker}" if is_group and sender_name else marker
+                )
+                await asyncio.to_thread(
+                    self._graph.update_state,
+                    self._config_for(chat_id),
+                    {"messages": [HumanMessage(id=image_message_id, content=checkpoint_marker)]},
+                )
+                logger.info("Persisted image %s for chat %s", image_id, chat_id)
+                await asyncio.to_thread(
+                    self._backfill_audit_content, chat_id, telegram_message_id, marker
+                )
+                return image_id
+            except Exception:
+                logger.exception("Failed to persist image for chat %s", chat_id)
                 return None
-            raw = base64.b64decode(image_data_url.split(",", 1)[1])
-            image_id = self._db.save_image(
-                chat_id=str(chat_id),
-                message_id=telegram_message_id,
-                mime_type=mime_type,
-                caption=caption,
-                summary=summary,
-                image_bytes=raw,
-            )
-            marker = _image_marker(image_id, caption, summary)
-            checkpoint_marker = (
-                f"[{sender_name}]: {marker}" if is_group and sender_name else marker
-            )
-            self._graph.update_state(
-                self._config_for(chat_id),
-                {"messages": [HumanMessage(id=image_message_id, content=checkpoint_marker)]},
-            )
-            logger.info("Persisted image %s for chat %s", image_id, chat_id)
-            self._backfill_audit_content(chat_id, telegram_message_id, marker)
-            return image_id
-        except Exception:
-            logger.exception("Failed to persist image for chat %s", chat_id)
-            return None
 
     def _backfill_audit_content(
         self, chat_id, telegram_message_id: int | None, marker: str
