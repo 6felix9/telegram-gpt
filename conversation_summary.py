@@ -1,4 +1,4 @@
-"""Fail-open checkpoint compaction: reduce active state to a rolling summary.
+"""Fail-open checkpoint compaction: reduce active state to a summary plus the last exchange.
 
 This module is pure: it takes a message list and returns the replacement list.
 All LangGraph checkpoint access lives in agent.Agent, which owns the
@@ -152,7 +152,7 @@ def select_keep_suffix(
 
 
 class ConversationCompactor:
-    """Plans the replacement of active checkpoint state with a rolling summary.
+    """Plans the replacement of active checkpoint state with a summary.
 
     Holds no graph reference and performs no state mutation: plan() is a pure
     function of its inputs plus one summary-model call.
@@ -185,9 +185,15 @@ class ConversationCompactor:
         return summary
 
     def create_summary(self, messages: list[BaseMessage]) -> str:
-        """Summarize the whole message list. Raises on unusable output."""
+        """Summarize the message list, excluding prior summary messages.
+
+        Raises on unusable output.
+        """
+        non_summary = [
+            message for message in messages if not _is_summary_message(message)
+        ]
         prompt = SUMMARY_PROMPT.format(
-            messages=render_conversation(sanitize_summary_messages(messages))
+            messages=render_conversation(sanitize_summary_messages(non_summary))
         )
         try:
             response = self.model.invoke(prompt)
@@ -214,7 +220,13 @@ class ConversationCompactor:
         if chat_tokens < self.trigger_tokens:
             return None
 
-        summary_text = self.create_summary(messages)
+        non_summary = [
+            message for message in messages if not _is_summary_message(message)
+        ]
+        if not non_summary:
+            return None
+
+        summary_text = self.create_summary(non_summary)
         keep = select_keep_suffix(
             messages, self.trigger_tokens, self.max_summary_output
         )
