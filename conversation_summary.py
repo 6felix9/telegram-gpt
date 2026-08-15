@@ -1,4 +1,4 @@
-"""Fail-open checkpoint compaction: reduce active state to a rolling summary.
+"""Fail-open checkpoint compaction: reduce active state to a summary plus the last exchange.
 
 This module is pure: it takes a message list and returns the replacement list.
 All LangGraph checkpoint access lives in agent.Agent, which owns the
@@ -13,7 +13,12 @@ from typing import Any
 
 from langchain_core.messages import BaseMessage, HumanMessage
 
-from token_budget import _message_text, count_messages_tokens
+from token_budget import (
+    SUMMARY_HEADING,
+    _is_summary_message,
+    _message_text,
+    count_messages_tokens,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,9 +33,6 @@ UNUSABLE_SUMMARY_PLACEHOLDERS = frozenset(
     }
 )
 IMAGE_BLOCK_TYPES = {"image_url", "image", "input_image"}
-
-# Heading the compacted summary message carries in checkpoint state.
-SUMMARY_HEADING = "## Conversation summary"
 
 SUMMARY_PROMPT = """You summarize a Telegram conversation for future continuity.
 
@@ -136,6 +138,7 @@ def select_keep_suffix(
             index
             for index in range(len(messages) - 1, -1, -1)
             if isinstance(messages[index], HumanMessage)
+            and not _is_summary_message(messages[index])
         ),
         None,
     )
@@ -149,7 +152,7 @@ def select_keep_suffix(
 
 
 class ConversationCompactor:
-    """Plans the replacement of active checkpoint state with a rolling summary.
+    """Plans the replacement of active checkpoint state with a summary.
 
     Holds no graph reference and performs no state mutation: plan() is a pure
     function of its inputs plus one summary-model call.
@@ -182,9 +185,15 @@ class ConversationCompactor:
         return summary
 
     def create_summary(self, messages: list[BaseMessage]) -> str:
-        """Summarize the whole message list. Raises on unusable output."""
+        """Summarize the message list, excluding prior summary messages.
+
+        Raises on unusable output.
+        """
+        non_summary = [
+            message for message in messages if not _is_summary_message(message)
+        ]
         prompt = SUMMARY_PROMPT.format(
-            messages=render_conversation(sanitize_summary_messages(messages))
+            messages=render_conversation(sanitize_summary_messages(non_summary))
         )
         try:
             response = self.model.invoke(prompt)
@@ -205,11 +214,19 @@ class ConversationCompactor:
         Raises on a provider failure or an unusable summary; the caller is
         responsible for the fail-open boundary.
         """
-        before_tokens = count_messages_tokens(messages)
-        if before_tokens < self.trigger_tokens:
+        chat_tokens = count_messages_tokens(
+            m for m in messages if not _is_summary_message(m)
+        )
+        if chat_tokens < self.trigger_tokens:
             return None
 
-        summary_text = self.create_summary(messages)
+        non_summary = [
+            message for message in messages if not _is_summary_message(message)
+        ]
+        if not non_summary:
+            return None
+
+        summary_text = self.create_summary(non_summary)
         keep = select_keep_suffix(
             messages, self.trigger_tokens, self.max_summary_output
         )
@@ -217,6 +234,7 @@ class ConversationCompactor:
             HumanMessage(content=f"{SUMMARY_HEADING}\n\n{summary_text}"),
             *keep,
         ]
+        before_tokens = count_messages_tokens(messages)
         return CompactionPlan(
             messages=replacement,
             record=SummaryAuditRecord(

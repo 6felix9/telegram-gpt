@@ -202,7 +202,7 @@ Environment variables are loaded from `.env`.
 | `MAX_OUTPUT_TOKENS` | `2048` | Max tokens per reply; also the trimming middleware's reserve |
 | `SUMMARY_MODEL` | `gpt-5.6-luna` | Dedicated supported model used to compact checkpoint state into a rolling summary |
 | `VISION_SUMMARY_MODEL` | `gpt-5.4-nano` | Dedicated supported model used to describe images on ingest; independent of `/model` and `SUMMARY_MODEL` |
-| `SUMMARIZATION_TRIGGER` | `8000` | Compact the checkpoint when active message state reaches this approximate token count |
+| `SUMMARIZATION_TRIGGER` | `8000` | Compact the checkpoint when uncompacted conversation reaches this approximate token count (excluding rolling summary tokens) |
 | `MAX_SUMMARY_OUTPUT` | `1000` | Hard output cap for one generated summary; must be less than `SUMMARIZATION_TRIGGER` |
 | `MESSAGE_RETENTION_DAYS` | `30` | Age-based retention for the `messages` audit table; rows older than this many days are deleted by `scripts/cleanup_retention.py`. `0` disables cleanup |
 | `TRANSCRIPTION_MODEL` | `gpt-transcribe` | Speech-to-text model for voice notes; uses OpenAI's audio endpoint, independent of `/model` and `SUMMARY_MODEL` |
