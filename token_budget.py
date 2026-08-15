@@ -10,6 +10,11 @@ from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, ToolMess
 # tiktoken encoding is model-independent for our budgeting purposes.
 _ENCODING = tiktoken.get_encoding("cl100k_base")
 
+# Heading the compacted summary message carries in checkpoint state.
+# Single source of truth: conversation_summary.py re-exports this rather than
+# duplicating the literal, since it imports _is_summary_message from here.
+SUMMARY_HEADING = "## Conversation summary"
+
 
 def count_tokens(text: str) -> int:
     """Token count of a plain string."""
@@ -55,7 +60,7 @@ def _is_summary_message(message: BaseMessage) -> bool:
     if message.additional_kwargs.get("lc_source") == "summarization":
         return True
     text = _message_text(message)
-    return text.startswith("## Conversation summary")
+    return text.startswith(SUMMARY_HEADING)
 
 
 def _drop_orphaned_tool_messages(messages: list[AnyMessage]) -> list[AnyMessage]:

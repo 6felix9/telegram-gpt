@@ -52,7 +52,7 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 3. Authorization is checked.
 4. The incoming user message is stored in `messages`.
 5. History is loaded from the checkpoint thread for the chat.
-6. Before the incoming message is appended, `Agent._compact_if_needed()` replaces active state with a summary plus the last exchange if it has reached `SUMMARIZATION_TRIGGER`. This runs on triggered and passive messages alike. Compaction failure leaves checkpoint state unchanged.
+6. Before the incoming message is appended, `Agent._compact_if_needed()` replaces active state with a summary plus the last exchange if uncompacted conversation tokens have reached `SUMMARIZATION_TRIGGER`. This runs on triggered and passive messages alike. Compaction failure leaves checkpoint state unchanged.
 7. `agent.py`'s trimming middleware (`wrap_model_call`) keeps as much recent context as possible while reserving response tokens.
 8. `prompt_builder` builds the static system prompt and provider-specific message format; the context middleware then appends the `## Current context` block (date/time, reply context) after the trimmed history.
 9. `agent.run()` continues the LangChain agent reply/tool loop with the active provider.
@@ -243,7 +243,7 @@ Important notes:
 - The running bot may use a different reply model if `/model` has changed `active_model`
 - `SUMMARY_MODEL` is the dedicated summarization model and is independent of `/model` / `active_model`
 - `VISION_SUMMARY_MODEL` is the dedicated model that describes images on ingest; it is fixed and independent of `/model` and `SUMMARY_MODEL`. A missing provider key does not block startup — image persistence simply fails open.
-- `SUMMARIZATION_TRIGGER` is the only threshold governing checkpoint size, and is independent of `MAX_CONTEXT_TOKENS`, which bounds a single reply-model call. `MAX_SUMMARY_OUTPUT` must be less than `SUMMARIZATION_TRIGGER`
+- `SUMMARIZATION_TRIGGER` is the only threshold governing checkpoint size (measuring uncompacted conversation tokens, excluding rolling summary tokens), and is independent of `MAX_CONTEXT_TOKENS`, which bounds a single reply-model call. `MAX_SUMMARY_OUTPUT` must be less than `SUMMARIZATION_TRIGGER`
 - `TRANSCRIPTION_MODEL` is the dedicated speech-to-text model for voice notes. It calls OpenAI's audio transcription endpoint directly and is deliberately *not* in `MODEL_PROVIDERS`; it is fixed and independent of `/model` and `SUMMARY_MODEL`
 - `MAX_VOICE_DURATION_SECONDS` bounds transcription cost: a longer note is skipped before download and recorded as a bare `[voice]` marker
 - `TAVILY_API_KEY` is optional; when blank, `tools.py` falls back to a DuckDuckGo-backed web search tool instead of Tavily

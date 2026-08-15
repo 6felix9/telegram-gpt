@@ -13,7 +13,12 @@ from typing import Any
 
 from langchain_core.messages import BaseMessage, HumanMessage
 
-from token_budget import _message_text, count_messages_tokens
+from token_budget import (
+    SUMMARY_HEADING,
+    _is_summary_message,
+    _message_text,
+    count_messages_tokens,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,9 +33,6 @@ UNUSABLE_SUMMARY_PLACEHOLDERS = frozenset(
     }
 )
 IMAGE_BLOCK_TYPES = {"image_url", "image", "input_image"}
-
-# Heading the compacted summary message carries in checkpoint state.
-SUMMARY_HEADING = "## Conversation summary"
 
 SUMMARY_PROMPT = """You summarize a Telegram conversation for future continuity.
 
@@ -136,6 +138,7 @@ def select_keep_suffix(
             index
             for index in range(len(messages) - 1, -1, -1)
             if isinstance(messages[index], HumanMessage)
+            and not _is_summary_message(messages[index])
         ),
         None,
     )
@@ -205,8 +208,10 @@ class ConversationCompactor:
         Raises on a provider failure or an unusable summary; the caller is
         responsible for the fail-open boundary.
         """
-        before_tokens = count_messages_tokens(messages)
-        if before_tokens < self.trigger_tokens:
+        chat_tokens = count_messages_tokens(
+            m for m in messages if not _is_summary_message(m)
+        )
+        if chat_tokens < self.trigger_tokens:
             return None
 
         summary_text = self.create_summary(messages)
@@ -217,6 +222,7 @@ class ConversationCompactor:
             HumanMessage(content=f"{SUMMARY_HEADING}\n\n{summary_text}"),
             *keep,
         ]
+        before_tokens = count_messages_tokens(messages)
         return CompactionPlan(
             messages=replacement,
             record=SummaryAuditRecord(

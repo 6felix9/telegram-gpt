@@ -147,6 +147,14 @@ def test_keep_suffix_is_dropped_when_it_exceeds_the_post_summary_budget():
     assert select_keep_suffix(messages, trigger_tokens=100, max_summary_output=40) == []
 
 
+def test_keep_suffix_ignores_summary_human_message():
+    messages = [
+        HumanMessage(content=f"{SUMMARY_HEADING}\n\nAlice likes window seats."),
+        AIMessage(content="Got it."),
+    ]
+    assert select_keep_suffix(messages, trigger_tokens=1000, max_summary_output=100) == []
+
+
 # --- plan() -----------------------------------------------------------------
 
 def test_plan_returns_none_below_threshold():
@@ -155,6 +163,36 @@ def test_plan_returns_none_below_threshold():
 
     assert compactor.plan("chat-1", [HumanMessage(content="hi")]) is None
     assert model.calls == []
+
+
+def test_plan_ignores_summary_tokens_in_trigger_check():
+    # Large summary + small chat message: total tokens > trigger, but chat tokens < trigger.
+    model = _FakeModel()
+    compactor = _compactor(model, trigger_tokens=100, max_summary_output=40)
+    messages = [
+        HumanMessage(content=f"{SUMMARY_HEADING}\n\n" + ("word " * 150)),
+        HumanMessage(content="short question"),
+    ]
+
+    assert compactor.plan("chat-1", messages) is None
+    assert model.calls == []
+
+
+def test_plan_triggers_when_chat_tokens_alone_cross_threshold():
+    # Large summary + large chat messages: chat tokens > trigger.
+    model = _FakeModel(["Updated summary."])
+    compactor = _compactor(model, trigger_tokens=100, max_summary_output=40)
+    messages = [
+        HumanMessage(content=f"{SUMMARY_HEADING}\n\n" + ("word " * 50)),
+        HumanMessage(content=_big("new question")),
+        AIMessage(content=_big("new answer")),
+    ]
+
+    plan = compactor.plan("chat-1", messages)
+    assert isinstance(plan, CompactionPlan)
+    assert len(model.calls) == 1
+    assert plan.record.summary_text == "Updated summary."
+    assert plan.record.before_message_count == 3
 
 
 def test_plan_replaces_state_with_summary_and_last_exchange():
