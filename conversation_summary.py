@@ -14,6 +14,7 @@ from typing import Any
 from langchain_core.messages import BaseMessage, HumanMessage
 
 from token_budget import (
+    SUMMARY_HEADING,
     _is_summary_message,
     _message_text,
     count_messages_tokens,
@@ -32,9 +33,6 @@ UNUSABLE_SUMMARY_PLACEHOLDERS = frozenset(
     }
 )
 IMAGE_BLOCK_TYPES = {"image_url", "image", "input_image"}
-
-# Heading the compacted summary message carries in checkpoint state.
-SUMMARY_HEADING = "## Conversation summary"
 
 SUMMARY_PROMPT = """You summarize a Telegram conversation for future continuity.
 
