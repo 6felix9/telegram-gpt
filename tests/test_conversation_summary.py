@@ -3,7 +3,6 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 import pytest
 
 from conversation_summary import (
-    SUMMARY_HEADING,
     CompactionPlan,
     ConversationCompactor,
     SummaryAuditRecord,
@@ -11,6 +10,7 @@ from conversation_summary import (
     sanitize_summary_messages,
     select_keep_suffix,
 )
+from token_budget import SUMMARY_HEADING, _is_summary_message
 
 NO_HISTORY_PLACEHOLDER = "No previous conversation history."
 TOO_LONG_PLACEHOLDER = "Previous conversation was too long to summarize."
@@ -145,6 +145,17 @@ def test_keep_suffix_is_dropped_when_it_exceeds_the_post_summary_budget():
     ]
 
     assert select_keep_suffix(messages, trigger_tokens=100, max_summary_output=40) == []
+
+
+def test_is_summary_message():
+    assert _is_summary_message(
+        HumanMessage(content=f"{SUMMARY_HEADING}\n\nsome summary")
+    )
+    assert _is_summary_message(
+        HumanMessage(content="msg", additional_kwargs={"lc_source": "summarization"})
+    )
+    assert not _is_summary_message(HumanMessage(content="regular text"))
+    assert not _is_summary_message(AIMessage(content="bot text"))
 
 
 def test_keep_suffix_ignores_summary_human_message():
@@ -336,3 +347,55 @@ def test_plan_flattens_block_list_summary_content():
     plan = compactor.plan("chat-1", [HumanMessage(content=_big("a"))])
 
     assert plan.record.summary_text == "block summary"
+
+
+def test_create_summary_excludes_prior_summary_messages():
+    model = _FakeModel(["new summary"])
+    compactor = _compactor(model, trigger_tokens=10, max_summary_output=4)
+    messages = [
+        HumanMessage(content=f"{SUMMARY_HEADING}\n\nOld summary details"),
+        HumanMessage(content="New conversation topic"),
+    ]
+
+    summary = compactor.create_summary(messages)
+
+    assert summary == "new summary"
+    assert len(model.calls) == 1
+    prompt = model.calls[0]
+    assert "Old summary details" not in prompt
+    assert SUMMARY_HEADING not in prompt
+    assert "New conversation topic" in prompt
+
+
+def test_plan_excludes_previous_summary_from_summary_prompt():
+    model = _FakeModel(["independent summary"])
+    compactor = _compactor(model, trigger_tokens=100, max_summary_output=40)
+    messages = [
+        HumanMessage(content=f"{SUMMARY_HEADING}\n\nPrior summary of facts"),
+        HumanMessage(content=_big("new question")),
+        AIMessage(content=_big("new answer")),
+    ]
+
+    plan = compactor.plan("chat-1", messages)
+
+    assert isinstance(plan, CompactionPlan)
+    assert len(model.calls) == 1
+    prompt = model.calls[0]
+    assert "Prior summary of facts" not in prompt
+    assert SUMMARY_HEADING not in prompt
+    assert "new question" in prompt
+    assert "new answer" in prompt
+
+
+def test_plan_returns_none_if_only_summary_messages_present():
+    model = _FakeModel(["should not be called"])
+    compactor = _compactor(model, trigger_tokens=100, max_summary_output=40)
+    messages = [
+        HumanMessage(content=f"{SUMMARY_HEADING}\n\n" + _big("only summary", repeat=100))
+    ]
+
+    plan = compactor.plan("chat-1", messages)
+
+    assert plan is None
+    assert len(model.calls) == 0
+
