@@ -112,6 +112,15 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 - `/model` updates the database, then calls `agent.set_model()` to rebuild the live chat model for the new provider.
 - The summary model is fixed by `SUMMARY_MODEL` and is independent of `/model`.
 
+### Open Access Behavior
+
+- `open_access` is a single global setting (`enabled`, `expires_at`), following the same shape as `active_model`/`active_personality`.
+- `/openbot on [duration]` (admin-only) enables it; `duration` is optional (`30m`, `2h`, `1d` — minutes/hours/days), defaulting to 4h so it can't be left on indefinitely by accident. `/openbot off` disables it immediately. Bare `/openbot` reports current state.
+- `handlers.authorization.is_authorized()` checks `open_access` (after the main-user check, before the allowlist) — when enabled and not expired, any user is authorized without an allowlist lookup.
+- Expiry is evaluated lazily on read (`SettingsRepository.get_open_access()`), not by a background job — there is no scheduler in this codebase. A row can sit `enabled=TRUE` past its `expires_at` between reads; every read (including the authorization check) recomputes effective state against the current time, so nothing ever authorizes past expiry.
+- `is_main_authorized_user()` is unaffected — admin commands stay restricted to the main authorized user even while open access is on.
+- State is also surfaced in `/allowlist` output so the admin doesn't forget it's left on.
+
 ## Build, Test, and Development Commands
 
 - Install deps: `pip install -r requirements.txt`
@@ -196,6 +205,7 @@ Expected tables:
 - `personality`
 - `active_personality`
 - `active_model`
+- `open_access`
 - `conversation_summaries`
 - `images`
 
@@ -204,6 +214,7 @@ Important details:
 - `granted_users` includes `first_name` and `username`
 - `active_model` persists the globally selected model
 - `active_personality` is a single-row table
+- `open_access` is a single-row table (`enabled`, `expires_at`) backing the `/openbot` toggle
 - `conversation_summaries` is an audit-only table and is never read by the agent
 - Schema is version-controlled via Alembic migrations in `alembic/versions/`, applied with `alembic upgrade head` (not created automatically on boot)
 
@@ -259,6 +270,7 @@ All commands are main admin only (gated by `is_main_authorized_user()` in `handl
 - `/grant <user_id>`
 - `/revoke <user_id>`
 - `/allowlist`
+- `/openbot [on|off] [duration]`
 - `/model [name]`
 - `/personality [name]`
 - `/help`

@@ -1,5 +1,7 @@
 """Admin-only Telegram commands, bound to an explicit dependency set."""
 import logging
+import re
+from datetime import datetime, timedelta
 
 from telegram.helpers import escape_markdown
 
@@ -9,6 +11,37 @@ from .authorization import is_main_authorized_user
 from .handler_deps import HandlerDependencies
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_OPEN_ACCESS_DURATION = timedelta(hours=4)
+_DURATION_RE = re.compile(r"^(\d+)([mhd])$", re.IGNORECASE)
+_DURATION_UNITS = {"m": "minutes", "h": "hours", "d": "days"}
+
+
+def _parse_duration(text: str) -> timedelta | None:
+    """Parse a duration like `30m`, `2h`, or `1d`. None if invalid."""
+    match = _DURATION_RE.match(text.strip())
+    if not match:
+        return None
+    amount = int(match.group(1))
+    if amount <= 0:
+        return None
+    unit = _DURATION_UNITS[match.group(2).lower()]
+    return timedelta(**{unit: amount})
+
+
+def _format_duration(delta: timedelta) -> str:
+    """Render a timedelta as e.g. `2h 30m`, `4h`, `1d`, or `30m`."""
+    total_minutes = int(delta.total_seconds() // 60)
+    days, remainder = divmod(total_minutes, 1440)
+    hours, minutes = divmod(remainder, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes or not parts:
+        parts.append(f"{minutes}m")
+    return " ".join(parts)
 
 
 class CommandHandlers:
@@ -186,7 +219,17 @@ class CommandHandlers:
         try:
             granted_users = self._deps.db.get_granted_users()
 
+            open_enabled, open_expires_at = self._deps.db.get_open_access()
+            if open_enabled:
+                remaining = open_expires_at - datetime.utcnow()
+                open_access_line = (
+                    f"🔓 Open access: ON (expires in {_format_duration(remaining)})"
+                )
+            else:
+                open_access_line = "🔒 Open access: OFF"
+
             message = "📋 **Bot Allowlist**\n\n"
+            message += f"{open_access_line}\n\n"
             message += f"👑 **Main Admin:**\n- `{self._deps.config.AUTHORIZED_USER_ID}`\n\n"
 
             if granted_users:
@@ -211,6 +254,61 @@ class CommandHandlers:
         except Exception as e:
             logger.error(f"Error showing allowlist: {e}", exc_info=True)
             await update.message.reply_text("❌ Failed to retrieve allowlist. Please try again.")
+
+    async def openbot_command(self, update, context):
+        user_id = update.message.from_user.id
+        if not is_main_authorized_user(user_id, self._deps.config):
+            await update.message.reply_text(
+                "Sorry, only the main authorized user can change open access."
+            )
+            return
+
+        args = context.args or []
+
+        if not args:
+            enabled, expires_at = self._deps.db.get_open_access()
+            if enabled:
+                remaining = expires_at - datetime.utcnow()
+                await update.message.reply_text(
+                    f"🔓 Open access is ON (expires in {_format_duration(remaining)})."
+                )
+            else:
+                await update.message.reply_text("🔒 Open access is OFF.")
+            return
+
+        action = args[0].strip().lower()
+
+        if action == "off":
+            self._deps.db.set_open_access(False, None)
+            await update.message.reply_text("🔒 Open access turned OFF.")
+            logger.info(f"User {user_id} turned open access OFF")
+            return
+
+        if action == "on":
+            if len(args) > 1:
+                duration = _parse_duration(args[1])
+                if duration is None:
+                    await update.message.reply_text(
+                        f"❌ Invalid duration `{args[1]}`. "
+                        "Use formats like `30m`, `2h`, or `1d`.",
+                        parse_mode="Markdown",
+                    )
+                    return
+            else:
+                duration = _DEFAULT_OPEN_ACCESS_DURATION
+
+            expires_at = datetime.utcnow() + duration
+            self._deps.db.set_open_access(True, expires_at)
+            await update.message.reply_text(
+                f"🔓 Open access turned ON — expires in {_format_duration(duration)}."
+            )
+            logger.info(f"User {user_id} turned open access ON until {expires_at}")
+            return
+
+        await update.message.reply_text(
+            "❌ Usage: `/openbot [on|off] [duration]`\nExample: `/openbot on 2h`",
+            parse_mode="Markdown",
+        )
 
     async def personality_command(self, update, context):
         user_id = update.message.from_user.id
@@ -327,6 +425,8 @@ class CommandHandlers:
             "/grant <user\\_id> - Grant bot access to a user\n"
             "/revoke <user\\_id> - Revoke bot access from a user\n"
             "/allowlist - Show all authorized users\n"
+            "/openbot [on|off] [duration] - View or toggle open access "
+            "for all users (e.g. /openbot on 2h)\n"
             "/model - View or change the active AI model\n"
             "/personality - View or change active personality\n"
             "/version - Show current bot version"

@@ -38,7 +38,10 @@ class _Cfg:
 
 def _handlers(db=None, agent=None, prompt_builder=None, username="mybot"):
     if db is None:
-        db = SimpleNamespace(is_user_granted=Mock(return_value=False))
+        db = SimpleNamespace(
+            is_user_granted=Mock(return_value=False),
+            get_open_access=Mock(return_value=(False, None)),
+        )
     deps = HandlerDependencies(
         config=_Cfg, db=db, agent=agent or SimpleNamespace(),
         prompt_builder=prompt_builder or SimpleNamespace(), bot_username=username,

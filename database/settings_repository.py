@@ -153,6 +153,52 @@ class SettingsRepository:
             logger.error(f"Failed to get active model: {e}", exc_info=True)
             return "gpt-5.4-mini"
 
+    def get_open_access(self) -> tuple[bool, datetime | None]:
+        cache_key = "open_access"
+        cached = self._cache.get(cache_key)
+        if cached is MISSING:
+            try:
+                with self._conn.connection() as conn:
+                    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                        cur.execute(
+                            "SELECT enabled, expires_at FROM open_access WHERE id = 1"
+                        )
+                        row = cur.fetchone()
+                cached = (row["enabled"], row["expires_at"]) if row else (False, None)
+                self._cache.set(cache_key, cached, ttl=30.0)
+            except Exception as e:
+                logger.error(f"Failed to get open access state: {e}", exc_info=True)
+                return False, None
+
+        enabled, expires_at = cached
+        if enabled and expires_at is not None and expires_at <= datetime.utcnow():
+            return False, expires_at
+        return enabled, expires_at
+
+    def set_open_access(self, enabled: bool, expires_at: datetime | None) -> None:
+        try:
+            timestamp = datetime.utcnow()
+            with self._conn.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO open_access (id, enabled, expires_at, updated_at)
+                        VALUES (1, %s, %s, %s)
+                        ON CONFLICT (id) DO UPDATE
+                        SET enabled = EXCLUDED.enabled,
+                            expires_at = EXCLUDED.expires_at,
+                            updated_at = EXCLUDED.updated_at
+                        """,
+                        (enabled, expires_at, timestamp)
+                    )
+
+            self._cache.invalidate("open_access")
+            logger.info(f"Open access set to enabled={enabled}, expires_at={expires_at}")
+
+        except Exception as e:
+            logger.error(f"Failed to set open access: {e}", exc_info=True)
+            raise
+
     def set_active_model(self, model: str) -> None:
         try:
             timestamp = datetime.utcnow()
