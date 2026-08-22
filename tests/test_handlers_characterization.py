@@ -59,16 +59,31 @@ def test_is_authorized_main_user_true():
 
 
 def test_is_authorized_granted_user_true():
-    db = SimpleNamespace(is_user_granted=Mock(return_value=True))
+    db = SimpleNamespace(
+        is_user_granted=Mock(return_value=True),
+        get_open_access=Mock(return_value=(False, None)),
+    )
     _init(db=db, config=_Cfg)
     assert handlers.is_authorized(42) is True
     db.is_user_granted.assert_called_once_with(42)
 
 
 def test_is_authorized_unknown_user_false():
-    db = SimpleNamespace(is_user_granted=Mock(return_value=False))
+    db = SimpleNamespace(
+        is_user_granted=Mock(return_value=False),
+        get_open_access=Mock(return_value=(False, None)),
+    )
     _init(db=db, config=_Cfg)
     assert handlers.is_authorized(42) is False
+
+
+def test_is_authorized_open_access_true_for_unlisted_user():
+    db = SimpleNamespace(
+        is_user_granted=Mock(return_value=False),
+        get_open_access=Mock(return_value=(True, None)),
+    )
+    _init(db=db, config=_Cfg)
+    assert handlers.is_authorized(42) is True
 
 
 def test_is_main_authorized_user():
@@ -255,9 +270,12 @@ def test_revoke_command_cannot_revoke_self():
 
 
 def test_allowlist_command_lists_users():
-    db = SimpleNamespace(get_granted_users=Mock(return_value=[
-        (555, "2026-01-01T00:00:00", "Bob", "bobby"),
-    ]))
+    db = SimpleNamespace(
+        get_granted_users=Mock(return_value=[
+            (555, "2026-01-01T00:00:00", "Bob", "bobby"),
+        ]),
+        get_open_access=Mock(return_value=(False, None)),
+    )
     _init(db=db, config=_Cfg)
     update, context, message = _cmd_update(user_id=1)
     asyncio.run(handlers.allowlist_command(update, context))

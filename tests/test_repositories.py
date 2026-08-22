@@ -1,6 +1,7 @@
 """Repository characterization tests: SQL executed, params, and cache
 invalidation timing, using a fake connection double instead of a live DB."""
 from contextlib import contextmanager
+from datetime import datetime, timedelta
 
 from cache import MISSING, TTLCache
 from database.access_repository import AccessRepository
@@ -172,6 +173,51 @@ def test_get_active_model_returns_default_when_no_row():
     manager, conn = _fake_manager(results=[None])
     repo = SettingsRepository(manager, TTLCache(default_ttl=60.0))
     assert repo.get_active_model() == "gpt-5.4-mini"
+
+
+def test_get_open_access_returns_disabled_when_no_row():
+    manager, conn = _fake_manager(results=[None])
+    repo = SettingsRepository(manager, TTLCache(default_ttl=60.0))
+    assert repo.get_open_access() == (False, None)
+
+
+def test_get_open_access_returns_enabled_state_when_not_expired():
+    future = datetime.utcnow() + timedelta(hours=1)
+    manager, conn = _fake_manager(results=[{"enabled": True, "expires_at": future}])
+    repo = SettingsRepository(manager, TTLCache(default_ttl=60.0))
+    assert repo.get_open_access() == (True, future)
+
+
+def test_get_open_access_returns_disabled_once_expiry_has_passed():
+    past = datetime.utcnow() - timedelta(seconds=1)
+    manager, conn = _fake_manager(results=[{"enabled": True, "expires_at": past}])
+    repo = SettingsRepository(manager, TTLCache(default_ttl=60.0))
+    enabled, _expires_at = repo.get_open_access()
+    assert enabled is False
+
+
+def test_get_open_access_caches_result_and_skips_second_query():
+    manager, conn = _fake_manager(results=[{"enabled": True, "expires_at": None}])
+    repo = SettingsRepository(manager, TTLCache(default_ttl=60.0))
+    first = repo.get_open_access()
+    second = repo.get_open_access()
+    assert first == (True, None)
+    assert second == (True, None)
+    assert len(conn.executed) == 1
+
+
+def test_set_open_access_upserts_and_invalidates_cache():
+    manager, conn = _fake_manager()
+    cache = TTLCache(default_ttl=60.0)
+    cache.set("open_access", (True, None), ttl=30.0)
+    repo = SettingsRepository(manager, cache)
+    expires_at = datetime.utcnow() + timedelta(hours=4)
+    repo.set_open_access(True, expires_at)
+    sql, params = conn.executed[0]
+    assert "INSERT INTO open_access" in sql
+    assert params[0] is True
+    assert params[1] == expires_at
+    assert cache.get("open_access") is MISSING
 
 
 def test_list_personalities_truncates_long_prompt_preview():
