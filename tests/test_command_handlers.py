@@ -160,6 +160,60 @@ def test_openbot_command_on_invalid_duration():
     )
 
 
+def test_openbot_command_on_duration_too_large_is_rejected():
+    db = SimpleNamespace(set_open_access=Mock())
+    handlers_obj = _handlers(db=db)
+    update, context, message = _update(user_id=1, args=["on", "999999999999d"])
+    asyncio.run(handlers_obj.openbot_command(update, context))
+    db.set_open_access.assert_not_called()
+    message.reply_text.assert_awaited_once_with(
+        "❌ Invalid duration `999999999999d`. Use formats like `30m`, `2h`, or `1d`.",
+        parse_mode="Markdown",
+    )
+
+
+def test_openbot_command_on_duration_over_cap_is_rejected():
+    db = SimpleNamespace(set_open_access=Mock())
+    handlers_obj = _handlers(db=db)
+    update, context, message = _update(user_id=1, args=["on", "31d"])
+    asyncio.run(handlers_obj.openbot_command(update, context))
+    db.set_open_access.assert_not_called()
+    message.reply_text.assert_awaited_once_with(
+        "❌ Invalid duration `31d`. Use formats like `30m`, `2h`, or `1d`.",
+        parse_mode="Markdown",
+    )
+
+
+def test_openbot_command_on_db_failure_shows_friendly_error():
+    db = SimpleNamespace(set_open_access=Mock(side_effect=RuntimeError("db down")))
+    handlers_obj = _handlers(db=db)
+    update, context, message = _update(user_id=1, args=["on"])
+    asyncio.run(handlers_obj.openbot_command(update, context))
+    message.reply_text.assert_awaited_once_with(
+        "❌ Failed to update open access. Please try again."
+    )
+
+
+def test_openbot_command_off_db_failure_shows_friendly_error():
+    db = SimpleNamespace(set_open_access=Mock(side_effect=RuntimeError("db down")))
+    handlers_obj = _handlers(db=db)
+    update, context, message = _update(user_id=1, args=["off"])
+    asyncio.run(handlers_obj.openbot_command(update, context))
+    message.reply_text.assert_awaited_once_with(
+        "❌ Failed to update open access. Please try again."
+    )
+
+
+def test_openbot_command_bare_db_failure_shows_friendly_error():
+    db = SimpleNamespace(get_open_access=Mock(side_effect=RuntimeError("db down")))
+    handlers_obj = _handlers(db=db)
+    update, context, message = _update(user_id=1, args=[])
+    asyncio.run(handlers_obj.openbot_command(update, context))
+    message.reply_text.assert_awaited_once_with(
+        "❌ Failed to update open access. Please try again."
+    )
+
+
 def test_openbot_command_off():
     db = SimpleNamespace(set_open_access=Mock())
     handlers_obj = _handlers(db=db)

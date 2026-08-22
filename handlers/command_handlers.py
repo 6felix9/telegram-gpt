@@ -13,12 +13,13 @@ from .handler_deps import HandlerDependencies
 logger = logging.getLogger(__name__)
 
 _DEFAULT_OPEN_ACCESS_DURATION = timedelta(hours=4)
+_MAX_OPEN_ACCESS_DURATION = timedelta(days=30)
 _DURATION_RE = re.compile(r"^(\d+)([mhd])$", re.IGNORECASE)
 _DURATION_UNITS = {"m": "minutes", "h": "hours", "d": "days"}
 
 
 def _parse_duration(text: str) -> timedelta | None:
-    """Parse a duration like `30m`, `2h`, or `1d`. None if invalid."""
+    """Parse a duration like `30m`, `2h`, or `1d`. None if invalid or over the cap."""
     match = _DURATION_RE.match(text.strip())
     if not match:
         return None
@@ -26,7 +27,13 @@ def _parse_duration(text: str) -> timedelta | None:
     if amount <= 0:
         return None
     unit = _DURATION_UNITS[match.group(2).lower()]
-    return timedelta(**{unit: amount})
+    try:
+        delta = timedelta(**{unit: amount})
+    except OverflowError:
+        return None
+    if delta > _MAX_OPEN_ACCESS_DURATION:
+        return None
+    return delta
 
 
 def _format_duration(delta: timedelta) -> str:
@@ -265,50 +272,55 @@ class CommandHandlers:
 
         args = context.args or []
 
-        if not args:
-            enabled, expires_at = self._deps.db.get_open_access()
-            if enabled:
-                remaining = expires_at - datetime.utcnow()
-                await update.message.reply_text(
-                    f"🔓 Open access is ON (expires in {_format_duration(remaining)})."
-                )
-            else:
-                await update.message.reply_text("🔒 Open access is OFF.")
-            return
-
-        action = args[0].strip().lower()
-
-        if action == "off":
-            self._deps.db.set_open_access(False, None)
-            await update.message.reply_text("🔒 Open access turned OFF.")
-            logger.info(f"User {user_id} turned open access OFF")
-            return
-
-        if action == "on":
-            if len(args) > 1:
-                duration = _parse_duration(args[1])
-                if duration is None:
+        try:
+            if not args:
+                enabled, expires_at = self._deps.db.get_open_access()
+                if enabled:
+                    remaining = expires_at - datetime.utcnow()
                     await update.message.reply_text(
-                        f"❌ Invalid duration `{args[1]}`. "
-                        "Use formats like `30m`, `2h`, or `1d`.",
-                        parse_mode="Markdown",
+                        f"🔓 Open access is ON (expires in {_format_duration(remaining)})."
                     )
-                    return
-            else:
-                duration = _DEFAULT_OPEN_ACCESS_DURATION
+                else:
+                    await update.message.reply_text("🔒 Open access is OFF.")
+                return
 
-            expires_at = datetime.utcnow() + duration
-            self._deps.db.set_open_access(True, expires_at)
+            action = args[0].strip().lower()
+
+            if action == "off":
+                self._deps.db.set_open_access(False, None)
+                await update.message.reply_text("🔒 Open access turned OFF.")
+                logger.info(f"User {user_id} turned open access OFF")
+                return
+
+            if action == "on":
+                if len(args) > 1:
+                    duration = _parse_duration(args[1])
+                    if duration is None:
+                        await update.message.reply_text(
+                            f"❌ Invalid duration `{args[1]}`. "
+                            "Use formats like `30m`, `2h`, or `1d`.",
+                            parse_mode="Markdown",
+                        )
+                        return
+                else:
+                    duration = _DEFAULT_OPEN_ACCESS_DURATION
+
+                expires_at = datetime.utcnow() + duration
+                self._deps.db.set_open_access(True, expires_at)
+                await update.message.reply_text(
+                    f"🔓 Open access turned ON — expires in {_format_duration(duration)}."
+                )
+                logger.info(f"User {user_id} turned open access ON until {expires_at}")
+                return
+
             await update.message.reply_text(
-                f"🔓 Open access turned ON — expires in {_format_duration(duration)}."
+                "❌ Usage: `/openbot [on|off] [duration]`\nExample: `/openbot on 2h`",
+                parse_mode="Markdown",
             )
-            logger.info(f"User {user_id} turned open access ON until {expires_at}")
-            return
 
-        await update.message.reply_text(
-            "❌ Usage: `/openbot [on|off] [duration]`\nExample: `/openbot on 2h`",
-            parse_mode="Markdown",
-        )
+        except Exception as e:
+            logger.error(f"Error updating open access: {e}", exc_info=True)
+            await update.message.reply_text("❌ Failed to update open access. Please try again.")
 
     async def personality_command(self, update, context):
         user_id = update.message.from_user.id
