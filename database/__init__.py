@@ -83,6 +83,12 @@ class Database:
     def set_active_model(self, model: str) -> None:
         return self._settings.set_active_model(model)
 
+    def get_open_access(self):
+        return self._settings.get_open_access()
+
+    def set_open_access(self, enabled: bool, expires_at) -> None:
+        return self._settings.set_open_access(enabled, expires_at)
+
     # --- summary audit ------------------------------------------------------
     def record_conversation_summary(self, *args, **kwargs) -> int:
         return self._summaries.record_conversation_summary(*args, **kwargs)

@@ -102,6 +102,11 @@ async def allowlist_command(update, context):
     return await _command_handlers.allowlist_command(update, context)
 
 
+async def openbot_command(update, context):
+    assert _command_handlers is not None, "init_handlers() must run before openbot_command()"
+    return await _command_handlers.openbot_command(update, context)
+
+
 async def personality_command(update, context):
     assert _command_handlers is not None, "init_handlers() must run before personality_command()"
     return await _command_handlers.personality_command(update, context)

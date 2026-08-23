@@ -117,6 +117,7 @@ def main():
         application.add_handler(CommandHandler("grant", handlers.grant_command))
         application.add_handler(CommandHandler("revoke", handlers.revoke_command))
         application.add_handler(CommandHandler("allowlist", handlers.allowlist_command))
+        application.add_handler(CommandHandler("openbot", handlers.openbot_command))
         application.add_handler(CommandHandler("version", handlers.version_command))
         application.add_handler(CommandHandler("model", handlers.model_command))
         application.add_handler(CommandHandler("personality", handlers.personality_command))
