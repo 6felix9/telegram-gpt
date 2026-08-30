@@ -85,6 +85,10 @@ class Config:
     # scripts/cleanup_retention.py (wired into Railway preDeployCommand). 0 means
     # "disabled" (skip the delete).
     MESSAGE_RETENTION_DAYS = _int_env("MESSAGE_RETENTION_DAYS", 30)
+    # Same shape, for `images` rows. Kept a separate knob despite the shared
+    # default because image rows carry blobs, so this is the threshold worth
+    # tightening if storage gets tight. 0 means "disabled".
+    IMAGE_RETENTION_DAYS = _int_env("IMAGE_RETENTION_DAYS", 30)
 
     # Logging
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
@@ -124,6 +128,9 @@ class Config:
 
         if cls.MESSAGE_RETENTION_DAYS < 0:
             errors.append("MESSAGE_RETENTION_DAYS must be >= 0 (0 disables retention cleanup)")
+
+        if cls.IMAGE_RETENTION_DAYS < 0:
+            errors.append("IMAGE_RETENTION_DAYS must be >= 0 (0 disables retention cleanup)")
 
         if cls.MAX_SUMMARY_OUTPUT >= cls.SUMMARIZATION_TRIGGER:
             errors.append(

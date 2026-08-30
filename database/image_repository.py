@@ -88,6 +88,31 @@ class ImageRepository:
                 row = cur.fetchone()
         return self._row_to_record(row)
 
+    def delete_images_older_than(self, days: int) -> int:
+        """Delete `images` rows older than `days`, across all chats.
+        Returns the number of rows deleted.
+
+        Only the blob is lost: the `[image #N] <summary>` marker the model reads
+        lives in the checkpoint and the `messages` audit row, so a later
+        get_image on a pruned id degrades to "not found" rather than breaking
+        the conversation.
+        """
+        try:
+            with self._conn.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "DELETE FROM images WHERE created_at < NOW() - %s * INTERVAL '1 day'",
+                        (days,),
+                    )
+                    deleted = cur.rowcount
+
+            logger.info("Deleted %d images older than %d days", deleted, days)
+            return deleted
+
+        except Exception as e:
+            logger.error(f"Failed to delete old images: {e}", exc_info=True)
+            raise
+
     @staticmethod
     def _row_to_record(row) -> ImageRecord | None:
         if row is None:
