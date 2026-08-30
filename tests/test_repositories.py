@@ -288,3 +288,15 @@ def test_get_image_by_message_id_returns_none_when_missing():
     manager, conn = _fake_manager(results=[None])
     repo = ImageRepository(manager)
     assert repo.get_image_by_message_id("123", 404) is None
+
+
+def test_delete_images_older_than_deletes_globally_and_returns_count():
+    manager, conn = _fake_manager(rowcount=5)
+    repo = ImageRepository(manager)
+    assert repo.delete_images_older_than(30) == 5
+    sql, params = conn.executed[-1]
+    assert "DELETE FROM images" in sql
+    assert "created_at < NOW() - %s * INTERVAL '1 day'" in sql
+    # No chat scoping: retention is global, unlike every read on this table.
+    assert "chat_id" not in sql
+    assert params == (30,)
