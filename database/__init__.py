@@ -102,3 +102,6 @@ class Database:
 
     def get_image_by_message_id(self, *args, **kwargs):
         return self._images.get_image_by_message_id(*args, **kwargs)
+
+    def delete_images_older_than(self, days: int) -> int:
+        return self._images.delete_images_older_than(days)

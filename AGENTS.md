@@ -83,7 +83,7 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 - A fail-open path (`Agent.persist_image`) describes the image with `VISION_SUMMARY_MODEL`, stores the raw bytes + summary in the `images` table, and writes an `[image #<id>] <summary>` marker into the checkpoint. A triggered photo rewrites its raw-image message in place (same message id); a passively persisted photo appends the marker (fresh id). Any failure leaves state unchanged and is never surfaced to the user.
 - When a triggering message replies to an earlier photo, the handler resolves that photo's stored `[image #<id>]` (via `get_image_by_message_id`, persisting it on the fly if it was not stored yet) and passes it as reply context so the agent can call `get_image(<id>)`.
 - The agent can call the `get_image(image_id)` tool to pull a stored image back into context as a multimodal tool result when the summary is not enough. Retrieval is chat-scoped: a chat can only fetch its own images.
-- Persisted image bytes currently have no retention limit (the checkpoint/`messages` retention work landed separately — see `MESSAGE_RETENTION_DAYS` and `scripts/cleanup_retention.py` — image bytes are not yet covered).
+- Persisted image bytes are retained for `IMAGE_RETENTION_DAYS` (default 30 days) via a global age-based delete run by `scripts/cleanup_retention.py`; set `IMAGE_RETENTION_DAYS=0` to disable. When rows were actually deleted, the script follows up with `VACUUM (FULL, ANALYZE) images`, because a plain delete only leaves reusable dead pages and the reported database size stays flat. Pruning is safe by construction: the `[image #<id>] <summary>` marker lives in the checkpoint and the `messages` audit row, so `get_image` on a pruned id degrades to "Image #N not found." with the description still in context, and a reply to a pruned photo hits `_resolve_reply_image_ref`'s existing re-persist path and re-ingests it from Telegram under a fresh id.
 - For summary generation only, historical data-URL image blocks are replaced with `[image omitted]` (captions and surrounding text are preserved). The checkpoint messages themselves are never mutated by that sanitization.
 
 ### Voice Handling
@@ -186,7 +186,7 @@ CI runs the same compile and pytest steps on pull requests and pushes to `main` 
 
 - Two Railway environments: `production` (tracks the `main` branch) and `dev` (tracks the `dev` branch), each with its own Telegram bot and Neon database branch.
 - `.github/workflows/deploy-railway.yml` auto-deploys on push: `dev` → the Railway `dev` environment, `main` → `production`. No manual `railway up` needed for normal development.
-- Each environment's Railway `preDeployCommand` runs `alembic upgrade head && python scripts/setup_checkpointer.py && python scripts/cleanup_retention.py` before the bot starts — the first applies the Alembic-managed app schema, the second (idempotent) creates/upgrades the LangGraph checkpointer tables (versioned by `langgraph-checkpoint-postgres`, intentionally not part of Alembic), and the third (idempotent, fail-open) prunes old `messages` rows and superseded historical checkpoint rows.
+- Each environment's Railway `preDeployCommand` runs `alembic upgrade head && python scripts/setup_checkpointer.py && python scripts/cleanup_retention.py` before the bot starts — the first applies the Alembic-managed app schema, the second (idempotent) creates/upgrades the LangGraph checkpointer tables (versioned by `langgraph-checkpoint-postgres`, intentionally not part of Alembic), and the third (idempotent, fail-open) prunes old `messages` rows, old `images` rows, and superseded historical checkpoint rows.
 
 ## Branching & Release Workflow
 
@@ -238,6 +238,7 @@ Relevant environment variables:
 - `SUMMARIZATION_TRIGGER`
 - `MAX_SUMMARY_OUTPUT`
 - `MESSAGE_RETENTION_DAYS`
+- `IMAGE_RETENTION_DAYS`
 - `TRANSCRIPTION_MODEL`
 - `MAX_VOICE_DURATION_SECONDS`
 - `TAVILY_API_KEY`
@@ -259,6 +260,7 @@ Important notes:
 - `MAX_VOICE_DURATION_SECONDS` bounds transcription cost: a longer note is skipped before download and recorded as a bare `[voice]` marker
 - `TAVILY_API_KEY` is optional; when blank, `tools.py` falls back to a DuckDuckGo-backed web search tool instead of Tavily
 - `MESSAGE_RETENTION_DAYS` bounds only the `messages` audit table via `scripts/cleanup_retention.py`; it does not affect checkpoint state or `/stats` beyond changing which rows remain to aggregate. `0` disables the delete.
+- `IMAGE_RETENTION_DAYS` bounds only the `images` table, via the same script. It is a separate knob from `MESSAGE_RETENTION_DAYS` despite the shared default, because image rows carry blobs and are the ones worth tightening under storage pressure. `0` disables the delete. Note the `VACUUM FULL` that follows a non-empty delete needs transient free space roughly equal to the table's current size, since the original is only dropped once the rewrite completes.
 
 ## Commands
 

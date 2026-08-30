@@ -155,6 +155,7 @@ The current `docker-compose.yml` still mounts `./data:/app/data`, but the bot's 
 - The `messages` audit table stores a lightweight text marker instead of the raw image payload:
   `[image] <caption>` on arrival, rewritten to `[image #<id>] <caption> — <summary>` once the image is persisted
 - The agent can call `get_image(<id>)` to pull a stored image back into context; replying to an earlier photo points the agent at that photo's `[image #<id>]`
+- Stored image bytes are retained for `IMAGE_RETENTION_DAYS` (default 30 days). Once pruned, `get_image(<id>)` reports the image as not found while the `[image #<id>] <summary>` description stays in the conversation, and replying to a pruned photo re-ingests it from Telegram
 
 ### Voice Notes
 
@@ -205,6 +206,7 @@ Environment variables are loaded from `.env`.
 | `SUMMARIZATION_TRIGGER` | `8000` | Compact the checkpoint when uncompacted conversation reaches this approximate token count (excluding rolling summary tokens) |
 | `MAX_SUMMARY_OUTPUT` | `1000` | Hard output cap for one generated summary; must be less than `SUMMARIZATION_TRIGGER` |
 | `MESSAGE_RETENTION_DAYS` | `30` | Age-based retention for the `messages` audit table; rows older than this many days are deleted by `scripts/cleanup_retention.py`. `0` disables cleanup |
+| `IMAGE_RETENTION_DAYS` | `30` | Age-based retention for the `images` table; rows older than this many days are deleted by `scripts/cleanup_retention.py`, which then rewrites the table to return the space. `0` disables cleanup |
 | `TRANSCRIPTION_MODEL` | `gpt-transcribe` | Speech-to-text model for voice notes; uses OpenAI's audio endpoint, independent of `/model` and `SUMMARY_MODEL` |
 | `MAX_VOICE_DURATION_SECONDS` | `600` | Voice notes longer than this are skipped before download and stored as a bare `[voice]` marker |
 | `TAVILY_API_KEY` | Empty | Optional; powers the agent's web search tool. If blank, the search tool falls back to DuckDuckGo at runtime |
@@ -323,6 +325,7 @@ Current storage-growth handling:
 
 - `scripts/cleanup_retention.py` prunes LangGraph's historical checkpoint rows down to the newest checkpoint per thread on every deploy, since the bot only ever reads the latest state.
 - The same script deletes `messages` audit-log rows older than `MESSAGE_RETENTION_DAYS` (default 30 days; `0` disables it). `/stats`'s reported "Since" date reflects the oldest row currently retained, not necessarily the chat's true first message, once older rows have been pruned.
+- The same script deletes `images` rows older than `IMAGE_RETENTION_DAYS` (default 30 days; `0` disables it), then runs `VACUUM (FULL, ANALYZE)` on the table when rows were actually removed — a plain delete would only leave reusable dead pages, keeping the reported database size flat. Pruning loses the stored picture but not its text description, and a reply to a pruned photo silently re-ingests it from Telegram.
 - `conversation_summaries` audit rows are still unbounded; audit insertion happens only after the exact generated summary ID is confirmed in result/checkpoint state, and audit failures never block compaction or replies.
 - `/clear` removes the current checkpoint's summary and recent messages; it does not delete `messages` or `conversation_summaries` audit rows.
 

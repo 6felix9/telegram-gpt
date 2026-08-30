@@ -1,10 +1,10 @@
 """Prune bounded storage: age-based delete of old `messages` audit rows (#22)
-and a global sweep that keeps only the newest LangGraph checkpoint per thread
-(#21). Idempotent — safe to re-run.
+and `images` rows (#57), plus a global sweep that keeps only the newest
+LangGraph checkpoint per thread (#21). Idempotent — safe to re-run.
 
 Run once per deploy, in each environment's Railway preDeployCommand, after
 `alembic upgrade head && python scripts/setup_checkpointer.py`. Fail-open:
-a failure in either half is logged but never raises, so it can't block a
+a failure in any part is logged but never raises, so it can't block a
 deploy — consistent with this repo's treatment of non-critical maintenance
 (image persistence, summary audit inserts) as fail-open elsewhere.
 """
@@ -24,6 +24,8 @@ from database import Database
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+VACUUM_LOCK_TIMEOUT = "5s"
 
 CHECKPOINT_SWEEP_SQL = [
     # 1. Keep only the newest checkpoint per (thread_id, checkpoint_ns).
@@ -84,6 +86,62 @@ def cleanup_messages() -> None:
             db.close()
 
 
+def cleanup_images() -> None:
+    if config.IMAGE_RETENTION_DAYS <= 0:
+        logger.info(
+            "IMAGE_RETENTION_DAYS=%s; skipping images cleanup",
+            config.IMAGE_RETENTION_DAYS,
+        )
+        return
+    db = None
+    deleted = 0
+    try:
+        db = Database(config.DATABASE_URL)
+        deleted = db.delete_images_older_than(config.IMAGE_RETENTION_DAYS)
+        logger.info(
+            "images retention: deleted %d rows older than %d days",
+            deleted, config.IMAGE_RETENTION_DAYS,
+        )
+    except Exception:
+        logger.exception("images retention cleanup failed; continuing")
+    finally:
+        if db is not None:
+            db.close()
+    if deleted > 0:
+        reclaim_image_space()
+
+
+def reclaim_image_space() -> None:
+    """Rewrite `images` so deleted blobs are returned to the filesystem.
+
+    A plain VACUUM only marks pages reusable, which leaves the reported database
+    size flat; a full rewrite is what actually gives the space back. Two things
+    shape this:
+
+    VACUUM cannot run inside a transaction block, and every repository call
+    commits one, hence the dedicated autocommit connection instead of a
+    `Database` method.
+
+    The prune has already committed by the time this runs, and is guarded
+    separately, so a lock conflict here can never discard it. The lock_timeout
+    makes that failure fast rather than a stalled deploy.
+
+    Note the rewrite needs transient free space roughly equal to the table's
+    current size, since the original is only dropped once the copy is complete.
+    """
+    try:
+        with psycopg.connect(config.DATABASE_URL, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT set_config('lock_timeout', %s, false)",
+                    (VACUUM_LOCK_TIMEOUT,),
+                )
+                cur.execute("VACUUM (FULL, ANALYZE) images")
+        logger.info("images vacuum: rewrote table, reclaiming space from pruned rows")
+    except Exception:
+        logger.exception("images vacuum failed; prune already committed, continuing")
+
+
 def cleanup_checkpoints() -> None:
     try:
         with psycopg.connect(config.DATABASE_URL, autocommit=True) as conn:
@@ -104,6 +162,7 @@ def main() -> None:
     if not config.DATABASE_URL.strip():
         raise SystemExit("DATABASE_URL is required to run retention cleanup")
     cleanup_messages()
+    cleanup_images()
     cleanup_checkpoints()
     logger.info("Retention cleanup complete")
 
