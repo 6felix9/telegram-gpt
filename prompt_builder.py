@@ -25,6 +25,12 @@ TOOL_USAGE = {
         "view an image shared earlier as [image #N], when the marker's text "
         "description is not enough."
     ),
+    "schedule_prompt": (
+        "creating a recurring or one-time reminder/prompt someone explicitly "
+        "asked for."
+    ),
+    "list_schedules": "checking what's currently scheduled in this chat.",
+    "cancel_schedule": "canceling a schedule by the id shown in list_schedules.",
 }
 
 MARKDOWN_CONVENTION = (
