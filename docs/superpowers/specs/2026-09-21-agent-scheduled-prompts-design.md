@@ -92,16 +92,39 @@ Returns a confirmation the model is instructed to relay verbatim:
 
 ```
 Scheduled #7 — every day at 8:00am. First run Mon 22 Sep, 8:00am SGT.
+Will run: "Post a good morning message for Felix."
 ```
 
 Because the tool's only success output is that string, a schedule cannot be
-created without a concrete next-run time reaching the user. That is the
-structural answer to a model that schedules the wrong time or schedules
-silently.
+created without a concrete next-run time *and* the stored prompt reaching the
+user. That is the structural answer to a model that schedules the wrong time,
+stores the wrong prompt, or schedules silently.
 
 The docstring carries the model-facing rules: cron is always Asia/Singapore;
 only schedule when explicitly asked; always relay the returned confirmation;
-prefer `at=` for anything that should happen once.
+prefer `at=` for anything that should happen once; and write `prompt` to be
+self-contained, per below.
+
+#### The stored prompt must be self-contained
+
+The model, not the user, decides the exact text stored in `prompt` — it strips
+the cadence out of the request and keeps the rest. That text is replayed cold
+into the chat at fire time, when nobody is asking and the conversation around
+the original request is long gone, so anything deictic is broken or wrong by
+then:
+
+| User says | Naive capture | Stored prompt |
+|---|---|---|
+| "give me a good morning message at 8am" | "give me a good morning message" | "Post a good morning message for Felix." |
+| "summarise what we just discussed, every evening" | "summarise what we just discussed" | "Summarise the last 24 hours of messages in this chat." |
+| "do that again every Monday" | "do that again" | The resolved action, spelled out |
+
+`"give me"` has no *me* at fire time; `"what we just discussed"` refers to a
+conversation that has since been compacted away; `"tomorrow"` means a different
+day on every firing. The docstring therefore requires the model to resolve
+person, time and reference words into absolutes before storing, and the
+confirmation echoes the result so the user can catch a bad rewrite at creation
+time rather than discovering it when the schedule fires.
 
 **`list_schedules() -> str`** — id, label, next run in SGT, and a prompt preview,
 for the calling chat only.
@@ -237,6 +260,8 @@ existing suite's scope:
 - Next-run computation is correct across an SGT midnight boundary and converts
   to UTC correctly.
 - Duplicate `(chat_id, cron, prompt)` returns the existing id.
+- The confirmation string contains the next run in SGT and the stored prompt, so
+  a regression that drops either from the tool's output fails a test.
 - `cancel_schedule` and `list_schedules` refuse another chat's ids.
 - `process_agent_turn` extraction: existing handler tests still pass unchanged,
   proving the wrapper preserved `process()`'s behaviour.
@@ -251,9 +276,11 @@ gains a usage example.
 
 ## Accepted trade-offs
 
-- **The model owns cadence translation.** A wrong cron produces a schedule that
-  fires at the wrong time. Mitigated by the forced confirmation naming the next
-  run in SGT, and by cancellation being conversational.
+- **The model owns both the cadence and the prompt text.** A wrong cron fires at
+  the wrong time; a prompt left deictic ("give me...") reads oddly or misfires
+  when replayed cold. Mitigated by the forced confirmation, which names the next
+  run in SGT *and* echoes the stored prompt, so both are visible at creation
+  time — and by cancellation being conversational.
 - **Any authorized user can schedule.** An open-access stranger can leave a
   recurring prompt behind them. Mitigated by the per-chat cap, the hourly floor,
   the failure cutout, and `created_by`; an admin can see and cancel any of it.
