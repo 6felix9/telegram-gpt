@@ -776,3 +776,17 @@ def test_tool_names_handles_objects_and_schema_dicts():
         "web_search", "raw_dict_tool", "openai_style_tool",
     ]
     assert agent_mod._tool_names(None) == []
+
+
+def test_agent_context_carries_the_caller_user_id():
+    """Tools read the caller off runtime.context; scheduling needs created_by."""
+    from agent import AgentContext
+
+    ctx = AgentContext(is_group=True, thread_id="123", user_id=55)
+    assert ctx.user_id == 55
+
+
+def test_agent_context_user_id_defaults_to_none():
+    from agent import AgentContext
+
+    assert AgentContext().user_id is None

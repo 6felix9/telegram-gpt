@@ -69,7 +69,8 @@ class RequestProcessor:
                     is_group_chat=is_group,
                 )
                 response = await agent.run(
-                    chat_id, human_message, is_group, reply_context=reply_context
+                    chat_id, human_message, is_group,
+                    reply_context=reply_context, user_id=user_id,
                 )
                 db.add_message(
                     chat_id=chat_id, role="assistant", content=response,

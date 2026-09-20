@@ -220,10 +220,11 @@ def _image_marker(image_id: int, caption: str | None, summary: str) -> str:
 
 @dataclass
 class AgentContext:
-    """Per-invocation context read by middleware (not persisted)."""
+    """Per-invocation context read by middleware and tools (not persisted)."""
     is_group: bool = False
     reply_context: tuple[str, str] | None = None
     thread_id: str = "unknown"
+    user_id: int | None = None
 
 
 def _tool_names(tools) -> list[str]:
@@ -432,7 +433,8 @@ class Agent:
                 "Failed to persist summary audit record thread=%s", chat_id
             )
 
-    async def run(self, chat_id, human_message, is_group, reply_context=None) -> str:
+    async def run(self, chat_id, human_message, is_group, reply_context=None,
+                  user_id=None) -> str:
         if self._graph is None:
             raise CompletionError(
                 f"❌ {PROVIDER_LABEL[self._provider]} API key is not set. "
@@ -443,6 +445,7 @@ class Agent:
             is_group=is_group,
             reply_context=reply_context,
             thread_id=str(chat_id),
+            user_id=user_id,
         )
         empty_reply_ids: list[str] = []
         try:
