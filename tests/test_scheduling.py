@@ -81,3 +81,125 @@ def test_format_sgt_renders_utc_instant_in_singapore_time():
 
 def test_format_sgt_renders_afternoon_without_leading_zero():
     assert scheduling.format_sgt(_utc(2026, 9, 22, 7, 0)) == "Tue 22 Sep, 3:00pm SGT"
+
+
+# --- tools ---------------------------------------------------------------
+
+from dataclasses import dataclass
+from types import SimpleNamespace
+
+
+@dataclass
+class _Rec:
+    id: int
+    chat_id: str
+    prompt: str
+    label: str
+    cron: str | None
+    next_run_at: datetime
+    enabled: bool = True
+    created_by: int | None = 55
+    last_run_at: datetime | None = None
+    consecutive_failures: int = 0
+
+
+def _db(**overrides):
+    base = dict(
+        count_schedules=lambda chat_id: 0,
+        find_duplicate_schedule=lambda chat_id, cron, prompt: None,
+        add_schedule=lambda **kw: 7,
+        list_schedules=lambda chat_id: [],
+        delete_schedule=lambda chat_id, schedule_id: None,
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _create(db=None, **overrides):
+    kwargs = dict(
+        chat_id="123", prompt="Post a good morning message for Felix.",
+        label="every day at 8:00am", cron="0 8 * * *", at=None, created_by=55,
+    )
+    kwargs.update(overrides)
+    return scheduling.create_schedule(db or _db(), **kwargs)
+
+
+def test_create_schedule_confirmation_names_id_next_run_and_prompt():
+    out = _create()
+    assert "#7" in out
+    assert "every day at 8:00am" in out
+    assert "SGT" in out
+    assert "Post a good morning message for Felix." in out
+
+
+def test_create_schedule_rejects_prompt_over_the_length_cap():
+    out = _create(prompt="x" * (scheduling.MAX_PROMPT_CHARS + 1))
+    assert "too long" in out.lower()
+
+
+def test_create_schedule_rejects_when_chat_is_at_the_cap():
+    db = _db(count_schedules=lambda chat_id: scheduling.MAX_SCHEDULES_PER_CHAT)
+    out = _create(db=db)
+    assert str(scheduling.MAX_SCHEDULES_PER_CHAT) in out
+    assert "cancel" in out.lower()
+
+
+def test_create_schedule_rejects_a_sub_hourly_cron():
+    out = _create(cron="* * * * *")
+    assert "hour" in out.lower()
+
+
+def test_create_schedule_rejects_both_cron_and_at():
+    out = _create(at="2026-12-01T09:00")
+    assert "exactly one" in out.lower()
+
+
+def test_create_schedule_rejects_neither_cron_nor_at():
+    out = _create(cron=None)
+    assert "exactly one" in out.lower()
+
+
+def test_create_schedule_returns_existing_id_for_a_duplicate():
+    db = _db(find_duplicate_schedule=lambda chat_id, cron, prompt: 4)
+    out = _create(db=db)
+    assert "#4" in out
+    assert "already" in out.lower()
+
+
+def test_create_schedule_refuses_without_a_chat_id():
+    out = _create(chat_id=None)
+    assert "not available" in out.lower()
+
+
+def test_render_schedule_list_shows_id_label_next_run_and_preview():
+    records = [_Rec(7, "123", "Post a good morning message.",
+                    "every day at 8:00am", "0 8 * * *", _utc(2026, 9, 22, 0, 0))]
+    out = scheduling.render_schedule_list(records)
+    assert "#7" in out
+    assert "every day at 8:00am" in out
+    assert "Tue 22 Sep, 8:00am SGT" in out
+    assert "Post a good morning message." in out
+
+
+def test_render_schedule_list_truncates_a_long_prompt():
+    records = [_Rec(7, "123", "y" * 200, "daily", "0 8 * * *",
+                    _utc(2026, 9, 22, 0, 0))]
+    out = scheduling.render_schedule_list(records)
+    assert "..." in out
+    assert "y" * 200 not in out
+
+
+def test_render_schedule_list_marks_a_disabled_schedule():
+    records = [_Rec(7, "123", "p", "daily", "0 8 * * *",
+                    _utc(2026, 9, 22, 0, 0), enabled=False,
+                    consecutive_failures=scheduling.MAX_CONSECUTIVE_FAILURES)]
+    assert "disabled" in scheduling.render_schedule_list(records).lower()
+
+
+def test_render_schedule_list_handles_an_empty_chat():
+    assert scheduling.render_schedule_list([]) == "No schedules in this chat."
+
+
+def test_build_schedule_tools_exposes_three_named_tools():
+    names = {t.name for t in scheduling.build_schedule_tools(_db())}
+    assert names == {"schedule_prompt", "list_schedules", "cancel_schedule"}
