@@ -7,7 +7,7 @@ Asia/Singapore; next_run_at values are tz-aware UTC.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from croniter import croniter
@@ -32,7 +32,7 @@ class ScheduleError(ValueError):
 
 
 def _now_utc() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def next_run_from_cron(cron: str, after: datetime | None = None) -> datetime:
@@ -47,7 +47,7 @@ def next_run_from_cron(cron: str, after: datetime | None = None) -> datetime:
         nxt = croniter(cron, base_sgt).get_next(datetime)
     except Exception as e:
         raise ScheduleError(f"'{cron}' is not a valid cron expression: {e}") from e
-    return nxt.astimezone(timezone.utc)
+    return nxt.astimezone(UTC)
 
 
 def validate_cron_interval(cron: str) -> None:
@@ -77,7 +77,7 @@ def next_run_from_at(at: str, now: datetime | None = None) -> datetime:
         ) from e
     if naive.tzinfo is not None:
         raise ScheduleError("Give the time without a timezone offset; it is read as SGT.")
-    run_utc = naive.replace(tzinfo=SGT).astimezone(timezone.utc)
+    run_utc = naive.replace(tzinfo=SGT).astimezone(UTC)
     if run_utc <= now_utc:
         raise ScheduleError("That time is in the past.")
     if run_utc > now_utc + timedelta(days=MAX_ONESHOT_DAYS):
@@ -120,8 +120,10 @@ def create_schedule(db, chat_id, prompt: str, label: str, cron: str | None,
         if cron:
             validate_cron_interval(cron)
             next_run_at = next_run_from_cron(cron)
-        else:
+        elif at:
             next_run_at = next_run_from_at(at)
+        else:  # unreachable: the exactly-one check above guarantees one is set
+            return "Provide exactly one of cron (recurring) or at (one-shot)."
     except ScheduleError as e:
         return str(e)
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from agent import count_tokens
 from scheduling import (
@@ -32,7 +32,7 @@ class ScheduledRunner:
 
     async def fire_due(self, now: datetime | None = None) -> int:
         """Run every schedule whose time has come. Returns how many succeeded."""
-        now = now or datetime.now(timezone.utc)
+        now = now or datetime.now(UTC)
         try:
             due = self._db.due_schedules(now)
         except Exception:

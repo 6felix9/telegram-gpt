@@ -16,4 +16,6 @@ files = [
     "model_registry.py",
     "token_budget.py",
     "app_factory.py",
+    "scheduling.py",
+    "scheduler.py",
 ]
