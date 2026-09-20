@@ -8,7 +8,7 @@
   An AI agent that lives directly in your Telegram.
 </p>
 
-A Telegram bot with persistent chat history, token-aware context trimming, image support, and a PostgreSQL/Neon backend. It's triggered by the keyword `chatgpt` or by directly mentioning the bot, supports multiple model providers, and persists the active model in the database so model switches survive restarts.
+A Telegram bot with persistent chat history, token-aware context trimming, image support, recurring scheduled prompts, and a PostgreSQL/Neon backend. It's triggered by the keyword `chatgpt` or by directly mentioning the bot, supports multiple model providers, and persists the active model in the database so model switches survive restarts.
 
 ## How It Works
 
@@ -109,13 +109,6 @@ python scripts/setup_checkpointer.py
 python3 bot.py
 ```
 
-You can also talk to the bot without Telegram at all:
-
-```bash
-python3 scripts/chat_cli.py --chat-id test          # private-chat mode
-python3 scripts/chat_cli.py --chat-id test --group  # group-chat mode
-```
-
 ## Deploy on Railway
 
 1. Create a [Neon](https://neon.tech/) database and copy its connection string.
@@ -160,6 +153,19 @@ All commands are admin-only (`AUTHORIZED_USER_ID`). Granted users can chat with 
 /version                    current bot version
 /help                       this list, in Telegram
 ```
+
+Scheduling deliberately has no command — you ask for it in plain English and
+the bot works out the timing itself:
+
+```
+chatgpt remind everyone to log hours every friday at 5pm
+chatgpt what's scheduled here
+chatgpt cancel 3
+```
+
+Unlike the commands above, anyone who can talk to the bot can schedule. The
+limits are 10 schedules per chat, a minimum of one hour between runs, and a
+500-character prompt; every schedule records who created it.
 
 ## Built With
 

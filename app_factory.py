@@ -1,5 +1,5 @@
-"""Single composition point for the db/prompt-builder/agent stack, shared by
-bot.py and scripts/chat_cli.py so their bootstrap can't drift apart."""
+"""Single composition point for the db/prompt-builder/agent stack used by
+bot.py."""
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,7 +23,7 @@ class AppStack:
 
 
 def build_app_stack(config) -> AppStack:
-    """Build the db/prompt-builder/agent stack shared by bot.py and chat_cli.py.
+    """Build the db/prompt-builder/agent stack used by bot.py.
 
     Tables are created out-of-band by scripts/setup_checkpointer.py (deploy
     preDeployCommand); this does NOT call PostgresSaver.setup().
