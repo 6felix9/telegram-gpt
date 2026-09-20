@@ -30,7 +30,7 @@ jobs:
       - name: Lint (new modules)
         run: >
           ruff check handlers/ database/ model_registry.py token_budget.py
-          app_factory.py
+          app_factory.py scheduling.py scheduler.py
 
       - name: Type check (new modules)
         run: mypy

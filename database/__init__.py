@@ -8,6 +8,7 @@ from .access_repository import AccessRepository
 from .db_connection import ConnectionManager
 from .image_repository import ImageRepository
 from .message_repository import MessageRepository
+from .schedule_repository import ScheduleRecord, ScheduleRepository
 from .settings_repository import SettingsRepository
 from .summary_audit_repository import SummaryAuditRepository
 
@@ -26,6 +27,7 @@ class Database:
         self._settings = SettingsRepository(self._conn, self._cache)
         self._summaries = SummaryAuditRepository(self._conn)
         self._images = ImageRepository(self._conn)
+        self._schedules = ScheduleRepository(self._conn)
 
     def close(self):
         self._conn.close()
@@ -105,3 +107,31 @@ class Database:
 
     def delete_images_older_than(self, days: int) -> int:
         return self._images.delete_images_older_than(days)
+
+    # --- schedules -----------------------------------------------------
+    def add_schedule(self, *args, **kwargs) -> int:
+        return self._schedules.add_schedule(*args, **kwargs)
+
+    def list_schedules(self, *args, **kwargs) -> list[ScheduleRecord]:
+        return self._schedules.list_schedules(*args, **kwargs)
+
+    def count_schedules(self, *args, **kwargs) -> int:
+        return self._schedules.count_schedules(*args, **kwargs)
+
+    def find_duplicate_schedule(self, *args, **kwargs) -> int | None:
+        return self._schedules.find_duplicate_schedule(*args, **kwargs)
+
+    def delete_schedule(self, *args, **kwargs) -> ScheduleRecord | None:
+        return self._schedules.delete_schedule(*args, **kwargs)
+
+    def due_schedules(self, *args, **kwargs) -> list[ScheduleRecord]:
+        return self._schedules.due_schedules(*args, **kwargs)
+
+    def mark_schedule_fired(self, *args, **kwargs) -> None:
+        return self._schedules.mark_schedule_fired(*args, **kwargs)
+
+    def record_schedule_failure(self, *args, **kwargs) -> None:
+        return self._schedules.record_schedule_failure(*args, **kwargs)
+
+    def delete_schedule_by_id(self, *args, **kwargs) -> None:
+        return self._schedules.delete_by_id(*args, **kwargs)

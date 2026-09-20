@@ -51,3 +51,14 @@ def test_build_tools_includes_get_image_when_db_present():
     built = tools.build_tools(_CfgNoKey, db=SimpleNamespace(get_image=lambda *a: None))
     names = {t.name for t in built}
     assert "get_image" in names
+
+
+def test_build_tools_includes_schedule_tools_when_db_present():
+    db = object()
+    names = {t.name for t in tools.build_tools(_CfgNoKey, db=db)}
+    assert {"schedule_prompt", "list_schedules", "cancel_schedule"} <= names
+
+
+def test_build_tools_omits_schedule_tools_without_db():
+    names = {t.name for t in tools.build_tools(_CfgNoKey, db=None)}
+    assert "schedule_prompt" not in names

@@ -31,17 +31,18 @@ logger = logging.getLogger(__name__)
 _deps: HandlerDependencies | None = None
 _message_handlers: MessageHandlers | None = None
 _command_handlers: CommandHandlers | None = None
+_processor: RequestProcessor | None = None
 
 
 def init_handlers(cfg, database, bot_agent, prompt_bldr, username=None):
     """Initialize handler dependencies."""
-    global _deps, _message_handlers, _command_handlers
+    global _deps, _message_handlers, _command_handlers, _processor
     _deps = HandlerDependencies(
         config=cfg, db=database, agent=bot_agent,
         prompt_builder=prompt_bldr, bot_username=username,
     )
-    processor = RequestProcessor(_deps)
-    _message_handlers = MessageHandlers(_deps, processor)
+    _processor = RequestProcessor(_deps)
+    _message_handlers = MessageHandlers(_deps, _processor)
     _command_handlers = CommandHandlers(_deps)
 
 
@@ -55,6 +56,12 @@ def is_main_authorized_user(user_id: int) -> bool:
     """Check if user is the main authorized user (for admin commands)."""
     assert _deps is not None, "init_handlers() must run before is_main_authorized_user()"
     return _authz_is_main_authorized_user(user_id, _deps.config)
+
+
+def get_request_processor() -> RequestProcessor:
+    """The RequestProcessor built by init_handlers, for the scheduled runner."""
+    assert _processor is not None, "init_handlers() must run before get_request_processor()"
+    return _processor
 
 
 async def message_handler(update, context):
