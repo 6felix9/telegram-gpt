@@ -13,11 +13,11 @@ The bot is no longer "OpenAI only". `agent.py` routes requests by model name to 
 
 ## Project Structure & Module Organization
 
-- Core runtime files at repo root: `bot.py` (entrypoint), `agent.py` (LangChain agent construction, provider/model routing via `MODEL_PROVIDERS`, checkpoint compaction, and request-time trimming), `conversation_summary.py` (`ConversationCompactor` and summary helpers), `tools.py` (agent tools: web search and page fetch), `prompt_builder.py` (system prompt construction and message formatting), `cache.py` (TTL cache helpers), `config.py` (env-driven settings), `app_factory.py` (composition for `bot.py` / `scripts/chat_cli.py`), `model_registry.py`, and `token_budget.py`.
+- Core runtime files at repo root: `bot.py` (entrypoint), `agent.py` (LangChain agent construction, provider/model routing via `MODEL_PROVIDERS`, checkpoint compaction, and request-time trimming), `conversation_summary.py` (`ConversationCompactor` and summary helpers), `tools.py` (agent tools: web search and page fetch), `prompt_builder.py` (system prompt construction and message formatting), `cache.py` (TTL cache helpers), `config.py` (env-driven settings), `app_factory.py` (composition for `bot.py`), `model_registry.py`, and `token_budget.py`.
 - `handlers/` is a package for Telegram handlers and commands (`handlers/__init__.py` facade plus `handler_deps`, `authorization`, `request_processor`, `message_handlers`, `command_handlers`).
 - `database/` is a package for PostgreSQL/Neon persistence (`database/__init__.py` `Database` facade plus `db_connection`, `message_repository`, `access_repository`, `settings_repository`, `summary_audit_repository`).
 - Operational docs live in `README.md` and `AGENTS.md`.
-- Utility scripts are in `scripts/` (notably `scripts/chat_cli.py` for local chat simulation).
+- Utility scripts are in `scripts/` (`setup_checkpointer.py`, `cleanup_retention.py`).
 - Unit tests live in `tests/` (pytest; no database or `.env` required).
 
 ## Architecture
@@ -166,7 +166,6 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 - Run unit tests: `pytest tests/ -v`
 - Run bot locally: `python3 bot.py`
 - Start via helper script (creates/uses `venv`): `./start.sh`
-- Run CLI simulator: `python3 scripts/chat_cli.py --chat-id test`
 - Build container: `docker build -t telegram-gpt .`
 - Run with compose/env file: `docker compose up -d --build`
 
@@ -190,13 +189,6 @@ python3 bot.py
 docker compose up -d --build
 docker compose logs -f
 docker compose down
-```
-
-### CLI Simulator
-
-```bash
-python3 scripts/chat_cli.py --chat-id test
-python3 scripts/chat_cli.py --chat-id test --group
 ```
 
 ### Unit Tests
@@ -334,7 +326,6 @@ Minimum validation before PR:
 pip install -r requirements.txt -r requirements-dev.txt
 python3 -m py_compile *.py
 pytest tests/ -v
-python3 scripts/chat_cli.py --chat-id test
 ```
 
 If Telegram credentials are available, verify:
