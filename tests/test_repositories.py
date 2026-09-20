@@ -344,13 +344,15 @@ def test_list_schedules_is_scoped_to_the_chat():
 def test_find_duplicate_schedule_returns_existing_id():
     manager, conn = _fake_manager(results=[(7,)])
     repo = ScheduleRepository(manager)
-    assert repo.find_duplicate_schedule("123", "0 8 * * *", "Post it.") == 7
+    assert repo.find_duplicate_schedule(
+        "123", "0 8 * * *", "Post it.", datetime(2026, 9, 22, 0, 0)) == 7
 
 
 def test_find_duplicate_schedule_returns_none_when_absent():
     manager, _ = _fake_manager(results=[])
     repo = ScheduleRepository(manager)
-    assert repo.find_duplicate_schedule("123", "0 8 * * *", "Post it.") is None
+    assert repo.find_duplicate_schedule(
+        "123", "0 8 * * *", "Post it.", datetime(2026, 9, 22, 0, 0)) is None
 
 
 def test_delete_schedule_returns_the_deleted_record_scoped_to_chat():
@@ -386,3 +388,26 @@ def test_record_schedule_failure_disables_when_asked():
     repo.record_schedule_failure(7, datetime(2026, 9, 23, 0, 0), disable=True)
     sql, _ = conn.executed[0]
     assert "enabled = FALSE" in sql
+
+
+def test_find_duplicate_schedule_matches_a_recurring_schedule_on_cron():
+    manager, conn = _fake_manager(results=[(7,)])
+    repo = ScheduleRepository(manager)
+    assert repo.find_duplicate_schedule(
+        "123", "0 8 * * *", "Post it.", datetime(2026, 9, 22, 0, 0)) == 7
+    sql, params = conn.executed[0]
+    assert "cron = %s" in sql
+    assert "next_run_at" not in sql  # a recurring match ignores the next firing
+    assert params == ("123", "0 8 * * *", "Post it.")
+
+
+def test_find_duplicate_schedule_matches_a_one_shot_on_its_time_too():
+    """Same prompt at 09:00 and 17:00 is two schedules, not a duplicate."""
+    manager, conn = _fake_manager(results=[])
+    repo = ScheduleRepository(manager)
+    when = datetime(2026, 9, 22, 9, 0)
+    assert repo.find_duplicate_schedule("123", None, "Take medicine.", when) is None
+    sql, params = conn.executed[0]
+    assert "cron IS NULL" in sql
+    assert "next_run_at = %s" in sql
+    assert params == ("123", "Take medicine.", when)

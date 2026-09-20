@@ -790,3 +790,71 @@ def test_agent_context_user_id_defaults_to_none():
     from agent import AgentContext
 
     assert AgentContext().user_id is None
+
+
+def _agent_for_lock(graph):
+    """Minimal Agent for exercising run()'s per-chat serialization."""
+    a = agent_mod.Agent.__new__(agent_mod.Agent)
+    a._graph = graph
+    a._context_locks = {}
+    a._compactor = SimpleNamespace(plan=lambda *args, **kwargs: None)
+
+    async def _noop_compact(chat_id):
+        return None
+
+    a._compact_if_needed = _noop_compact
+    return a
+
+
+def test_run_serializes_concurrent_turns_for_the_same_chat():
+    """The scheduled runner shares a thread_id with live handlers, so two
+    turns must never mutate one chat's checkpoint state at the same time."""
+    events = []
+
+    def _invoke(_state, **kwargs):
+        turn = kwargs["context"].user_id
+        events.append(f"enter-{turn}")
+        time.sleep(0.05)
+        events.append(f"exit-{turn}")
+        return {"messages": [AIMessage(content=f"reply-{turn}")]}
+
+    a = _agent_for_lock(SimpleNamespace(invoke=_invoke))
+
+    async def _both():
+        return await asyncio.gather(
+            a.run("chat-1", HumanMessage(content="a"), is_group=False, user_id=1),
+            a.run("chat-1", HumanMessage(content="b"), is_group=False, user_id=2),
+        )
+
+    asyncio.run(_both())
+
+    # Each turn's enter/exit pair must be adjacent; interleaving means a race.
+    assert events in (
+        ["enter-1", "exit-1", "enter-2", "exit-2"],
+        ["enter-2", "exit-2", "enter-1", "exit-1"],
+    ), events
+
+
+def test_run_does_not_serialize_across_different_chats():
+    """The lock is per chat: unrelated chats must still overlap."""
+    active = []
+    peak = []
+
+    def _invoke(_state, **kwargs):
+        active.append(1)
+        peak.append(len(active))
+        time.sleep(0.05)
+        active.pop()
+        return {"messages": [AIMessage(content="reply")]}
+
+    a = _agent_for_lock(SimpleNamespace(invoke=_invoke))
+
+    async def _both():
+        return await asyncio.gather(
+            a.run("chat-1", HumanMessage(content="a"), is_group=False),
+            a.run("chat-2", HumanMessage(content="b"), is_group=False),
+        )
+
+    asyncio.run(_both())
+
+    assert max(peak) == 2, peak

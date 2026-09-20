@@ -106,7 +106,7 @@ class _Rec:
 def _db(**overrides):
     base = dict(
         count_schedules=lambda chat_id: 0,
-        find_duplicate_schedule=lambda chat_id, cron, prompt: None,
+        find_duplicate_schedule=lambda chat_id, cron, prompt, next_run_at: None,
         add_schedule=lambda **kw: 7,
         list_schedules=lambda chat_id: [],
         delete_schedule=lambda chat_id, schedule_id: None,
@@ -160,7 +160,7 @@ def test_create_schedule_rejects_neither_cron_nor_at():
 
 
 def test_create_schedule_returns_existing_id_for_a_duplicate():
-    db = _db(find_duplicate_schedule=lambda chat_id, cron, prompt: 4)
+    db = _db(find_duplicate_schedule=lambda chat_id, cron, prompt, next_run_at: 4)
     out = _create(db=db)
     assert "#4" in out
     assert "already" in out.lower()
@@ -203,3 +203,61 @@ def test_render_schedule_list_handles_an_empty_chat():
 def test_build_schedule_tools_exposes_three_named_tools():
     names = {t.name for t in scheduling.build_schedule_tools(_db())}
     assert names == {"schedule_prompt", "list_schedules", "cancel_schedule"}
+
+
+# --- review fixes --------------------------------------------------------
+
+def test_validate_cron_interval_rejects_a_pair_hidden_past_the_first_gap():
+    """Checking only the next two occurrences made the hour floor depend on
+    creation time: '0,30 0 * * *' at 00:15 shows a 23.5h gap first, then 30m."""
+    base = _utc(2026, 9, 20, 16, 15)  # 00:15 SGT on 21 Sep
+    with pytest.raises(scheduling.ScheduleError):
+        scheduling.validate_cron_interval("0,30 0 * * *", after=base)
+
+
+def test_validate_cron_interval_still_accepts_a_genuinely_hourly_cron():
+    base = _utc(2026, 9, 20, 16, 15)
+    scheduling.validate_cron_interval("0 */2 * * *", after=base)  # no raise
+
+
+def test_create_schedule_allows_the_same_one_shot_prompt_at_another_time():
+    """Two one-shots differ by time: cron is NULL for both, so the duplicate
+    key must include next_run_at or the second is wrongly rejected."""
+    seen = []
+
+    def _find(chat_id, cron, prompt, next_run_at):
+        seen.append(next_run_at)
+        return None
+
+    db = _db(find_duplicate_schedule=_find)
+    first = _create(db=db, cron=None, at="2027-01-04T09:00",
+                    prompt="Take medicine.", label="once at 9am")
+    second = _create(db=db, cron=None, at="2027-01-04T17:00",
+                     prompt="Take medicine.", label="once at 5pm")
+
+    assert "Scheduled #" in first
+    assert "Scheduled #" in second
+    assert seen[0] != seen[1]  # the time is part of the identity
+
+
+def test_create_schedule_still_dedupes_an_identical_recurring_schedule():
+    db = _db(find_duplicate_schedule=lambda chat_id, cron, prompt, next_run_at: 4)
+    assert "#4" in _create(db=db)
+
+
+def test_create_schedule_survives_a_failing_duplicate_lookup():
+    """create_schedule promises never to raise; the reads must be inside the
+    same failure boundary as the insert."""
+    def _boom(*args, **kwargs):
+        raise RuntimeError("db down")
+
+    out = _create(db=_db(find_duplicate_schedule=_boom))
+    assert "could not save" in out.lower()
+
+
+def test_create_schedule_survives_a_failing_count_query():
+    def _boom(*args, **kwargs):
+        raise RuntimeError("db down")
+
+    out = _create(db=_db(count_schedules=_boom))
+    assert "could not save" in out.lower()

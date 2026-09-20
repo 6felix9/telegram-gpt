@@ -24,6 +24,10 @@ MAX_PROMPT_CHARS = 500
 MIN_INTERVAL_MINUTES = 60
 MAX_ONESHOT_DAYS = 365
 MAX_CONSECUTIVE_FAILURES = 5
+# How many future firings the interval guardrail inspects. Two was not
+# enough: a cron like "0,30 0 * * *" hides its 30-minute pair behind a
+# 23.5-hour first gap depending on when it was created.
+INTERVAL_CHECK_OCCURRENCES = 32
 POLL_INTERVAL_SECONDS = 30
 
 
@@ -50,15 +54,26 @@ def next_run_from_cron(cron: str, after: datetime | None = None) -> datetime:
     return nxt.astimezone(UTC)
 
 
-def validate_cron_interval(cron: str) -> None:
+def validate_cron_interval(cron: str, after: datetime | None = None) -> None:
     """Reject a cron that fires more often than MIN_INTERVAL_MINUTES.
 
-    Checked by asking for the next two occurrences rather than by pattern
-    matching, so every runaway shape is caught without enumerating them.
+    Checked by measuring the smallest gap across the next
+    INTERVAL_CHECK_OCCURRENCES firings rather than by pattern matching, so
+    every runaway shape is caught without enumerating them. Looking at more
+    than one gap matters: a multi-value field can place its tight pair
+    anywhere in the cycle, so the first gap alone would make the guardrail
+    depend on what time the schedule happened to be created.
     """
-    first = next_run_from_cron(cron)
-    second = next_run_from_cron(cron, after=first)
-    if (second - first) < timedelta(minutes=MIN_INTERVAL_MINUTES):
+    base_sgt = (after or _now_utc()).astimezone(SGT)
+    try:
+        cycle = croniter(cron, base_sgt)
+        occurrences = [
+            cycle.get_next(datetime) for _ in range(INTERVAL_CHECK_OCCURRENCES)
+        ]
+    except Exception as e:
+        raise ScheduleError(f"'{cron}' is not a valid cron expression: {e}") from e
+    smallest = min(b - a for a, b in zip(occurrences, occurrences[1:]))
+    if smallest < timedelta(minutes=MIN_INTERVAL_MINUTES):
         raise ScheduleError(
             f"That schedule fires more often than once an hour. "
             f"The minimum interval is {MIN_INTERVAL_MINUTES} minutes."
@@ -127,17 +142,25 @@ def create_schedule(db, chat_id, prompt: str, label: str, cron: str | None,
     except ScheduleError as e:
         return str(e)
 
-    existing = db.find_duplicate_schedule(str(chat_id), cron, prompt)
-    if existing is not None:
-        return f"That is already scheduled as #{existing}. Nothing new was created."
-
-    if db.count_schedules(str(chat_id)) >= MAX_SCHEDULES_PER_CHAT:
-        return (
-            f"This chat already has {MAX_SCHEDULES_PER_CHAT} schedules, "
-            "which is the limit. Cancel one first."
-        )
-
+    # Every database call shares one failure boundary: this function promises
+    # never to raise, so a transient outage on the reads must surface as a
+    # model-facing string exactly like one on the insert.
     try:
+        existing = db.find_duplicate_schedule(
+            str(chat_id), cron, prompt, next_run_at
+        )
+        if existing is not None:
+            return (
+                f"That is already scheduled as #{existing}. "
+                "Nothing new was created."
+            )
+
+        if db.count_schedules(str(chat_id)) >= MAX_SCHEDULES_PER_CHAT:
+            return (
+                f"This chat already has {MAX_SCHEDULES_PER_CHAT} schedules, "
+                "which is the limit. Cancel one first."
+            )
+
         new_id = db.add_schedule(
             chat_id=str(chat_id), prompt=prompt, label=label or "as scheduled",
             cron=cron, next_run_at=next_run_at, created_by=created_by,

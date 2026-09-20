@@ -86,18 +86,28 @@ class ScheduleRepository:
                 )
                 return cur.fetchone()[0]
 
-    def find_duplicate_schedule(self, chat_id, cron: str | None,
-                                prompt: str) -> int | None:
+    def find_duplicate_schedule(self, chat_id, cron: str | None, prompt: str,
+                                next_run_at: datetime) -> int | None:
         """Id of an identical existing schedule, so a retried tool call is
-        idempotent rather than creating a twin."""
+        idempotent rather than creating a twin.
+
+        A recurring schedule is identified by its cron: when it next fires is
+        derived, not chosen. A one-shot has no cron, so its time is part of its
+        identity — the same reminder at 09:00 and at 17:00 is two schedules."""
+        sql: str
+        params: tuple[object, ...]
+        if cron is not None:
+            sql = ("SELECT id FROM scheduled_prompts "
+                   "WHERE chat_id = %s AND cron = %s AND prompt = %s LIMIT 1")
+            params = (str(chat_id), cron, prompt)
+        else:
+            sql = ("SELECT id FROM scheduled_prompts "
+                   "WHERE chat_id = %s AND cron IS NULL AND prompt = %s "
+                   "AND next_run_at = %s LIMIT 1")
+            params = (str(chat_id), prompt, next_run_at)
         with self._conn.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT id FROM scheduled_prompts "
-                    "WHERE chat_id = %s AND cron IS NOT DISTINCT FROM %s "
-                    "AND prompt = %s LIMIT 1",
-                    (str(chat_id), cron, prompt),
-                )
+                cur.execute(sql, params)
                 row = cur.fetchone()
                 return row[0] if row else None
 

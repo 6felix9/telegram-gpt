@@ -440,63 +440,68 @@ class Agent:
                 f"❌ {PROVIDER_LABEL[self._provider]} API key is not set. "
                 "Set it or switch models with /model."
             )
-        await self._compact_if_needed(chat_id)
-        context = AgentContext(
-            is_group=is_group,
-            reply_context=reply_context,
-            thread_id=str(chat_id),
-            user_id=user_id,
-        )
-        empty_reply_ids: list[str] = []
-        try:
-            for attempt in range(EMPTY_RESPONSE_MAX_RETRIES + 1):
-                result = await asyncio.to_thread(
-                    self._graph.invoke,
-                    {"messages": [human_message]},
-                    config=self._config_for(chat_id),
-                    context=context,
-                    durability="exit",
+        # One chat's checkpoint state is mutated by both live handler turns
+        # and the scheduled runner's background task, which are separate
+        # asyncio tasks. Serialize per chat so compaction and the graph
+        # invoke cannot interleave and drop a turn.
+        async with self._context_lock_for(chat_id):
+            await self._compact_if_needed(chat_id)
+            context = AgentContext(
+                is_group=is_group,
+                reply_context=reply_context,
+                thread_id=str(chat_id),
+                user_id=user_id,
+            )
+            empty_reply_ids: list[str] = []
+            try:
+                for attempt in range(EMPTY_RESPONSE_MAX_RETRIES + 1):
+                    result = await asyncio.to_thread(
+                        self._graph.invoke,
+                        {"messages": [human_message]},
+                        config=self._config_for(chat_id),
+                        context=context,
+                        durability="exit",
+                    )
+                    last_message = result["messages"][-1]
+                    response = _message_text(last_message)
+                    if response.strip():
+                        return response
+                    logger.warning(
+                        "Empty model reply for chat %s (attempt %s/%s)",
+                        chat_id, attempt + 1, EMPTY_RESPONSE_MAX_RETRIES + 1,
+                    )
+                    if last_message.id is not None:
+                        empty_reply_ids.append(last_message.id)
+                        try:
+                            self._graph.update_state(
+                                self._config_for(chat_id),
+                                {"messages": [RemoveMessage(id=last_message.id)]},
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Failed to prune empty-reply message for chat %s", chat_id
+                            )
+                        else:
+                            empty_reply_ids.remove(last_message.id)
+                raise CompletionError(
+                    "⚠️ The model didn't return a reply after several attempts. "
+                    "Please try again or use /model to switch models."
                 )
-                last_message = result["messages"][-1]
-                response = _message_text(last_message)
-                if response.strip():
-                    return response
-                logger.warning(
-                    "Empty model reply for chat %s (attempt %s/%s)",
-                    chat_id, attempt + 1, EMPTY_RESPONSE_MAX_RETRIES + 1,
-                )
-                if last_message.id is not None:
-                    empty_reply_ids.append(last_message.id)
+            except CompletionError:
+                raise
+            except Exception as e:
+                raise _to_completion_error(e) from e
+            finally:
+                if empty_reply_ids:
                     try:
                         self._graph.update_state(
                             self._config_for(chat_id),
-                            {"messages": [RemoveMessage(id=last_message.id)]},
+                            {"messages": [RemoveMessage(id=mid) for mid in empty_reply_ids]},
                         )
                     except Exception:
                         logger.exception(
-                            "Failed to prune empty-reply message for chat %s", chat_id
+                            "Failed to prune empty-reply messages for chat %s", chat_id
                         )
-                    else:
-                        empty_reply_ids.remove(last_message.id)
-            raise CompletionError(
-                "⚠️ The model didn't return a reply after several attempts. "
-                "Please try again or use /model to switch models."
-            )
-        except CompletionError:
-            raise
-        except Exception as e:
-            raise _to_completion_error(e) from e
-        finally:
-            if empty_reply_ids:
-                try:
-                    self._graph.update_state(
-                        self._config_for(chat_id),
-                        {"messages": [RemoveMessage(id=mid) for mid in empty_reply_ids]},
-                    )
-                except Exception:
-                    logger.exception(
-                        "Failed to prune empty-reply messages for chat %s", chat_id
-                    )
 
     async def append_context_message(self, chat_id, human_message) -> None:
         """Append a non-triggering message to the thread (no reply model call).

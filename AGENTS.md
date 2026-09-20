@@ -120,6 +120,15 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
   at fire time, and its `messages` rows obey `MESSAGE_RETENTION_DAYS`.
 - `process_agent_turn` handles its own errors and reports success through its
   return value; that boolean is the runner's only failure signal.
+- `Agent.run()` holds the per-chat lock (`_context_lock_for`) for the whole
+  turn. The runner is a separate asyncio task sharing a `thread_id` with live
+  handlers, so without it a firing could interleave with a real message and
+  drop a turn from checkpoint state. PTB itself processes updates one at a
+  time (`max_concurrent_updates=1`), so this runner is the only source of
+  concurrent turns. The lock is per chat, so unrelated chats still overlap.
+- `fire_due` runs due schedules one at a time. At this bot's scale that costs
+  at most a short delay when several chats share a cadence; the per-chat lock
+  above is what would make concurrent dispatch safe if it ever matters.
 - Missed firings during downtime are skipped, never backfilled. A failed firing
   posts nothing to the chat, and a schedule is auto-disabled after 5 consecutive
   failures. A one-shot is deleted after it fires, successfully or not.
