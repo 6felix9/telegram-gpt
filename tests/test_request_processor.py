@@ -113,3 +113,68 @@ def test_process_payload_build_failure_replies_generic_error():
     ))
 
     message.reply_text.assert_awaited_once_with("generic error")
+
+
+def test_process_agent_turn_sends_through_the_send_callable():
+    db = SimpleNamespace(add_message=Mock())
+    agent = SimpleNamespace(run=AsyncMock(return_value="reply text"))
+    processor = RequestProcessor(_deps(db=db, agent=agent))
+    send = AsyncMock()
+
+    asyncio.run(processor.process_agent_turn(
+        _bot(), 123, user_id=55, sender_name=None, sender_username=None,
+        is_group=True, build_payload=_payload, reply_context=None, send=send,
+        success_log="ok", error_log_prefix="err",
+    ))
+
+    assert db.add_message.call_count == 2
+    send.assert_awaited_once_with("reply text")
+
+
+def test_process_agent_turn_without_on_error_stays_silent_on_failure():
+    """A scheduled run has no one waiting, so a failure posts nothing."""
+    db = SimpleNamespace(add_message=Mock())
+    agent = SimpleNamespace(run=AsyncMock(side_effect=CompletionError("nope")))
+    processor = RequestProcessor(_deps(db=db, agent=agent))
+    send = AsyncMock()
+
+    asyncio.run(processor.process_agent_turn(
+        _bot(), 123, user_id=55, sender_name=None, sender_username=None,
+        is_group=True, build_payload=_payload, reply_context=None, send=send,
+        success_log="ok", error_log_prefix="err",
+    ))
+
+    send.assert_not_awaited()
+
+
+def test_process_agent_turn_returns_true_on_success_false_on_failure():
+    """The return value is the scheduled runner's only failure signal."""
+    db = SimpleNamespace(add_message=Mock())
+    ok_agent = SimpleNamespace(run=AsyncMock(return_value="reply text"))
+    bad_agent = SimpleNamespace(run=AsyncMock(side_effect=CompletionError("nope")))
+
+    def _call(agent):
+        processor = RequestProcessor(_deps(db=db, agent=agent))
+        return asyncio.run(processor.process_agent_turn(
+            _bot(), 123, user_id=55, sender_name=None, sender_username=None,
+            is_group=True, build_payload=_payload, reply_context=None,
+            send=AsyncMock(), success_log="ok", error_log_prefix="err",
+        ))
+
+    assert _call(ok_agent) is True
+    assert _call(bad_agent) is False
+
+
+def test_process_agent_turn_reports_through_on_error_when_given():
+    db = SimpleNamespace(add_message=Mock())
+    agent = SimpleNamespace(run=AsyncMock(side_effect=CompletionError("nope")))
+    processor = RequestProcessor(_deps(db=db, agent=agent))
+    send, on_error = AsyncMock(), AsyncMock()
+
+    asyncio.run(processor.process_agent_turn(
+        _bot(), 123, user_id=55, sender_name=None, sender_username=None,
+        is_group=True, build_payload=_payload, reply_context=None, send=send,
+        success_log="ok", error_log_prefix="err", on_error=on_error,
+    ))
+
+    on_error.assert_awaited_once_with("nope")

@@ -55,7 +55,49 @@ class RequestProcessor:
         error_log_prefix: str,
         post_success=None,
     ) -> None:
-        chat_id = str(message.chat_id)
+        """Message-shaped entry point used by the text and photo handlers."""
+
+        async def _on_error(text: str) -> None:
+            await message.reply_text(text)
+
+        await self.process_agent_turn(
+            bot, message.chat_id,
+            user_id=user_id, sender_name=sender_name,
+            sender_username=sender_username, is_group=is_group,
+            build_payload=build_payload, reply_context=reply_context,
+            send=message.reply_text, telegram_message_id=message.message_id,
+            success_log=success_log, error_log_prefix=error_log_prefix,
+            on_error=_on_error, generic_error_text=generic_error_text,
+            post_success=post_success,
+        )
+
+    async def process_agent_turn(
+        self,
+        bot,
+        chat_id,
+        *,
+        user_id: int | None,
+        sender_name: str | None,
+        sender_username: str | None,
+        is_group: bool,
+        build_payload,
+        reply_context: tuple[str, str] | None,
+        send,
+        success_log: str,
+        error_log_prefix: str,
+        telegram_message_id: int | None = None,
+        on_error=None,
+        generic_error_text: str = "",
+        post_success=None,
+    ) -> bool:
+        """Audit-log -> agent.run -> audit-log -> send, shared by real messages
+        and scheduled firings. `send` receives the reply text; `on_error`, when
+        given, receives a user-facing failure string (a scheduled run passes
+        none, because nobody is waiting on it).
+
+        Returns True only if the reply was generated and sent. Exceptions are
+        handled here, so the return value is the caller's only failure signal."""
+        chat_id = str(chat_id)
         db = self._deps.db
         agent = self._deps.agent
         try:
@@ -63,7 +105,7 @@ class RequestProcessor:
                 content, token_count, human_message = await build_payload()
                 db.add_message(
                     chat_id=chat_id, role="user", content=content,
-                    user_id=user_id, message_id=message.message_id,
+                    user_id=user_id, message_id=telegram_message_id,
                     token_count=token_count,
                     sender_name=sender_name, sender_username=sender_username,
                     is_group_chat=is_group,
@@ -76,7 +118,7 @@ class RequestProcessor:
                     chat_id=chat_id, role="assistant", content=response,
                     token_count=count_tokens(response), is_group_chat=is_group,
                 )
-            await message.reply_text(response)
+            await send(response)
             logger.info(success_log)
             if post_success is not None:
                 try:
@@ -85,8 +127,14 @@ class RequestProcessor:
                     logger.exception(
                         "post_success hook failed for chat %s", chat_id
                     )
+            return True
         except CompletionError as e:
-            await message.reply_text(e.user_message)
+            logger.warning("%s: %s", error_log_prefix, e.user_message)
+            if on_error is not None:
+                await on_error(e.user_message)
+            return False
         except Exception as e:
             logger.error(f"{error_log_prefix}: {e}", exc_info=True)
-            await message.reply_text(generic_error_text)
+            if on_error is not None:
+                await on_error(generic_error_text)
+            return False
