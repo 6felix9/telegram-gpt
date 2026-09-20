@@ -48,12 +48,28 @@ You      chatgpt what's the weather in tokyo this weekend
 Bot      [searches the web] Rain Saturday, clearing Sunday, 18-22C.
 ```
 
+It can also put things on a timer. There is no command — just ask:
+
+```
+You      chatgpt post a summary of the day's messages every weekday at 6pm
+
+Bot      Scheduled #3 — every weekday at 6:00pm. First run Mon 22 Sep,
+         6:00pm SGT. Will run: "Summarise the day's messages in this chat."
+```
+
+It tells you the id, when it fires next, and the exact prompt it saved — the
+prompt is rewritten to stand on its own, since it runs later with nobody
+around to ask. "chatgpt what's scheduled here" lists them, "chatgpt cancel 3"
+removes one. Times are Singapore time, and a schedule fires at most once an
+hour.
+
 What it keeps track of:
 
 - **Every text message** in the chat, whether or not it was addressed to the bot
 - **Photos** — described on arrival, so you can ask about one long after it was posted
 - **Voice notes** — transcribed automatically; they never trigger a reply, but you can ask about them
 - **Old conversations** — once history gets long it's compacted into a rolling summary, so the bot keeps the gist forever without blowing the context window
+- **Schedules** — stored in the database, so they survive restarts and redeploys; a run missed during downtime is skipped rather than fired late
 
 ## Run It Locally
 

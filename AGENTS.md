@@ -96,6 +96,34 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 - Everything fails open. Over the duration cap, an API failure, or a silent recording all yield a bare `[voice]` marker; a Telegram download failure stores nothing. None of it is surfaced to the user.
 - A caption attached to a voice note is currently not preserved — only the transcript is stored; the caption text itself is dropped.
 
+### Scheduled Prompts
+
+- The agent has three tools — `schedule_prompt`, `list_schedules`,
+  `cancel_schedule` — so scheduling is conversational. There is no `/schedule`
+  command and no callback handler.
+- Any user already authorized to chat can create a schedule. Abuse is bounded by
+  guardrails, not by an admin gate: 10 schedules per chat, 500-character
+  prompts, and a one-hour minimum interval. `created_by` records who made each.
+- `schedule_prompt` takes a 5-field `cron` (recurring) or an ISO `at` (one-shot),
+  both read in **Asia/Singapore**. `next_run_at` is stored UTC; every
+  user-facing time is rendered SGT.
+- The model writes the stored `prompt`, and it must be self-contained — it is
+  replayed cold at fire time, so "give me..." and "what we just discussed" have
+  to be resolved into absolutes at creation. The confirmation echoes the stored
+  prompt so a bad rewrite is visible immediately.
+- `scheduler.py` polls `scheduled_prompts` every 30 seconds from a task started
+  in `bot.py`'s `post_init`. The database is the only source of truth, so
+  restarts and redeploys need no re-registration.
+- A firing runs through `RequestProcessor.process_agent_turn` — the same path as
+  a real message — so compaction, trimming, context and persistence are
+  identical. It uses whatever `active_model` and `active_personality` are live
+  at fire time, and its `messages` rows obey `MESSAGE_RETENTION_DAYS`.
+- `process_agent_turn` handles its own errors and reports success through its
+  return value; that boolean is the runner's only failure signal.
+- Missed firings during downtime are skipped, never backfilled. A failed firing
+  posts nothing to the chat, and a schedule is auto-disabled after 5 consecutive
+  failures. A one-shot is deleted after it fires, successfully or not.
+
 ### Personality Behavior
 
 - Private chats always use the default private system prompt.
@@ -117,7 +145,7 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 - `open_access` is a single global setting (`enabled`, `expires_at`), following the same shape as `active_model`/`active_personality`.
 - `/openbot on [duration]` (admin-only) enables it; `duration` is optional (`30m`, `2h`, `1d` — minutes/hours/days), defaulting to 4h so it can't be left on indefinitely by accident. `/openbot off` disables it immediately. Bare `/openbot` reports current state.
 - `handlers.authorization.is_authorized()` checks `open_access` (after the main-user check, before the allowlist) — when enabled and not expired, any user is authorized without an allowlist lookup.
-- Expiry is evaluated lazily on read (`SettingsRepository.get_open_access()`), not by a background job — there is no scheduler in this codebase. A row can sit `enabled=TRUE` past its `expires_at` between reads; every read (including the authorization check) recomputes effective state against the current time, so nothing ever authorizes past expiry.
+- Expiry is evaluated lazily on read (`SettingsRepository.get_open_access()`), not by a background job. The scheduled-prompt runner (`scheduler.py`) is the only background loop here and it only fires `scheduled_prompts` rows; it never touches open access. A row can sit `enabled=TRUE` past its `expires_at` between reads; every read (including the authorization check) recomputes effective state against the current time, so nothing ever authorizes past expiry.
 - `is_main_authorized_user()` is unaffected — admin commands stay restricted to the main authorized user even while open access is on.
 - State is also surfaced in `/allowlist` output so the admin doesn't forget it's left on.
 
@@ -178,6 +206,8 @@ Tests cover pure logic only (no Telegram, database, or live API calls):
 - `conversation_summary.ConversationCompactor.plan()` / `select_keep_suffix()` — checkpoint compaction planning (`tests/test_conversation_summary.py`)
 - `conversation_summary.ConversationCompactor.plan()` / `select_keep_suffix()` — checkpoint compaction planning (`tests/test_conversation_summary.py`)
 - `agent.resolve_model()` / `MODEL_PROVIDERS` — model/provider validation used by `/model` (`tests/test_model_resolution.py`)
+- `scheduling.create_schedule()` / `next_run_from_cron()` / `render_schedule_list()` — cadence math, guardrails, and tool output (`tests/test_scheduling.py`)
+- `scheduler.ScheduledRunner.fire_due()` — due selection, advancement, and the failure cutout (`tests/test_scheduler.py`)
 - `tests/test_config.py`, `tests/test_prompt_builder.py`, `tests/test_tools.py`, `tests/test_agent.py`, `tests/test_extract_keyword.py`, `tests/test_transcription.py` cover config validation, prompt formatting, tools, agent wiring, keyword extraction, and voice transcription respectively
 
 CI runs the same compile and pytest steps on pull requests and pushes to `main` (`.github/workflows/ci.yml`).
@@ -208,6 +238,7 @@ Expected tables:
 - `open_access`
 - `conversation_summaries`
 - `images`
+- `scheduled_prompts`
 
 Important details:
 
@@ -216,6 +247,7 @@ Important details:
 - `active_personality` is a single-row table
 - `open_access` is a single-row table (`enabled`, `expires_at`) backing the `/openbot` toggle
 - `conversation_summaries` is an audit-only table and is never read by the agent
+- `scheduled_prompts` is the durable store for agent-created schedules; `cron IS NULL` marks a one-shot
 - Schema is version-controlled via Alembic migrations in `alembic/versions/`, applied with `alembic upgrade head` (not created automatically on boot)
 
 ## Configuration
