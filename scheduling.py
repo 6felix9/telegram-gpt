@@ -160,7 +160,7 @@ def create_schedule(db, chat_id, prompt: str, label: str, cron: str | None,
                 "which is the limit. Cancel one first."
             )
 
-        new_id = db.add_schedule(
+        db.add_schedule(
             chat_id=str(chat_id), prompt=prompt, label=label or "as scheduled",
             cron=cron, next_run_at=next_run_at, created_by=created_by,
         )
