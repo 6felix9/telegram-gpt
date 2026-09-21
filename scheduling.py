@@ -151,8 +151,7 @@ def create_schedule(db, chat_id, prompt: str, label: str, cron: str | None,
         )
         if existing is not None:
             return (
-                f"That is already scheduled as #{existing}. "
-                "Nothing new was created."
+                "That is already scheduled. Nothing new was created."
             )
 
         if db.count_schedules(str(chat_id)) >= MAX_SCHEDULES_PER_CHAT:
@@ -170,14 +169,17 @@ def create_schedule(db, chat_id, prompt: str, label: str, cron: str | None,
         return "Could not save that schedule. Try again."
 
     return (
-        f"Scheduled #{new_id} — {label}. "
+        f"Scheduled — {label}. "
         f"First run {format_sgt(next_run_at)}.\n"
         f'Will run: "{prompt}"'
     )
 
 
 def render_schedule_list(records) -> str:
-    """Format one chat's schedules for the model to relay, ids intact."""
+    """Format one chat's schedules for the model to relay as a dashed list.
+
+    Ids are appended as a trailing `[id N]` the model needs for
+    cancel_schedule; the header tells it not to show them to users."""
     if not records:
         return "No schedules in this chat."
     blocks = []
@@ -186,16 +188,20 @@ def render_schedule_list(records) -> str:
         if len(preview) > PROMPT_PREVIEW_CHARS:
             preview = preview[:PROMPT_PREVIEW_CHARS].rstrip() + "..."
         disabled = "" if r.enabled else (
-            f"  (disabled — {r.consecutive_failures} failed runs)"
+            f" (disabled — {r.consecutive_failures} failed runs)"
         )
         blocks.append(
-            f"#{r.id}  {r.label}{disabled}\n"
-            f"     Next run: {format_sgt(r.next_run_at)}\n"
-            f'     "{preview}"'
+            f"- {r.label}{disabled} — next run {format_sgt(r.next_run_at)} "
+            f"[id {r.id}]\n"
+            f'  "{preview}"'
         )
     count = len(records)
-    header = f"{count} schedule{'s' if count != 1 else ''} in this chat:"
-    return header + "\n\n" + "\n\n".join(blocks)
+    header = (
+        f"{count} schedule{'s' if count != 1 else ''} in this chat "
+        "(the [id N] tags are for cancel_schedule only; never show them to "
+        "the user):"
+    )
+    return header + "\n\n" + "\n".join(blocks)
 
 
 def build_schedule_tools(db) -> list:
@@ -221,7 +227,7 @@ def build_schedule_tools(db) -> list:
 
         Only use this when someone explicitly asks for something recurring or
         for a reminder at a specific time. Always relay the returned
-        confirmation to them, including the id and the next run time.
+        confirmation to them, including the next run time.
 
         Write `prompt` so it stands alone. It is replayed into this chat later,
         when nobody is asking and the surrounding conversation is gone, so
@@ -248,7 +254,8 @@ def build_schedule_tools(db) -> list:
     def list_schedules(runtime: ToolRuntime) -> str:
         """List the prompts scheduled to run in this chat.
 
-        Relay the ids exactly as given — the user cancels by id.
+        Show the user a plain dashed list of label, next run and prompt.
+        Never show the [id N] tags; they are only for cancel_schedule.
         """
         chat_id = _chat_id(runtime)
         if chat_id is None:
@@ -264,7 +271,10 @@ def build_schedule_tools(db) -> list:
         """Cancel a scheduled prompt in this chat.
 
         Args:
-            schedule_id: The numeric id shown by list_schedules.
+            schedule_id: The id from the [id N] tag in list_schedules. Call
+                list_schedules first if you do not have it, and match the
+                user's description to a schedule by label and prompt. Ask
+                which one they mean if it is ambiguous.
         """
         chat_id = _chat_id(runtime)
         if chat_id is None:
@@ -276,6 +286,6 @@ def build_schedule_tools(db) -> list:
             return "Could not cancel that schedule."
         if record is None:
             return f"Schedule #{schedule_id} not found."
-        return f"Cancelled #{schedule_id} — {record.label}."
+        return f"Cancelled — {record.label}."
 
     return [schedule_prompt, list_schedules, cancel_schedule]

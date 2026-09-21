@@ -30,7 +30,10 @@ TOOL_USAGE = {
         "asked for."
     ),
     "list_schedules": "checking what's currently scheduled in this chat.",
-    "cancel_schedule": "canceling a schedule by the id shown in list_schedules.",
+    "cancel_schedule": (
+        "canceling a schedule the user describes; look up its id with "
+        "list_schedules."
+    ),
 }
 
 MARKDOWN_CONVENTION = (

@@ -124,9 +124,9 @@ def _create(db=None, **overrides):
     return scheduling.create_schedule(db or _db(), **kwargs)
 
 
-def test_create_schedule_confirmation_names_id_next_run_and_prompt():
+def test_create_schedule_confirmation_names_next_run_and_prompt_without_id():
     out = _create()
-    assert "#7" in out
+    assert "#7" not in out
     assert "every day at 8:00am" in out
     assert "SGT" in out
     assert "Post a good morning message for Felix." in out
@@ -159,10 +159,10 @@ def test_create_schedule_rejects_neither_cron_nor_at():
     assert "exactly one" in out.lower()
 
 
-def test_create_schedule_returns_existing_id_for_a_duplicate():
+def test_create_schedule_reports_a_duplicate_without_an_id():
     db = _db(find_duplicate_schedule=lambda chat_id, cron, prompt, next_run_at: 4)
     out = _create(db=db)
-    assert "#4" in out
+    assert "#4" not in out
     assert "already" in out.lower()
 
 
@@ -171,11 +171,14 @@ def test_create_schedule_refuses_without_a_chat_id():
     assert "not available" in out.lower()
 
 
-def test_render_schedule_list_shows_id_label_next_run_and_preview():
+def test_render_schedule_list_is_a_dashed_list_with_a_model_only_id_tag():
     records = [_Rec(7, "123", "Post a good morning message.",
                     "every day at 8:00am", "0 8 * * *", _utc(2026, 9, 22, 0, 0))]
     out = scheduling.render_schedule_list(records)
-    assert "#7" in out
+    assert "#7" not in out
+    assert "[id 7]" in out
+    assert "never show" in out
+    assert "\n- every day at 8:00am" in out
     assert "every day at 8:00am" in out
     assert "Tue 22 Sep, 8:00am SGT" in out
     assert "Post a good morning message." in out
@@ -235,14 +238,14 @@ def test_create_schedule_allows_the_same_one_shot_prompt_at_another_time():
     second = _create(db=db, cron=None, at="2027-01-04T17:00",
                      prompt="Take medicine.", label="once at 5pm")
 
-    assert "Scheduled #" in first
-    assert "Scheduled #" in second
+    assert first.startswith("Scheduled")
+    assert second.startswith("Scheduled")
     assert seen[0] != seen[1]  # the time is part of the identity
 
 
 def test_create_schedule_still_dedupes_an_identical_recurring_schedule():
     db = _db(find_duplicate_schedule=lambda chat_id, cron, prompt, next_run_at: 4)
-    assert "#4" in _create(db=db)
+    assert "already" in _create(db=db).lower()
 
 
 def test_create_schedule_survives_a_failing_duplicate_lookup():
