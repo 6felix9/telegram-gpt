@@ -110,5 +110,7 @@ def build_tools(config, db=None) -> list:
     built = [search, fetch_url]
     if db is not None:
         from image_store import build_image_tool
+        from scheduling import build_schedule_tools
         built.append(build_image_tool(db))
+        built.extend(build_schedule_tools(db))
     return built

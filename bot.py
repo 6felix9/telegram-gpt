@@ -9,6 +9,7 @@ from telegram.ext import Application, MessageHandler, CommandHandler, filters
 from config import config
 from app_factory import build_app_stack
 import handlers
+import scheduler
 
 # Configure logging
 logging.basicConfig(
@@ -22,10 +23,13 @@ db = None
 application = None
 bot_agent = None
 checkpointer_pool = None
+prompt_builder = None
+scheduler_task = None
 
 
 async def post_init(app: Application):
     """Called after bot starts."""
+    global scheduler_task
     logger.info("=" * 50)
     logger.info("Bot started successfully!")
     logger.info(f"Default model: {config.DEFAULT_MODEL}")
@@ -35,11 +39,16 @@ async def post_init(app: Application):
     db_display = config.DATABASE_URL[:50] + "..." if len(config.DATABASE_URL) > 50 else config.DATABASE_URL
     logger.info(f"Database: {db_display}")
     logger.info("=" * 50)
+    scheduler_task = scheduler.start(
+        app, db, handlers.get_request_processor(), prompt_builder
+    )
 
 
 async def post_shutdown(app: Application):
     """Called before bot stops."""
     logger.info("Bot shutting down gracefully...")
+    if scheduler_task:
+        scheduler_task.cancel()
     # Close database connection pool
     if db:
         db.close()
@@ -56,7 +65,7 @@ def signal_handler(signum, frame):
 def main():
     """Initialize and run the bot."""
 
-    global db, application, bot_agent, checkpointer_pool
+    global db, application, bot_agent, checkpointer_pool, prompt_builder, scheduler_task
 
     try:
         # 1. Validate configuration

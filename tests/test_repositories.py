@@ -8,6 +8,7 @@ from database.access_repository import AccessRepository
 from database.db_connection import ConnectionManager
 from database.image_repository import ImageRecord, ImageRepository
 from database.message_repository import MessageRepository
+from database.schedule_repository import ScheduleRecord, ScheduleRepository
 from database.settings_repository import SettingsRepository
 
 
@@ -300,3 +301,113 @@ def test_delete_images_older_than_deletes_globally_and_returns_count():
     # No chat scoping: retention is global, unlike every read on this table.
     assert "chat_id" not in sql
     assert params == (30,)
+
+
+# --- ScheduleRepository --------------------------------------------------
+
+def _schedule_row(**overrides):
+    row = {
+        "id": 7, "chat_id": "123", "prompt": "Post a good morning message.",
+        "label": "every day at 8:00am", "cron": "0 8 * * *",
+        "next_run_at": datetime(2026, 9, 22, 0, 0), "enabled": True,
+        "created_by": 55, "last_run_at": None, "consecutive_failures": 0,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_add_schedule_inserts_and_returns_id():
+    manager, conn = _fake_manager(results=[(7,)])
+    repo = ScheduleRepository(manager)
+    new_id = repo.add_schedule(
+        chat_id=123, prompt="Post a good morning message.",
+        label="every day at 8:00am", cron="0 8 * * *",
+        next_run_at=datetime(2026, 9, 22, 0, 0), created_by=55,
+    )
+    assert new_id == 7
+    sql, params = conn.executed[0]
+    assert "INSERT INTO scheduled_prompts" in sql
+    assert params[0] == "123"  # chat_id coerced to str
+
+
+def test_list_schedules_is_scoped_to_the_chat():
+    manager, conn = _fake_manager(results=[[_schedule_row()]])
+    repo = ScheduleRepository(manager)
+    records = repo.list_schedules("123")
+    assert [r.id for r in records] == [7]
+    assert records[0].label == "every day at 8:00am"
+    sql, params = conn.executed[0]
+    assert "WHERE chat_id = %s" in sql
+    assert params == ("123",)
+
+
+def test_find_duplicate_schedule_returns_existing_id():
+    manager, conn = _fake_manager(results=[(7,)])
+    repo = ScheduleRepository(manager)
+    assert repo.find_duplicate_schedule(
+        "123", "0 8 * * *", "Post it.", datetime(2026, 9, 22, 0, 0)) == 7
+
+
+def test_find_duplicate_schedule_returns_none_when_absent():
+    manager, _ = _fake_manager(results=[])
+    repo = ScheduleRepository(manager)
+    assert repo.find_duplicate_schedule(
+        "123", "0 8 * * *", "Post it.", datetime(2026, 9, 22, 0, 0)) is None
+
+
+def test_delete_schedule_returns_the_deleted_record_scoped_to_chat():
+    manager, conn = _fake_manager(results=[_schedule_row()])
+    repo = ScheduleRepository(manager)
+    record = repo.delete_schedule("123", 7)
+    assert record is not None and record.id == 7
+    sql, params = conn.executed[0]
+    assert "DELETE FROM scheduled_prompts" in sql
+    assert params == ("123", 7)
+
+
+def test_delete_schedule_returns_none_for_another_chats_id():
+    manager, _ = _fake_manager(results=[])
+    repo = ScheduleRepository(manager)
+    assert repo.delete_schedule("999", 7) is None
+
+
+def test_due_schedules_selects_enabled_rows_at_or_before_now():
+    manager, conn = _fake_manager(results=[[_schedule_row()]])
+    repo = ScheduleRepository(manager)
+    now = datetime(2026, 9, 22, 0, 0)
+    assert len(repo.due_schedules(now)) == 1
+    sql, params = conn.executed[0]
+    assert "enabled = TRUE" in sql
+    assert "next_run_at <= %s" in sql
+    assert params == (now,)
+
+
+def test_record_schedule_failure_disables_when_asked():
+    manager, conn = _fake_manager()
+    repo = ScheduleRepository(manager)
+    repo.record_schedule_failure(7, datetime(2026, 9, 23, 0, 0), disable=True)
+    sql, _ = conn.executed[0]
+    assert "enabled = FALSE" in sql
+
+
+def test_find_duplicate_schedule_matches_a_recurring_schedule_on_cron():
+    manager, conn = _fake_manager(results=[(7,)])
+    repo = ScheduleRepository(manager)
+    assert repo.find_duplicate_schedule(
+        "123", "0 8 * * *", "Post it.", datetime(2026, 9, 22, 0, 0)) == 7
+    sql, params = conn.executed[0]
+    assert "cron = %s" in sql
+    assert "next_run_at" not in sql  # a recurring match ignores the next firing
+    assert params == ("123", "0 8 * * *", "Post it.")
+
+
+def test_find_duplicate_schedule_matches_a_one_shot_on_its_time_too():
+    """Same prompt at 09:00 and 17:00 is two schedules, not a duplicate."""
+    manager, conn = _fake_manager(results=[])
+    repo = ScheduleRepository(manager)
+    when = datetime(2026, 9, 22, 9, 0)
+    assert repo.find_duplicate_schedule("123", None, "Take medicine.", when) is None
+    sql, params = conn.executed[0]
+    assert "cron IS NULL" in sql
+    assert "next_run_at = %s" in sql
+    assert params == ("123", "Take medicine.", when)

@@ -59,10 +59,17 @@ def test_to_lc_human_message_no_id_by_default():
 
 def test_tools_section_renders_bound_tools_with_usage():
     out = _pb().build_system_prompt(
-        is_group=False, tool_names=["web_search", "fetch_url", "get_image"]
+        is_group=False,
+        tool_names=[
+            "web_search", "fetch_url", "get_image",
+            "schedule_prompt", "list_schedules", "cancel_schedule",
+        ],
     )
     assert "## Tools" in out
-    for name in ("web_search", "fetch_url", "get_image"):
+    for name in (
+        "web_search", "fetch_url", "get_image",
+        "schedule_prompt", "list_schedules", "cancel_schedule",
+    ):
         assert f"- {name} —" in out
 
 
