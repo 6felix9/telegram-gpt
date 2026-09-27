@@ -4,10 +4,16 @@ import tools
 
 class _CfgTavily:
     TAVILY_API_KEY = "tvly-x"
+    SCHEDULER_ENABLED = False
 
 
 class _CfgNoKey:
     TAVILY_API_KEY = ""
+    SCHEDULER_ENABLED = False
+
+
+class _CfgScheduler(_CfgNoKey):
+    SCHEDULER_ENABLED = True
 
 
 def test_backend_selection():
@@ -53,12 +59,17 @@ def test_build_tools_includes_get_image_when_db_present():
     assert "get_image" in names
 
 
-def test_build_tools_includes_schedule_tools_when_db_present():
+def test_build_tools_includes_schedule_tools_when_enabled_and_db_present():
     db = object()
-    names = {t.name for t in tools.build_tools(_CfgNoKey, db=db)}
+    names = {t.name for t in tools.build_tools(_CfgScheduler, db=db)}
     assert {"schedule_prompt", "list_schedules", "cancel_schedule"} <= names
 
 
+def test_build_tools_omits_schedule_tools_when_scheduler_disabled():
+    names = {t.name for t in tools.build_tools(_CfgNoKey, db=object())}
+    assert "schedule_prompt" not in names
+
+
 def test_build_tools_omits_schedule_tools_without_db():
-    names = {t.name for t in tools.build_tools(_CfgNoKey, db=None)}
+    names = {t.name for t in tools.build_tools(_CfgScheduler, db=None)}
     assert "schedule_prompt" not in names

@@ -90,6 +90,12 @@ class Config:
     # tightening if storage gets tight. 0 means "disabled".
     IMAGE_RETENTION_DAYS = _int_env("IMAGE_RETENTION_DAYS", 30)
 
+    # Scheduled prompts are paused by default: the runner's 30s poll keeps the
+    # Neon compute from ever auto-suspending, which exhausted the free-plan
+    # compute quota. Off means no runner task and no schedule tools. Set to
+    # "true" to re-enable once the runner stops polling on a fixed interval.
+    SCHEDULER_ENABLED = os.getenv("SCHEDULER_ENABLED", "").strip().lower() == "true"
+
     # Logging
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 

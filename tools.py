@@ -101,7 +101,8 @@ def _duckduckgo_search_tool():
 def build_tools(config, db=None) -> list:
     """Assemble the agent's tool set based on configuration.
 
-    When db is provided, includes the get_image retrieval tool."""
+    When db is provided, includes the get_image retrieval tool, plus the
+    schedule tools when SCHEDULER_ENABLED is set."""
     if web_search_backend(config) == "tavily":
         search = _tavily_search_tool(config)
     else:
@@ -112,5 +113,6 @@ def build_tools(config, db=None) -> list:
         from image_store import build_image_tool
         from scheduling import build_schedule_tools
         built.append(build_image_tool(db))
-        built.extend(build_schedule_tools(db))
+        if config.SCHEDULER_ENABLED:
+            built.extend(build_schedule_tools(db))
     return built
