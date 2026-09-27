@@ -98,6 +98,12 @@ Do not document or add models outside `MODEL_PROVIDERS` unless the code is updat
 
 ### Scheduled Prompts
 
+- **Currently paused.** The whole feature is gated on `SCHEDULER_ENABLED`
+  (default off): when off, the runner task is not started and the three
+  schedule tools are not registered. The 30-second poll below keeps the Neon
+  compute from ever auto-suspending, which exhausted the free-plan compute
+  quota in September 2026. Re-enable only once the runner stops polling on a
+  fixed interval.
 - The agent has three tools — `schedule_prompt`, `list_schedules`,
   `cancel_schedule` — so scheduling is conversational. There is no `/schedule`
   command and no callback handler.
@@ -272,6 +278,7 @@ Relevant environment variables:
 - `MAX_SUMMARY_OUTPUT`
 - `MESSAGE_RETENTION_DAYS`
 - `IMAGE_RETENTION_DAYS`
+- `SCHEDULER_ENABLED`
 - `TRANSCRIPTION_MODEL`
 - `MAX_VOICE_DURATION_SECONDS`
 - `TAVILY_API_KEY`

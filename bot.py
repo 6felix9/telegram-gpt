@@ -39,9 +39,12 @@ async def post_init(app: Application):
     db_display = config.DATABASE_URL[:50] + "..." if len(config.DATABASE_URL) > 50 else config.DATABASE_URL
     logger.info(f"Database: {db_display}")
     logger.info("=" * 50)
-    scheduler_task = scheduler.start(
-        app, db, handlers.get_request_processor(), prompt_builder
-    )
+    if config.SCHEDULER_ENABLED:
+        scheduler_task = scheduler.start(
+            app, db, handlers.get_request_processor(), prompt_builder
+        )
+    else:
+        logger.info("Scheduled-prompt runner disabled (SCHEDULER_ENABLED is not true)")
 
 
 async def post_shutdown(app: Application):
