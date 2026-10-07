@@ -49,7 +49,7 @@ jobs:
       - name: Deploy to Railway (production)
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_PRODUCTION }}
-        run: railway up --service 02b24c92-333d-45aa-bf3d-68e59cc7d42b --environment production --detach
+        run: railway up --service 02b24c92-333d-45aa-bf3d-68e59cc7d42b --environment production --ci
 
   deploy-dev:
     needs: test
@@ -66,4 +66,4 @@ jobs:
       - name: Deploy to Railway (dev)
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN_DEV }}
-        run: railway up --service 02b24c92-333d-45aa-bf3d-68e59cc7d42b --environment dev --detach
+        run: railway up --service 02b24c92-333d-45aa-bf3d-68e59cc7d42b --environment dev --ci
